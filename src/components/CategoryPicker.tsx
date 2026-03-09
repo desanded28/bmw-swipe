@@ -4,6 +4,11 @@ import { useState } from "react";
 import CarImage from "./CarImage";
 
 const OPTION_DESC: Record<string, string> = {
+  // Brands
+  BMW: "German luxury & driving pleasure",
+  Audi: "Vorsprung durch Technik",
+  Porsche: "Precision sports cars",
+  // Body styles
   Sedan: "Classic 4-door car",
   SUV: "Tall, spacious, off-road ready",
   Coupe: "Sporty 2-door, low & fast",
@@ -12,27 +17,36 @@ const OPTION_DESC: Record<string, string> = {
   Hatchback: "Compact with a rear hatch",
   Supercar: "Top-tier speed & engineering",
   "Race Car": "Built for the track",
+  // Fuel types
   Petrol: "Standard gasoline engine",
   Diesel: "More torque, better fuel economy",
   Electric: "Fully battery-powered",
   Hybrid: "Electric + gasoline combined",
+  // Drivetrain
   RWD: "Rear-Wheel Drive — sporty feel",
   AWD: "All-Wheel Drive — grips any road",
   FWD: "Front-Wheel Drive — fuel efficient",
+  // Doors
   "2": "Two doors — sportier",
   "4": "Four doors — practical",
   "5": "Five doors — hatchback style",
 };
 
-const BODY_STYLE_MODELS: Record<string, string> = {
-  Sedan: "5 Series",
-  SUV: "X5",
-  Coupe: "4 Series",
-  Convertible: "Z4",
-  Wagon: "3 Series (E46)",
-  Hatchback: "1 Series",
-  Supercar: "M1 (car)",
-  "Race Car": "V12 LMR",
+const BODY_STYLE_MODELS: Record<string, { model: string; brand: string }> = {
+  Sedan: { model: "5 Series", brand: "BMW" },
+  SUV: { model: "Cayenne", brand: "Porsche" },
+  Coupe: { model: "TT", brand: "Audi" },
+  Convertible: { model: "Z4", brand: "BMW" },
+  Wagon: { model: "A4", brand: "Audi" },
+  Hatchback: { model: "1 Series", brand: "BMW" },
+  Supercar: { model: "918 Spyder", brand: "Porsche" },
+  "Race Car": { model: "V12 LMR", brand: "BMW" },
+};
+
+const BRAND_HERO: Record<string, { model: string; brand: string }> = {
+  BMW: { model: "M4", brand: "BMW" },
+  Audi: { model: "R8", brand: "Audi" },
+  Porsche: { model: "911", brand: "Porsche" },
 };
 
 interface CategoryPickerProps {
@@ -52,6 +66,7 @@ export default function CategoryPicker({
 }: CategoryPickerProps) {
   const [selected, setSelected] = useState<string[]>([]);
   const isBodyStyle = attribute === "body";
+  const isBrand = attribute === "brand";
 
   const toggle = (option: string) => {
     setSelected((prev) =>
@@ -69,8 +84,19 @@ export default function CategoryPicker({
         {options.map((option) => {
           const isActive = selected.includes(option);
           const desc = OPTION_DESC[option];
-          const showPhoto = showImages || isBodyStyle;
-          const modelName = showImages ? option : BODY_STYLE_MODELS[option];
+          const showPhoto = showImages || isBodyStyle || isBrand;
+
+          let photoModel: string | undefined;
+          let photoBrand: string | undefined;
+          if (showImages) {
+            photoModel = option;
+          } else if (isBrand && BRAND_HERO[option]) {
+            photoModel = BRAND_HERO[option].model;
+            photoBrand = BRAND_HERO[option].brand;
+          } else if (isBodyStyle && BODY_STYLE_MODELS[option]) {
+            photoModel = BODY_STYLE_MODELS[option].model;
+            photoBrand = BODY_STYLE_MODELS[option].brand;
+          }
 
           return (
             <button
@@ -82,10 +108,10 @@ export default function CategoryPicker({
                   : "border-white/[0.08] bg-white/[0.04] text-gray-300 hover:bg-white/[0.08]"
               } ${showPhoto ? "flex flex-col" : ""}`}
             >
-              {showPhoto && modelName ? (
+              {showPhoto && photoModel ? (
                 <div className="relative">
                   <div className="h-24 w-full">
-                    <CarImage modelName={modelName} className="rounded-none" />
+                    <CarImage modelName={photoModel} brand={photoBrand} className="rounded-none" />
                   </div>
                   <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-3 pb-2 pt-6">
                     <div className="text-sm font-medium text-white">{option}</div>

@@ -1,36 +1,34 @@
-// Client-side cache for fetched image URLs
 const urlCache = new Map<string, string | null>();
 const pendingFetches = new Map<string, Promise<string | null>>();
 
-/**
- * Fetch a real photo URL for a BMW model from Wikipedia via our API proxy.
- * Returns null if no image is available.
- */
 export async function fetchCarImageUrl(
-  modelName: string
+  modelName: string,
+  brand: string = "BMW"
 ): Promise<string | null> {
-  if (urlCache.has(modelName)) {
-    return urlCache.get(modelName) ?? null;
+  const key = `${brand}:${modelName}`;
+  if (urlCache.has(key)) {
+    return urlCache.get(key) ?? null;
   }
 
-  // Dedupe concurrent requests for the same model
-  if (pendingFetches.has(modelName)) {
-    return pendingFetches.get(modelName)!;
+  if (pendingFetches.has(key)) {
+    return pendingFetches.get(key)!;
   }
 
-  const promise = fetch(`/api/image?model=${encodeURIComponent(modelName)}`)
+  const promise = fetch(
+    `/api/image?model=${encodeURIComponent(modelName)}&brand=${encodeURIComponent(brand)}`
+  )
     .then((res) => res.json())
     .then((data: { url: string | null }) => {
-      urlCache.set(modelName, data.url);
-      pendingFetches.delete(modelName);
+      urlCache.set(key, data.url);
+      pendingFetches.delete(key);
       return data.url;
     })
     .catch(() => {
-      urlCache.set(modelName, null);
-      pendingFetches.delete(modelName);
+      urlCache.set(key, null);
+      pendingFetches.delete(key);
       return null;
     });
 
-  pendingFetches.set(modelName, promise);
+  pendingFetches.set(key, promise);
   return promise;
 }

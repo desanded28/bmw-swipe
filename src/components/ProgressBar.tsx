@@ -19,7 +19,7 @@ export default function ProgressBar({
     <div className="w-full">
       <div className="mb-2 flex items-center justify-between text-sm">
         <span className="text-gray-400">
-          <span className="font-medium text-white">{remaining}</span> BMWs
+          <span className="font-medium text-white">{remaining}</span> cars
           remaining
         </span>
         <span className="text-gray-500">

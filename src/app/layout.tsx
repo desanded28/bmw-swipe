@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "BMW Swipe — Find Your BMW",
+  title: "Car Swipe — Find Your Dream Car",
   description:
-    "Swipe through preferences to find your perfect BMW model from hundreds of options.",
+    "Swipe through preferences to find your perfect BMW, Audi, or Porsche from 1,500+ models.",
 };
 
 export const viewport: Viewport = {

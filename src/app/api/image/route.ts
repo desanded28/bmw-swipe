@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// Cache Wikipedia image URLs in memory: modelName -> imageUrl
 const imageCache = new Map<string, string | null>();
 
 async function tryWikipediaImage(articleTitle: string): Promise<string | null> {
@@ -9,7 +8,7 @@ async function tryWikipediaImage(articleTitle: string): Promise<string | null> {
       `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(articleTitle)}`,
       {
         headers: {
-          "User-Agent": "BMWSwipeApp/1.0 (educational project)",
+          "User-Agent": "CarSwipeApp/1.0 (educational project)",
         },
       }
     );
@@ -17,7 +16,6 @@ async function tryWikipediaImage(articleTitle: string): Promise<string | null> {
     if (!res.ok) return null;
 
     const data = await res.json();
-    // Use thumbnail as-is (fast, ~320px) — reliable across all Wikipedia images
     return data?.thumbnail?.source || data?.originalimage?.source || null;
   } catch {
     return null;
@@ -26,29 +24,37 @@ async function tryWikipediaImage(articleTitle: string): Promise<string | null> {
 
 export async function GET(req: NextRequest) {
   const model = req.nextUrl.searchParams.get("model");
+  const brand = req.nextUrl.searchParams.get("brand") || "BMW";
   if (!model) {
     return NextResponse.json({ error: "model param required" }, { status: 400 });
   }
 
-  if (imageCache.has(model)) {
-    const cached = imageCache.get(model);
+  const cacheKey = `${brand}:${model}`;
+  if (imageCache.has(cacheKey)) {
+    const cached = imageCache.get(cacheKey);
     return NextResponse.json({ url: cached });
   }
 
-  // Try multiple Wikipedia article patterns
-  const candidates = [
-    `BMW_${model.replace(/\s+/g, "_")}`,
-  ];
+  const candidates: string[] = [];
 
-  // If model has extra words like "Gran Turismo", also try the base series
-  const seriesMatch = model.match(/^(\d+\s*Series)/i);
-  if (seriesMatch && model !== seriesMatch[1]) {
-    candidates.push(`BMW_${seriesMatch[1].replace(/\s+/g, "_")}`);
-  }
-
-  // Try just "BMW_X5" for names like "X5", "X3", "Z4", "M3", etc.
-  if (!model.includes("Series")) {
-    candidates.push(`BMW_${model.split(/\s+/)[0]}`);
+  if (brand === "Porsche") {
+    candidates.push(`Porsche_${model.replace(/\s+/g, "_")}`);
+    if (model.includes("911")) candidates.push("Porsche_911");
+    candidates.push(`Porsche_${model.split(/\s+/)[0]}`);
+  } else if (brand === "Audi") {
+    candidates.push(`Audi_${model.replace(/\s+/g, "_")}`);
+    const baseMatch = model.match(/^(?:RS\s*)?([A-Za-z]\d+)/i);
+    if (baseMatch) candidates.push(`Audi_${baseMatch[1]}`);
+    candidates.push(`Audi_${model.split(/\s+/)[0]}`);
+  } else {
+    candidates.push(`BMW_${model.replace(/\s+/g, "_")}`);
+    const seriesMatch = model.match(/^(\d+\s*Series)/i);
+    if (seriesMatch && model !== seriesMatch[1]) {
+      candidates.push(`BMW_${seriesMatch[1].replace(/\s+/g, "_")}`);
+    }
+    if (!model.includes("Series")) {
+      candidates.push(`BMW_${model.split(/\s+/)[0]}`);
+    }
   }
 
   let wikiUrl: string | null = null;
@@ -61,6 +67,6 @@ export async function GET(req: NextRequest) {
     ? `/api/image-proxy?url=${encodeURIComponent(wikiUrl)}`
     : null;
 
-  imageCache.set(model, imageUrl);
+  imageCache.set(cacheKey, imageUrl);
   return NextResponse.json({ url: imageUrl });
 }

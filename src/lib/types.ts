@@ -1,5 +1,6 @@
 export interface RawTrim {
   model_id: string;
+  model_make_id: string;
   model_name: string;
   model_trim: string;
   model_year: string;
@@ -16,6 +17,7 @@ export interface RawTrim {
 
 export interface NormalizedTrim {
   id: string;
+  brand: string;
   name: string;
   trim: string;
   year: number;
@@ -30,6 +32,7 @@ export interface NormalizedTrim {
 }
 
 export type AttributeKey =
+  | "brand"
   | "body"
   | "fuel"
   | "drive"
