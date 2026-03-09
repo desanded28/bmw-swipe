@@ -70,18 +70,18 @@ function ResultContent() {
       <main className="flex min-h-screen flex-col items-center px-6 pt-12 pb-8">
         <div className="animate-fade-in w-full max-w-sm text-center">
           <h1 className="mb-1 text-2xl font-semibold tracking-tight text-white">
-            Your Perfect BMW
+            Your Perfect Car
           </h1>
           <p className="mb-6 text-sm text-gray-400">Great choice.</p>
 
           <div className="overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.04]">
             <div className="h-56 overflow-hidden">
-              <CarImage modelName={chosen.name} />
+              <CarImage modelName={chosen.name} brand={chosen.brand} />
             </div>
 
             <div className="p-6 text-left">
               <h2 className="text-2xl font-semibold tracking-tight text-white">
-                BMW {chosen.name}
+                {chosen.brand} {chosen.name}
               </h2>
               <p className="mb-4 text-sm text-gray-400">
                 {chosen.year} {chosen.trim && `· ${chosen.trim}`}

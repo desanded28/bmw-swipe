@@ -5,12 +5,14 @@ import { fetchCarImageUrl } from "@/lib/images";
 
 interface CarImageProps {
   modelName: string;
+  brand?: string;
   className?: string;
   dim?: boolean;
 }
 
 export default function CarImage({
   modelName,
+  brand = "BMW",
   className = "",
   dim = false,
 }: CarImageProps) {
@@ -21,11 +23,11 @@ export default function CarImage({
   useEffect(() => {
     setLoading(true);
     setError(false);
-    fetchCarImageUrl(modelName).then((u) => {
+    fetchCarImageUrl(modelName, brand).then((u) => {
       setUrl(u);
       setLoading(false);
     });
-  }, [modelName]);
+  }, [modelName, brand]);
 
   if (loading) {
     return (
@@ -49,7 +51,7 @@ export default function CarImage({
     /* eslint-disable @next/next/no-img-element */
     <img
       src={url}
-      alt={`BMW ${modelName}`}
+      alt={`${brand} ${modelName}`}
       className={`h-full w-full object-cover ${dim ? "opacity-60" : ""} ${className}`}
       onError={() => setError(true)}
     />

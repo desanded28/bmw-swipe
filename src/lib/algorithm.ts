@@ -9,6 +9,7 @@ interface AttributeConfig {
 
 // Categorical rounds go first (one-time), then numeric rounds repeat as needed
 const CATEGORICAL_ATTRS: AttributeConfig[] = [
+  { key: "brand", type: "categorical", label: "Which brand?" },
   { key: "body", type: "categorical", label: "What body style?" },
   { key: "fuel", type: "categorical", label: "What fuel type?" },
   { key: "drive", type: "categorical", label: "What drivetrain?" },

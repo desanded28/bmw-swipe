@@ -35,7 +35,7 @@ export default function SwipePage() {
         setLoading(false);
       })
       .catch(() => {
-        setError("Failed to load BMW data. Please try again.");
+        setError("Failed to load car data. Please try again.");
         setLoading(false);
       });
   }, []);
@@ -103,7 +103,7 @@ export default function SwipePage() {
       <main className="flex min-h-screen flex-col items-center justify-center px-6">
         <div className="flex flex-col items-center gap-4">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/10 border-t-white/40" />
-          <p className="text-sm text-gray-500">Loading BMW models...</p>
+          <p className="text-sm text-gray-500">Loading car models...</p>
         </div>
       </main>
     );
@@ -143,6 +143,7 @@ export default function SwipePage() {
             value={currentRound.median}
             unit={currentRound.unit}
             sampleModel={cars[Math.floor(cars.length / 2)]?.name}
+            sampleBrand={cars[Math.floor(cars.length / 2)]?.brand}
             onSwipe={handleNumericSwipe}
           />
         )}

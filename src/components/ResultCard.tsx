@@ -106,13 +106,13 @@ export default function ResultCard({ car, onChoice }: ResultCardProps) {
 
         {/* Car image */}
         <div className="h-48 overflow-hidden">
-          <CarImage modelName={car.name} />
+          <CarImage modelName={car.name} brand={car.brand} />
         </div>
 
         {/* Car info */}
         <div className="p-5">
           <h2 className="text-xl font-semibold tracking-tight text-white">
-            BMW {car.name}
+            {car.brand} {car.name}
           </h2>
           <p className="mb-4 text-sm text-gray-400">
             {car.year} {car.trim && `· ${car.trim}`}

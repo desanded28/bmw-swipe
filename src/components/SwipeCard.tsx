@@ -8,6 +8,7 @@ interface SwipeCardProps {
   value: number;
   unit: string;
   sampleModel?: string;
+  sampleBrand?: string;
   onSwipe: (direction: "more" | "less") => void;
 }
 
@@ -16,6 +17,7 @@ export default function SwipeCard({
   value,
   unit,
   sampleModel,
+  sampleBrand,
   onSwipe,
 }: SwipeCardProps) {
   const cardRef = useRef<HTMLDivElement>(null);
@@ -116,7 +118,7 @@ export default function SwipeCard({
         {/* Car image */}
         {sampleModel && (
           <div className="h-36 overflow-hidden">
-            <CarImage modelName={sampleModel} dim />
+            <CarImage modelName={sampleModel} brand={sampleBrand} dim />
           </div>
         )}
 
