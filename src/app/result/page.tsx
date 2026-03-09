@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { Suspense, useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { NormalizedTrim } from "@/lib/types";
@@ -9,6 +9,18 @@ import CarImage from "@/components/CarImage";
 import ResultCard from "@/components/ResultCard";
 
 export default function ResultPage() {
+  return (
+    <Suspense fallback={
+      <main className="flex min-h-screen items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/10 border-t-white/40" />
+      </main>
+    }>
+      <ResultContent />
+    </Suspense>
+  );
+}
+
+function ResultContent() {
   const searchParams = useSearchParams();
   const [cars, setCars] = useState<NormalizedTrim[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
