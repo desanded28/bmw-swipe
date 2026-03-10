@@ -10,6 +10,7 @@ interface SwipeCardProps {
   sampleModel?: string;
   sampleBrand?: string;
   onSwipe: (direction: "more" | "less") => void;
+  onSkip?: () => void;
 }
 
 export default function SwipeCard({
@@ -19,6 +20,7 @@ export default function SwipeCard({
   sampleModel,
   sampleBrand,
   onSwipe,
+  onSkip,
 }: SwipeCardProps) {
   const cardRef = useRef<HTMLDivElement>(null);
   const [dragX, setDragX] = useState(0);
@@ -157,6 +159,15 @@ export default function SwipeCard({
           </svg>
         </button>
       </div>
+
+      {onSkip && (
+        <button
+          onClick={onSkip}
+          className="text-sm text-gray-500 hover:text-gray-300"
+        >
+          I don&#39;t know — skip
+        </button>
+      )}
     </div>
   );
 }

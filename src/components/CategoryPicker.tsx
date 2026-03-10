@@ -54,7 +54,9 @@ interface CategoryPickerProps {
   options: string[];
   attribute?: string;
   showImages?: boolean;
+  modelBrands?: Record<string, string>;
   onConfirm: (selected: string[]) => void;
+  onSkip?: () => void;
 }
 
 export default function CategoryPicker({
@@ -62,7 +64,9 @@ export default function CategoryPicker({
   options,
   attribute,
   showImages = false,
+  modelBrands = {},
   onConfirm,
+  onSkip,
 }: CategoryPickerProps) {
   const [selected, setSelected] = useState<string[]>([]);
   const isBodyStyle = attribute === "body";
@@ -90,6 +94,7 @@ export default function CategoryPicker({
           let photoBrand: string | undefined;
           if (showImages) {
             photoModel = option;
+            photoBrand = modelBrands[option];
           } else if (isBrand && BRAND_HERO[option]) {
             photoModel = BRAND_HERO[option].model;
             photoBrand = BRAND_HERO[option].brand;
@@ -158,13 +163,32 @@ export default function CategoryPicker({
         })}
       </div>
 
-      <button
-        onClick={() => onConfirm(selected)}
-        disabled={selected.length === 0}
-        className="w-full rounded-xl bg-[#1a7fd4] py-3 text-sm font-medium text-white shadow-md hover:bg-[#1570bd] disabled:opacity-40 disabled:hover:bg-[#1a7fd4]"
-      >
-        Confirm ({selected.length})
-      </button>
+      <div className="flex w-full gap-3">
+        <button
+          onClick={() => {
+            setSelected(selected.length === options.length ? [] : [...options]);
+          }}
+          className="rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-3 text-sm font-medium text-gray-300 hover:bg-white/[0.08]"
+        >
+          {selected.length === options.length ? "Clear" : "All"}
+        </button>
+        <button
+          onClick={() => onConfirm(selected)}
+          disabled={selected.length === 0}
+          className="flex-1 rounded-xl bg-[#1a7fd4] py-3 text-sm font-medium text-white shadow-md hover:bg-[#1570bd] disabled:opacity-40 disabled:hover:bg-[#1a7fd4]"
+        >
+          Confirm ({selected.length})
+        </button>
+      </div>
+
+      {onSkip && (
+        <button
+          onClick={onSkip}
+          className="text-sm text-gray-500 hover:text-gray-300"
+        >
+          I don&#39;t know — skip
+        </button>
+      )}
     </div>
   );
 }
