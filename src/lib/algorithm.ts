@@ -25,20 +25,18 @@ const NUMERIC_ATTRS: AttributeConfig[] = [
 ];
 
 /**
- * Get the next round. Categorical attributes are used once.
- * Numeric attributes cycle and can be reused as long as they still discriminate.
- * If many distinct models remain after numerics, offer a model name picker.
+ * Get the next round. Completed attributes (answered or skipped) are never reused.
+ * If many distinct models remain after all attributes, offer a model name picker.
  */
 export function getNextRound(
   cars: NormalizedTrim[],
-  completedCategorical: AttributeKey[],
-  numericPassCount: number
+  completedAttributes: AttributeKey[],
 ): SwipeRound | null {
   if (cars.length <= 3) return null;
 
   // Phase 1: remaining categorical rounds
   for (const attr of CATEGORICAL_ATTRS) {
-    if (completedCategorical.includes(attr.key)) continue;
+    if (completedAttributes.includes(attr.key)) continue;
     const values = cars.map((c) => String(c[attr.key as keyof NormalizedTrim]));
     const unique = [...new Set(values)].filter((v) => v !== "Other");
     if (unique.length <= 1) continue;
@@ -51,11 +49,9 @@ export function getNextRound(
     };
   }
 
-  // Phase 2: cycle through numeric attributes
-  const idx = numericPassCount % NUMERIC_ATTRS.length;
-  // Try each numeric attribute starting from current index
-  for (let i = 0; i < NUMERIC_ATTRS.length; i++) {
-    const attr = NUMERIC_ATTRS[(idx + i) % NUMERIC_ATTRS.length];
+  // Phase 2: remaining numeric attributes
+  for (const attr of NUMERIC_ATTRS) {
+    if (completedAttributes.includes(attr.key)) continue;
     const values = cars
       .map((c) => c[attr.key as keyof NormalizedTrim] as number | null)
       .filter((v): v is number => v !== null);

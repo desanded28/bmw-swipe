@@ -8,6 +8,24 @@ import { fetchBMWTrims } from "@/lib/carquery";
 import CarImage from "@/components/CarImage";
 import ResultCard from "@/components/ResultCard";
 
+function getConfiguratorUrl(brand: string): string | null {
+  switch (brand) {
+    case "BMW":
+      return "https://www.bmw.com/en/configurator.html";
+    case "Audi":
+      return "https://www.audi.com/en/models.html";
+    case "Porsche":
+      return "https://www.porsche.com/international/modelstart/";
+    default:
+      return null;
+  }
+}
+
+function getWikipediaUrl(brand: string, model: string): string {
+  const query = encodeURIComponent(`${brand} ${model}`);
+  return `https://en.wikipedia.org/wiki/Special:Search/${query}`;
+}
+
 export default function ResultPage() {
   return (
     <Suspense fallback={
@@ -111,7 +129,33 @@ function ResultContent() {
             </div>
           </div>
 
-          <div className="mt-8 flex gap-3">
+          {getConfiguratorUrl(chosen.brand) && (
+            <a
+              href={getConfiguratorUrl(chosen.brand)!}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-[#1a7fd4] py-3.5 text-sm font-medium text-white hover:bg-[#1570bd]"
+            >
+              Configure Your {chosen.brand}
+              <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                <path fillRule="evenodd" d="M4.25 5.5a.75.75 0 0 0-.75.75v8.5c0 .414.336.75.75.75h8.5a.75.75 0 0 0 .75-.75v-4a.75.75 0 0 1 1.5 0v4A2.25 2.25 0 0 1 12.75 17h-8.5A2.25 2.25 0 0 1 2 14.75v-8.5A2.25 2.25 0 0 1 4.25 4h5a.75.75 0 0 1 0 1.5h-5Zm7.5-3.25a.75.75 0 0 1 .75-.75h5a.75.75 0 0 1 .75.75v5a.75.75 0 0 1-1.5 0V4.06l-7.22 7.22a.75.75 0 1 1-1.06-1.06l7.22-7.22h-4.19a.75.75 0 0 1-.75-.75Z" clipRule="evenodd" />
+              </svg>
+            </a>
+          )}
+
+          <a
+            href={getWikipediaUrl(chosen.brand, chosen.name)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`${getConfiguratorUrl(chosen.brand) ? "mt-2" : "mt-6"} flex w-full items-center justify-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.04] py-3.5 text-sm font-medium text-gray-300 hover:bg-white/[0.08]`}
+          >
+            Learn More on Wikipedia
+            <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+              <path fillRule="evenodd" d="M4.25 5.5a.75.75 0 0 0-.75.75v8.5c0 .414.336.75.75.75h8.5a.75.75 0 0 0 .75-.75v-4a.75.75 0 0 1 1.5 0v4A2.25 2.25 0 0 1 12.75 17h-8.5A2.25 2.25 0 0 1 2 14.75v-8.5A2.25 2.25 0 0 1 4.25 4h5a.75.75 0 0 1 0 1.5h-5Zm7.5-3.25a.75.75 0 0 1 .75-.75h5a.75.75 0 0 1 .75.75v5a.75.75 0 0 1-1.5 0V4.06l-7.22 7.22a.75.75 0 1 1-1.06-1.06l7.22-7.22h-4.19a.75.75 0 0 1-.75-.75Z" clipRule="evenodd" />
+            </svg>
+          </a>
+
+          <div className="mt-3 flex gap-3">
             <Link
               href="/swipe"
               className="flex-1 rounded-xl border border-white/[0.08] bg-white/[0.04] py-3 text-sm font-medium text-gray-300 hover:bg-white/[0.08]"
@@ -120,7 +164,7 @@ function ResultContent() {
             </Link>
             <Link
               href="/"
-              className="flex-1 rounded-xl bg-[#1a7fd4] py-3 text-sm font-medium text-white hover:bg-[#1570bd]"
+              className="flex-1 rounded-xl border border-white/[0.08] bg-white/[0.04] py-3 text-sm font-medium text-gray-300 hover:bg-white/[0.08]"
             >
               Home
             </Link>

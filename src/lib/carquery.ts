@@ -44,6 +44,70 @@ const SPECIAL_CARS: NormalizedTrim[] = [
   { id: "rc-r8-lms-2022", brand: "Audi", name: "R8 LMS GT3", trim: "GT3 Race (5.2L V10)", year: 2022, body: "Race Car", fuel: "Petrol", drive: "RWD", doors: 2, powerPs: 585, engineCc: 5204, cylinders: 10, torqueNm: 550 },
   { id: "rc-s1-hoonitron-2022", brand: "Audi", name: "S1 Hoonitron", trim: "Electric Rally (Dual Motor)", year: 2022, body: "Race Car", fuel: "Electric", drive: "AWD", doors: 2, powerPs: 680, engineCc: 0, cylinders: 0, torqueNm: 1000 },
   { id: "rc-90-quattro-imsa-1989", brand: "Audi", name: "90 quattro IMSA GTO", trim: "IMSA Race (2.1L 5cyl Turbo)", year: 1989, body: "Race Car", fuel: "Petrol", drive: "AWD", doors: 2, powerPs: 720, engineCc: 2110, cylinders: 5, torqueNm: 650 },
+
+  // === 2023-2025 Models (not in CarQuery API) ===
+
+  // BMW 2023
+  { id: "new-bmw-i4-m50-2023", brand: "BMW", name: "i4 M50", trim: "Electric Gran Coupe (Dual Motor)", year: 2023, body: "Sedan", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 544, engineCc: 0, cylinders: 0, torqueNm: 795 },
+  { id: "new-bmw-i4-edrive40-2023", brand: "BMW", name: "i4 eDrive40", trim: "Electric Gran Coupe (Single Motor)", year: 2023, body: "Sedan", fuel: "Electric", drive: "RWD", doors: 4, powerPs: 340, engineCc: 0, cylinders: 0, torqueNm: 430 },
+  { id: "new-bmw-ix-xdrive50-2023", brand: "BMW", name: "iX xDrive50", trim: "Electric SUV (Dual Motor)", year: 2023, body: "SUV", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 523, engineCc: 0, cylinders: 0, torqueNm: 765 },
+  { id: "new-bmw-ix-m60-2023", brand: "BMW", name: "iX M60", trim: "Electric SUV (Dual Motor)", year: 2023, body: "SUV", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 619, engineCc: 0, cylinders: 0, torqueNm: 1100 },
+  { id: "new-bmw-i7-xdrive60-2023", brand: "BMW", name: "i7 xDrive60", trim: "Electric Sedan (Dual Motor)", year: 2023, body: "Sedan", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 544, engineCc: 0, cylinders: 0, torqueNm: 745 },
+  { id: "new-bmw-x1-2023", brand: "BMW", name: "X1", trim: "xDrive28i (2.0L 4cyl Turbo)", year: 2023, body: "SUV", fuel: "Petrol", drive: "AWD", doors: 4, powerPs: 241, engineCc: 1998, cylinders: 4, torqueNm: 400 },
+  { id: "new-bmw-x5-2023", brand: "BMW", name: "X5", trim: "xDrive40i (3.0L 6cyl Turbo)", year: 2023, body: "SUV", fuel: "Petrol", drive: "AWD", doors: 4, powerPs: 375, engineCc: 2998, cylinders: 6, torqueNm: 520 },
+  { id: "new-bmw-x7-2023", brand: "BMW", name: "X7", trim: "xDrive40i (3.0L 6cyl Turbo)", year: 2023, body: "SUV", fuel: "Petrol", drive: "AWD", doors: 4, powerPs: 375, engineCc: 2998, cylinders: 6, torqueNm: 520 },
+  { id: "new-bmw-m3-2023", brand: "BMW", name: "M3", trim: "Competition (3.0L 6cyl Twin-Turbo)", year: 2023, body: "Sedan", fuel: "Petrol", drive: "RWD", doors: 4, powerPs: 510, engineCc: 2993, cylinders: 6, torqueNm: 650 },
+  { id: "new-bmw-m3-touring-2023", brand: "BMW", name: "M3 Touring", trim: "Competition xDrive (3.0L 6cyl Twin-Turbo)", year: 2023, body: "Wagon", fuel: "Petrol", drive: "AWD", doors: 4, powerPs: 510, engineCc: 2993, cylinders: 6, torqueNm: 650 },
+  { id: "new-bmw-m4-2023", brand: "BMW", name: "M4", trim: "Competition (3.0L 6cyl Twin-Turbo)", year: 2023, body: "Coupe", fuel: "Petrol", drive: "RWD", doors: 2, powerPs: 510, engineCc: 2993, cylinders: 6, torqueNm: 650 },
+  { id: "new-bmw-m4-csl-2023", brand: "BMW", name: "M4 CSL", trim: "Lightweight (3.0L 6cyl Twin-Turbo)", year: 2023, body: "Coupe", fuel: "Petrol", drive: "RWD", doors: 2, powerPs: 550, engineCc: 2993, cylinders: 6, torqueNm: 650 },
+  { id: "new-bmw-330i-2023", brand: "BMW", name: "3 Series", trim: "330i (2.0L 4cyl Turbo)", year: 2023, body: "Sedan", fuel: "Petrol", drive: "RWD", doors: 4, powerPs: 255, engineCc: 1998, cylinders: 4, torqueNm: 400 },
+  { id: "new-bmw-m340i-2023", brand: "BMW", name: "3 Series", trim: "M340i xDrive (3.0L 6cyl Turbo)", year: 2023, body: "Sedan", fuel: "Petrol", drive: "AWD", doors: 4, powerPs: 382, engineCc: 2998, cylinders: 6, torqueNm: 500 },
+
+  // BMW 2024
+  { id: "new-bmw-m2-2024", brand: "BMW", name: "M2", trim: "Coupe (3.0L 6cyl Twin-Turbo)", year: 2024, body: "Coupe", fuel: "Petrol", drive: "RWD", doors: 2, powerPs: 473, engineCc: 2993, cylinders: 6, torqueNm: 550 },
+  { id: "new-bmw-m4-2024", brand: "BMW", name: "M4", trim: "Competition xDrive (3.0L 6cyl Twin-Turbo)", year: 2024, body: "Coupe", fuel: "Petrol", drive: "AWD", doors: 2, powerPs: 523, engineCc: 2993, cylinders: 6, torqueNm: 650 },
+  { id: "new-bmw-i5-m60-2024", brand: "BMW", name: "i5 M60", trim: "Electric Sedan (Dual Motor)", year: 2024, body: "Sedan", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 601, engineCc: 0, cylinders: 0, torqueNm: 820 },
+  { id: "new-bmw-i5-edrive40-2024", brand: "BMW", name: "i5 eDrive40", trim: "Electric Sedan (Single Motor)", year: 2024, body: "Sedan", fuel: "Electric", drive: "RWD", doors: 4, powerPs: 340, engineCc: 0, cylinders: 0, torqueNm: 430 },
+  { id: "new-bmw-x5-m60i-2024", brand: "BMW", name: "X5", trim: "M60i xDrive (4.4L V8 Twin-Turbo)", year: 2024, body: "SUV", fuel: "Petrol", drive: "AWD", doors: 4, powerPs: 530, engineCc: 4395, cylinders: 8, torqueNm: 750 },
+  { id: "new-bmw-x6-m60i-2024", brand: "BMW", name: "X6", trim: "M60i xDrive (4.4L V8 Twin-Turbo)", year: 2024, body: "SUV", fuel: "Petrol", drive: "AWD", doors: 4, powerPs: 530, engineCc: 4395, cylinders: 8, torqueNm: 750 },
+  { id: "new-bmw-ix2-2024", brand: "BMW", name: "iX2 xDrive30", trim: "Electric Coupe SUV (Dual Motor)", year: 2024, body: "SUV", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 313, engineCc: 0, cylinders: 0, torqueNm: 494 },
+  { id: "new-bmw-5series-2024", brand: "BMW", name: "5 Series", trim: "530i xDrive (2.0L 4cyl Turbo)", year: 2024, body: "Sedan", fuel: "Petrol", drive: "AWD", doors: 4, powerPs: 255, engineCc: 1998, cylinders: 4, torqueNm: 400 },
+  { id: "new-bmw-m5-2024", brand: "BMW", name: "M5", trim: "PHEV (4.4L V8 Twin-Turbo + Electric)", year: 2024, body: "Sedan", fuel: "Hybrid", drive: "AWD", doors: 4, powerPs: 717, engineCc: 4395, cylinders: 8, torqueNm: 1000 },
+
+  // BMW 2025
+  { id: "new-bmw-m2-cs-2025", brand: "BMW", name: "M2 CS", trim: "Coupe (3.0L 6cyl Twin-Turbo)", year: 2025, body: "Coupe", fuel: "Petrol", drive: "RWD", doors: 2, powerPs: 550, engineCc: 2993, cylinders: 6, torqueNm: 650 },
+  { id: "new-bmw-ix3-2025", brand: "BMW", name: "iX3", trim: "Electric SUV (Dual Motor)", year: 2025, body: "SUV", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 394, engineCc: 0, cylinders: 0, torqueNm: 640 },
+  { id: "new-bmw-x3-2025", brand: "BMW", name: "X3", trim: "30 xDrive (2.0L 4cyl Turbo Mild Hybrid)", year: 2025, body: "SUV", fuel: "Petrol", drive: "AWD", doors: 4, powerPs: 258, engineCc: 1998, cylinders: 4, torqueNm: 400 },
+  { id: "new-bmw-x3-m50-2025", brand: "BMW", name: "X3 M50", trim: "xDrive (3.0L 6cyl Turbo Mild Hybrid)", year: 2025, body: "SUV", fuel: "Petrol", drive: "AWD", doors: 4, powerPs: 398, engineCc: 2998, cylinders: 6, torqueNm: 580 },
+
+  // Porsche 2023-2025
+  { id: "new-porsche-taycan-2023", brand: "Porsche", name: "Taycan", trim: "Turbo S (Dual Motor)", year: 2023, body: "Sedan", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 761, engineCc: 0, cylinders: 0, torqueNm: 1050 },
+  { id: "new-porsche-taycan-4s-2023", brand: "Porsche", name: "Taycan", trim: "4S (Dual Motor)", year: 2023, body: "Sedan", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 530, engineCc: 0, cylinders: 0, torqueNm: 640 },
+  { id: "new-porsche-taycan-ct-2023", brand: "Porsche", name: "Taycan Cross Turismo", trim: "4S (Dual Motor)", year: 2023, body: "Wagon", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 490, engineCc: 0, cylinders: 0, torqueNm: 640 },
+  { id: "new-porsche-cayenne-2024", brand: "Porsche", name: "Cayenne", trim: "Coupe (3.0L V6 Turbo)", year: 2024, body: "SUV", fuel: "Petrol", drive: "AWD", doors: 4, powerPs: 353, engineCc: 2995, cylinders: 6, torqueNm: 500 },
+  { id: "new-porsche-cayenne-turbo-gt-2024", brand: "Porsche", name: "Cayenne Turbo GT", trim: "Coupe (4.0L V8 Twin-Turbo)", year: 2024, body: "SUV", fuel: "Petrol", drive: "AWD", doors: 4, powerPs: 659, engineCc: 3996, cylinders: 8, torqueNm: 850 },
+  { id: "new-porsche-macan-ev-2024", brand: "Porsche", name: "Macan Electric", trim: "4 (Dual Motor)", year: 2024, body: "SUV", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 408, engineCc: 0, cylinders: 0, torqueNm: 650 },
+  { id: "new-porsche-macan-turbo-ev-2024", brand: "Porsche", name: "Macan Turbo Electric", trim: "Turbo (Dual Motor)", year: 2024, body: "SUV", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 639, engineCc: 0, cylinders: 0, torqueNm: 1130 },
+  { id: "new-porsche-911-992-2024", brand: "Porsche", name: "911", trim: "Carrera (3.0L Flat-6 Twin-Turbo)", year: 2024, body: "Coupe", fuel: "Petrol", drive: "RWD", doors: 2, powerPs: 394, engineCc: 2981, cylinders: 6, torqueNm: 450 },
+  { id: "new-porsche-911-turbo-s-2024", brand: "Porsche", name: "911 Turbo S", trim: "Coupe (3.7L Flat-6 Twin-Turbo)", year: 2024, body: "Coupe", fuel: "Petrol", drive: "AWD", doors: 2, powerPs: 650, engineCc: 3745, cylinders: 6, torqueNm: 800 },
+  { id: "new-porsche-718-cayman-gt4rs-2024", brand: "Porsche", name: "718 Cayman GT4 RS", trim: "Coupe (4.0L Flat-6)", year: 2024, body: "Coupe", fuel: "Petrol", drive: "RWD", doors: 2, powerPs: 500, engineCc: 3996, cylinders: 6, torqueNm: 450 },
+  { id: "new-porsche-panamera-2024", brand: "Porsche", name: "Panamera", trim: "Turbo S E-Hybrid (4.0L V8 + Electric)", year: 2024, body: "Sedan", fuel: "Hybrid", drive: "AWD", doors: 4, powerPs: 748, engineCc: 3996, cylinders: 8, torqueNm: 1000 },
+  { id: "new-porsche-taycan-2025", brand: "Porsche", name: "Taycan", trim: "Turbo S (Dual Motor, Updated)", year: 2025, body: "Sedan", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 952, engineCc: 0, cylinders: 0, torqueNm: 1110 },
+  { id: "new-porsche-911-hybrid-2025", brand: "Porsche", name: "911 Carrera GTS", trim: "T-Hybrid (3.6L Flat-6 Turbo + Electric)", year: 2025, body: "Coupe", fuel: "Hybrid", drive: "AWD", doors: 2, powerPs: 541, engineCc: 3600, cylinders: 6, torqueNm: 610 },
+
+  // Audi 2023-2025
+  { id: "new-audi-etron-gt-2023", brand: "Audi", name: "e-tron GT", trim: "quattro (Dual Motor)", year: 2023, body: "Sedan", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 476, engineCc: 0, cylinders: 0, torqueNm: 630 },
+  { id: "new-audi-rs-etron-gt-2023", brand: "Audi", name: "RS e-tron GT", trim: "Performance (Dual Motor)", year: 2023, body: "Sedan", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 646, engineCc: 0, cylinders: 0, torqueNm: 830 },
+  { id: "new-audi-q8-etron-2023", brand: "Audi", name: "Q8 e-tron", trim: "55 quattro (Dual Motor)", year: 2023, body: "SUV", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 408, engineCc: 0, cylinders: 0, torqueNm: 664 },
+  { id: "new-audi-q4-etron-2023", brand: "Audi", name: "Q4 e-tron", trim: "50 quattro (Dual Motor)", year: 2023, body: "SUV", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 299, engineCc: 0, cylinders: 0, torqueNm: 460 },
+  { id: "new-audi-rs3-2023", brand: "Audi", name: "RS 3", trim: "Sedan (2.5L 5cyl Turbo)", year: 2023, body: "Sedan", fuel: "Petrol", drive: "AWD", doors: 4, powerPs: 401, engineCc: 2480, cylinders: 5, torqueNm: 500 },
+  { id: "new-audi-rs6-avant-2024", brand: "Audi", name: "RS 6 Avant", trim: "Performance (4.0L V8 Twin-Turbo)", year: 2024, body: "Wagon", fuel: "Petrol", drive: "AWD", doors: 4, powerPs: 630, engineCc: 3996, cylinders: 8, torqueNm: 850 },
+  { id: "new-audi-rs7-2024", brand: "Audi", name: "RS 7", trim: "Performance (4.0L V8 Twin-Turbo)", year: 2024, body: "Sedan", fuel: "Petrol", drive: "AWD", doors: 4, powerPs: 630, engineCc: 3996, cylinders: 8, torqueNm: 850 },
+  { id: "new-audi-q6-etron-2024", brand: "Audi", name: "Q6 e-tron", trim: "quattro (Dual Motor)", year: 2024, body: "SUV", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 382, engineCc: 0, cylinders: 0, torqueNm: 560 },
+  { id: "new-audi-a5-2025", brand: "Audi", name: "A5", trim: "Sedan (2.0L 4cyl Turbo MHEV)", year: 2025, body: "Sedan", fuel: "Petrol", drive: "FWD", doors: 4, powerPs: 204, engineCc: 1984, cylinders: 4, torqueNm: 340 },
+  { id: "new-audi-s5-2025", brand: "Audi", name: "S5", trim: "Sedan (3.0L V6 Turbo MHEV)", year: 2025, body: "Sedan", fuel: "Petrol", drive: "AWD", doors: 4, powerPs: 367, engineCc: 2995, cylinders: 6, torqueNm: 550 },
+  { id: "new-audi-rs-etron-gt-2025", brand: "Audi", name: "RS e-tron GT", trim: "Performance (Tri Motor)", year: 2025, body: "Sedan", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 925, engineCc: 0, cylinders: 0, torqueNm: 1027 },
+  { id: "new-audi-a6-etron-2025", brand: "Audi", name: "A6 e-tron", trim: "quattro (Dual Motor)", year: 2025, body: "Sedan", fuel: "Electric", drive: "AWD", doors: 4, powerPs: 462, engineCc: 0, cylinders: 0, torqueNm: 580 },
 ];
 
 const BRAND_MAP: Record<string, string> = {

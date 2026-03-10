@@ -40,9 +40,11 @@ export default function CarImage({
   if (!url || error) {
     return (
       <div
-        className={`flex h-full items-center justify-center text-4xl text-gray-600 ${className}`}
+        className={`flex h-full items-center justify-center bg-white/[0.02] ${className}`}
       >
-        🚗
+        <span className="text-xs font-medium tracking-wide text-gray-600">
+          {brand} {modelName}
+        </span>
       </div>
     );
   }
@@ -52,7 +54,8 @@ export default function CarImage({
     <img
       src={url}
       alt={`${brand} ${modelName}`}
-      className={`h-full w-full object-cover ${dim ? "opacity-60" : ""} ${className}`}
+      draggable={false}
+      className={`pointer-events-none h-full w-full select-none object-cover ${dim ? "opacity-60" : ""} ${className}`}
       onError={() => setError(true)}
     />
   );

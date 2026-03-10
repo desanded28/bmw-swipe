@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { NormalizedTrim, SwipeRound, AttributeKey } from "@/lib/types";
 import { fetchBMWTrims } from "@/lib/carquery";
@@ -17,8 +17,7 @@ export default function SwipePage() {
   const router = useRouter();
   const [cars, setCars] = useState<NormalizedTrim[]>([]);
   const [totalCars, setTotalCars] = useState(0);
-  const [completedCategorical, setCompletedCategorical] = useState<AttributeKey[]>([]);
-  const [numericPassCount, setNumericPassCount] = useState(0);
+  const [completedAttributes, setCompletedAttributes] = useState<AttributeKey[]>([]);
   const [roundNumber, setRoundNumber] = useState(1);
   const [currentRound, setCurrentRound] = useState<SwipeRound | null>(null);
   const [loading, setLoading] = useState(true);
@@ -30,7 +29,7 @@ export default function SwipePage() {
       .then((trims) => {
         setCars(trims);
         setTotalCars(trims.length);
-        const round = getNextRound(trims, [], 0);
+        const round = getNextRound(trims, []);
         setCurrentRound(round);
         setLoading(false);
       })
@@ -41,15 +40,11 @@ export default function SwipePage() {
   }, []);
 
   const advance = useCallback(
-    (newCars: NormalizedTrim[], attribute: AttributeKey, wasNumeric: boolean) => {
-      const newCategorical = wasNumeric
-        ? completedCategorical
-        : [...completedCategorical, attribute];
-      const newNumericCount = wasNumeric ? numericPassCount + 1 : numericPassCount;
+    (newCars: NormalizedTrim[], attribute: AttributeKey) => {
+      const newCompleted = [...completedAttributes, attribute];
 
       setCars(newCars);
-      setCompletedCategorical(newCategorical);
-      setNumericPassCount(newNumericCount);
+      setCompletedAttributes(newCompleted);
       setRoundNumber((r) => r + 1);
       setRoundKey((k) => k + 1);
 
@@ -59,7 +54,7 @@ export default function SwipePage() {
         return;
       }
 
-      const next = getNextRound(newCars, newCategorical, newNumericCount);
+      const next = getNextRound(newCars, newCompleted);
       if (!next) {
         const ids = newCars.map((c) => c.id).join(",");
         router.push(`/result?ids=${encodeURIComponent(ids)}`);
@@ -68,7 +63,7 @@ export default function SwipePage() {
 
       setCurrentRound(next);
     },
-    [completedCategorical, numericPassCount, router]
+    [completedAttributes, router]
   );
 
   const handleNumericSwipe = useCallback(
@@ -80,7 +75,7 @@ export default function SwipePage() {
         direction,
         currentRound.median
       );
-      advance(filtered, currentRound.attribute, true);
+      advance(filtered, currentRound.attribute);
     },
     [cars, currentRound, advance]
   );
@@ -93,10 +88,34 @@ export default function SwipePage() {
         currentRound.attribute,
         selected
       );
-      advance(filtered, currentRound.attribute, false);
+      advance(filtered, currentRound.attribute);
     },
     [cars, currentRound, advance]
   );
+
+  const handleSkip = useCallback(() => {
+    if (!currentRound) return;
+    // Skip without filtering — just mark attribute as done
+    const newCompleted = [...completedAttributes, currentRound.attribute];
+
+    setCompletedAttributes(newCompleted);
+    setRoundNumber((r) => r + 1);
+    setRoundKey((k) => k + 1);
+
+    const next = getNextRound(cars, newCompleted);
+    if (!next || cars.length <= 3) {
+      const ids = cars.map((c) => c.id).join(",");
+      router.push(`/result?ids=${encodeURIComponent(ids)}`);
+      return;
+    }
+    setCurrentRound(next);
+  }, [currentRound, cars, completedAttributes, router]);
+
+  const modelBrands = useMemo(() => {
+    const map: Record<string, string> = {};
+    cars.forEach((c) => { if (!map[c.name]) map[c.name] = c.brand; });
+    return map;
+  }, [cars]);
 
   if (loading) {
     return (
@@ -145,6 +164,7 @@ export default function SwipePage() {
             sampleModel={cars[Math.floor(cars.length / 2)]?.name}
             sampleBrand={cars[Math.floor(cars.length / 2)]?.brand}
             onSwipe={handleNumericSwipe}
+            onSkip={handleSkip}
           />
         )}
         {currentRound?.type === "categorical" && (
@@ -153,7 +173,9 @@ export default function SwipePage() {
             options={currentRound.options}
             attribute={currentRound.attribute}
             showImages={currentRound.attribute === "name"}
+            modelBrands={modelBrands}
             onConfirm={handleCategoricalConfirm}
+            onSkip={handleSkip}
           />
         )}
       </div>
