@@ -27,7 +27,7 @@ export default function SwipeCard({
   const [isDragging, setIsDragging] = useState(false);
   const [animClass, setAnimClass] = useState("animate-card-enter");
   const startX = useRef(0);
-  const threshold = 80;
+  const threshold = 80;  // px of drag before we count it as a swipe
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -54,7 +54,7 @@ export default function SwipeCard({
     if (Math.abs(dragX) > threshold) {
       const dir = dragX > 0 ? "more" : "less";
       setAnimClass(dir === "more" ? "swipe-right" : "swipe-left");
-      setTimeout(() => onSwipe(dir), 300);
+      setTimeout(() => onSwipe(dir), 300);  // wait for exit animation to finish
     } else {
       setDragX(0);
     }
@@ -65,6 +65,7 @@ export default function SwipeCard({
     setTimeout(() => onSwipe(dir), 300);
   };
 
+  // tilt the card slightly as you drag — 0.06 keeps it subtle
   const rotation = isDragging ? dragX * 0.06 : 0;
   const opacity = Math.max(0, 1 - Math.abs(dragX) / 300);
 

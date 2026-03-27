@@ -48,6 +48,7 @@ export default function SwipePage() {
       setRoundNumber((r) => r + 1);
       setRoundKey((k) => k + 1);
 
+      // once we're down to 3 or fewer, just show results — no point asking more questions
       if (newCars.length <= 3) {
         const ids = newCars.map((c) => c.id).join(",");
         router.push(`/result?ids=${encodeURIComponent(ids)}`);
@@ -95,7 +96,7 @@ export default function SwipePage() {
 
   const handleSkip = useCallback(() => {
     if (!currentRound) return;
-    // Skip without filtering — just mark attribute as done
+    // skip = "I don't care about this" — move on without narrowing the pool
     const newCompleted = [...completedAttributes, currentRound.attribute];
 
     setCompletedAttributes(newCompleted);
@@ -111,6 +112,7 @@ export default function SwipePage() {
     setCurrentRound(next);
   }, [currentRound, cars, completedAttributes, router]);
 
+  // build a quick lookup so CategoryPicker can show the right brand logo per model
   const modelBrands = useMemo(() => {
     const map: Record<string, string> = {};
     cars.forEach((c) => { if (!map[c.name]) map[c.name] = c.brand; });
