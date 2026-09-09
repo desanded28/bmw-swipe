@@ -33,6 +33,13 @@ export default function Home() {
           Start Swiping
         </Link>
 
+        <Link
+          href="/engine"
+          className="mt-3 inline-block w-full rounded-xl border border-white/[0.08] py-3 text-sm font-medium text-gray-300 hover:bg-white/[0.06]"
+        >
+          Explore a 3D V8 engine
+        </Link>
+
         <div className="animate-fade-in-delayed mt-10 flex justify-center gap-6 text-xs text-gray-500">
           <span>BMW</span>
           <span className="text-gray-600">·</span>
