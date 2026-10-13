@@ -295,6 +295,7 @@ export function evaluateSlot(ctx: AvailabilityContext, input: EvaluateInput): Ev
     );
 
   if (input.roomId) {
+    if (!locationRooms.some((r) => r.id === input.roomId)) return { ok: false, reason: "no_room" };
     return roomFree(input.roomId) ? { ok: true, roomId: input.roomId } : { ok: false, reason: "no_room" };
   }
   const room = locationRooms.find((r) => roomFree(r.id));

@@ -1,6 +1,6 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { organizations, waitlist } from "@/db/schema";
+import { locations, organizations, practitioners, services, waitlist } from "@/db/schema";
 import { apiError, handleApiError, json, preflight, rateLimit } from "@/lib/api";
 import { upsertPatient } from "@/lib/booking";
 import { newId } from "@/lib/ids";
@@ -20,6 +20,23 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
     if (input.website) return apiError(422, "validation_error", "Invalid submission.");
     if (input.latestDate < input.earliestDate) return apiError(422, "validation_error", "The date range is reversed.");
 
+    const [service] = await db
+      .select({ id: services.id })
+      .from(services)
+      .where(and(eq(services.id, input.serviceId), eq(services.orgId, org.id), eq(services.active, true), eq(services.onlineBookable, true)));
+    if (!service) return apiError(422, "validation_error", "Unknown service.");
+    if (input.practitionerId) {
+      const [p] = await db
+        .select({ id: practitioners.id })
+        .from(practitioners)
+        .where(and(eq(practitioners.id, input.practitionerId), eq(practitioners.orgId, org.id)));
+      if (!p) return apiError(422, "validation_error", "Unknown practitioner.");
+    }
+    if (input.locationId) {
+      const [l] = await db.select({ id: locations.id }).from(locations).where(and(eq(locations.id, input.locationId), eq(locations.orgId, org.id)));
+      if (!l) return apiError(422, "validation_error", "Unknown office.");
+    }
+
     const id = newId();
     await db.transaction(async (tx) => {
       const { patient } = await upsertPatient(tx, org.id, {
@@ -27,7 +44,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
         email: input.patient.email || null,
         phone: input.patient.phone || null,
         birthDate: input.patient.birthDate || null,
-      });
+      }, "public");
       await tx.insert(waitlist).values({
         id,
         orgId: org.id,

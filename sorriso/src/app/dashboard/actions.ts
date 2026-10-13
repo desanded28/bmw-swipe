@@ -709,7 +709,7 @@ export async function simulateReply(phone: string, body: string, channel: "sms" 
       .from(patients)
       .where(and(eq(patients.orgId, s.org.id), eq(patients.phone, normalized)));
     if (!p) return fail("No patient of this practice has that number.");
-    const res = await handleInboundMessage({ channel, from: normalized, body, replyMode: "deliver" });
+    const res = await handleInboundMessage({ channel, from: normalized, body, replyMode: "deliver", orgId: s.org.id });
     return ok(`Understood as “${res.intent}”.${res.reply ? ` Auto-reply: ${res.reply}` : ""}`);
   });
 }

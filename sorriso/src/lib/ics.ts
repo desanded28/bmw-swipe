@@ -18,7 +18,7 @@ function stamp(d: Date): string {
 }
 
 function escapeText(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/;/g, "\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+  return value.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r\n|\r|\n/g, "\\n");
 }
 
 /** Fold lines longer than 75 octets (RFC 5545 §3.1). */

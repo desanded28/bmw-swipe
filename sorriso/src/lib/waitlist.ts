@@ -47,6 +47,8 @@ export async function offerFreedSlot(slot: FreedSlot, now = new Date()): Promise
   const [service] = await db.select().from(services).where(eq(services.id, slot.serviceId));
   const [practitioner] = await db.select().from(practitioners).where(eq(practitioners.id, slot.practitionerId));
   if (!location || !service || !practitioner) return 0;
+  // The offer links to online booking, so only offer what patients can book online.
+  if (!service.active || !service.onlineBookable || !practitioner.active) return 0;
 
   const local = zonedParts(slot.startsAt, location.timezone);
   const partOfDay = local.minutes < 13 * 60 ? "morning" : "afternoon";

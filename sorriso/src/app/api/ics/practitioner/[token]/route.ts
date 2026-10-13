@@ -23,7 +23,14 @@ export async function GET(_req: Request, { params }: { params: Promise<{ token: 
     .innerJoin(patients, eq(patients.id, appointments.patientId))
     .innerJoin(services, eq(services.id, appointments.serviceId))
     .innerJoin(locations, eq(locations.id, appointments.locationId))
-    .where(and(eq(appointments.practitionerId, p.id), gte(appointments.startsAt, since), ne(appointments.status, "cancelled")));
+    .where(
+      and(
+        eq(appointments.orgId, p.orgId),
+        eq(appointments.practitionerId, p.id),
+        gte(appointments.startsAt, since),
+        ne(appointments.status, "cancelled"),
+      ),
+    );
 
   const ics = buildIcs({
     name: `${practitionerName(p)} — ${org?.name ?? ""}`,

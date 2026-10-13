@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { appointments, patients, reminders, waitlist, type Appointment, type Channel, type Patient } from "@/db/schema";
 import {
@@ -9,7 +9,7 @@ import {
   templateData,
   type AppointmentDetails,
 } from "./appointments";
-import { evaluateSlot, loadAvailabilityContext, REJECTION_LABELS, type SlotRejection } from "./availability";
+import { evaluateSlot, loadAvailabilityContext, REJECTION_LABELS, type AvailabilityContext, type SlotRejection } from "./availability";
 import { newId, newToken } from "./ids";
 import { deliver } from "./messaging";
 import { templates } from "./messaging/templates";
@@ -42,33 +42,46 @@ export type NewPatientInput = {
 
 /**
  * Find the patient's existing record in this practice or create one.
- * Matches on (email or phone) AND first name, so a parent booking for their
- * child with the same contact details still gets two separate records.
+ *
+ * - "staff" (front desk, partner API): matches on (email or phone) AND first name and
+ *   updates the record with what was entered.
+ * - "public" (website, widget, waitlist — unauthenticated): an existing record is reused
+ *   only if EVERY identifier given matches it exactly, and it is never modified. Otherwise
+ *   a new record is created. This stops anyone who knows a patient's name and number from
+ *   redirecting that patient's reminders (and manage links) to their own email.
+ *
+ * Either way a parent booking for their child with the same contact details gets a
+ * separate record, because the first name differs.
  */
-export async function upsertPatient(tx: Tx, orgId: string, input: NewPatientInput): Promise<{ patient: Patient; created: boolean }> {
+export async function upsertPatient(
+  tx: Tx,
+  orgId: string,
+  input: NewPatientInput,
+  mode: "public" | "staff" = "public",
+): Promise<{ patient: Patient; created: boolean }> {
   const email = input.email?.trim().toLowerCase() || null;
   const phone = normalizePhone(input.phone);
   const firstName = input.firstName.trim();
   const lastName = input.lastName.trim();
   if (!email && !phone) throw new BookingError("invalid", "An email address or phone number is required.");
 
+  const contactMatch =
+    mode === "public"
+      ? and(email ? eq(patients.email, email) : undefined, phone ? eq(patients.phone, phone) : undefined)
+      : email && phone
+        ? sql`(${patients.email} = ${email} OR ${patients.phone} = ${phone})`
+        : email
+          ? eq(patients.email, email)
+          : eq(patients.phone, phone!);
+
   const candidates = await tx
     .select()
     .from(patients)
-    .where(
-      and(
-        eq(patients.orgId, orgId),
-        sql`lower(${patients.firstName}) = ${firstName.toLowerCase()}`,
-        email && phone
-          ? sql`(${patients.email} = ${email} OR ${patients.phone} = ${phone})`
-          : email
-            ? eq(patients.email, email)
-            : eq(patients.phone, phone!),
-      ),
-    )
+    .where(and(eq(patients.orgId, orgId), sql`lower(${patients.firstName}) = ${firstName.toLowerCase()}`, contactMatch))
     .limit(1);
 
   const existing = candidates[0];
+  if (existing && mode === "public") return { patient: existing, created: false };
   if (existing) {
     const [updated] = await tx
       .update(patients)
@@ -104,6 +117,24 @@ export async function upsertPatient(tx: Tx, orgId: string, input: NewPatientInpu
     })
     .returning();
   return { patient: created, created: true };
+}
+
+/** Practitioner and chair must belong to this practice / office — `force` never bypasses this. */
+function assertBookableResources(
+  ctx: AvailabilityContext,
+  practitionerId: string,
+  locationId: string,
+  roomId: string | null | undefined,
+  online: boolean,
+) {
+  // Online, ctx only holds practitioners offering this service; for staff it holds the whole active team.
+  if (!ctx.practitioners.some((p) => p.id === practitionerId)) {
+    throw online
+      ? new BookingError("not_offered", REJECTION_LABELS.not_offered)
+      : new BookingError("not_found", "Practitioner not found (or not active) in this practice.");
+  }
+  if (roomId && !(ctx.roomsByLocation.get(locationId) ?? []).some((r) => r.id === roomId))
+    throw new BookingError("not_found", "That chair isn't at this office.");
 }
 
 export type CreateAppointmentInput = {
@@ -152,6 +183,7 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
     if (input.online && (!ctx.service.onlineBookable || !ctx.service.active))
       throw new BookingError("not_allowed", "This service can't be booked online.");
 
+    assertBookableResources(ctx, input.practitionerId, input.locationId, input.roomId, input.online);
     const duration = input.durationMinutes ?? ctx.service.durationMinutes;
     const evaluation = evaluateSlot(ctx, {
       practitionerId: input.practitionerId,
@@ -178,7 +210,7 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
       if (!p) throw new BookingError("not_found", "Patient not found.");
       patient = p;
     } else {
-      const res = await upsertPatient(tx, input.orgId, input.patient);
+      const res = await upsertPatient(tx, input.orgId, input.patient, input.online ? "public" : "staff");
       patient = res.patient;
       createdPatient = res.created;
     }
@@ -359,6 +391,7 @@ export async function rescheduleAppointment(
       tx,
     );
     if (!ctx || !ctx.locations.has(locationId)) throw new BookingError("not_found", "Location not found.");
+    assertBookableResources(ctx, practitionerId, locationId, opts.roomId, online);
     // Keep the same chair if it's still free at the same office.
     const keepRoom = locationId === before.appointment.locationId ? before.appointment.roomId : null;
     let evaluation = evaluateSlot(ctx, {
@@ -404,8 +437,9 @@ export async function rescheduleAppointment(
         needsAttention: false,
         updatedAt: now,
       })
-      .where(eq(appointments.id, appointmentId))
+      .where(and(eq(appointments.id, appointmentId), inArray(appointments.status, ["scheduled", "requested"])))
       .returning();
+    if (!updated) throw new BookingError("not_allowed", "This appointment was cancelled or completed in the meantime.");
     await scheduleReminders(tx, updated, ctx.settings, now);
   });
 
@@ -472,7 +506,13 @@ export async function setOutcome(appointmentId: string, outcome: "completed" | "
   if (before.appointment.status === outcome) return before;
 
   await db.transaction(async (tx) => {
-    await tx.update(appointments).set({ status: outcome, updatedAt: now }).where(eq(appointments.id, appointmentId));
+    // Guard on the status we read: a double-click can't count a no-show twice.
+    const [row] = await tx
+      .update(appointments)
+      .set({ status: outcome, updatedAt: now })
+      .where(and(eq(appointments.id, appointmentId), eq(appointments.status, before.appointment.status)))
+      .returning();
+    if (!row) return;
     const delta = (outcome === "no_show" ? 1 : 0) - (before.appointment.status === "no_show" ? 1 : 0);
     if (delta !== 0) {
       await tx
@@ -480,8 +520,14 @@ export async function setOutcome(appointmentId: string, outcome: "completed" | "
         .set({ noShowCount: sql`max(0, ${patients.noShowCount} + ${delta})` })
         .where(eq(patients.id, before.patient.id));
     }
-    if (outcome !== "scheduled") await cancelPendingReminders(tx, appointmentId, ["reminder"]);
     const settings = resolveSettings(before.org.settings);
+    if (outcome === "scheduled") {
+      // Undoing a mistaken outcome: bring back the reminders, drop the review request.
+      await cancelPendingReminders(tx, appointmentId, ["review_request"]);
+      await scheduleReminders(tx, row, settings, now);
+      return;
+    }
+    await cancelPendingReminders(tx, appointmentId, ["reminder"]);
     if (outcome === "completed" && settings.reminders.requestReviews) {
       // Give the patient a couple of hours after the visit.
       const at = new Date(Math.max(now.getTime(), before.appointment.endsAt.getTime()) + 2 * 3_600_000);

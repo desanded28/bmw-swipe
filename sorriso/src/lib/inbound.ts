@@ -64,13 +64,20 @@ export async function handleInboundMessage(input: {
   body: string;
   providerId?: string | null;
   replyMode: "return" | "deliver";
+  /** Only consider this practice's patients (the dashboard simulator). Real webhooks look across practices. */
+  orgId?: string;
   now?: Date;
 }): Promise<InboundResult> {
   const now = input.now ?? new Date();
   const phone = normalizePhone(input.from);
   const intent = parseIntent(input.body);
 
-  const patientRows = phone ? await db.select().from(patients).where(eq(patients.phone, phone)) : [];
+  const patientRows = phone
+    ? await db
+        .select()
+        .from(patients)
+        .where(and(eq(patients.phone, phone), input.orgId ? eq(patients.orgId, input.orgId) : undefined))
+    : [];
   const patientIds = patientRows.map((p) => p.id);
 
   // Which visit are they answering? The one we most recently texted them about;
