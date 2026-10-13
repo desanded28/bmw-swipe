@@ -1,0 +1,44 @@
+{
+  "name": "sorriso",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --port 3010",
+    "build": "next build",
+    "start": "next start --port 3010",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:seed": "tsx scripts/seed.ts",
+    "db:reset": "tsx scripts/reset.ts",
+    "reminders": "tsx scripts/run-reminders.ts"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.15.15",
+    "clsx": "^2.1.1",
+    "drizzle-orm": "^0.45.4",
+    "lucide-react": "^1.56.0",
+    "next": "^16.1.6",
+    "nodemailer": "^7.0.13",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "server-only": "^0.0.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^22.20.5",
+    "@types/nodemailer": "^8.0.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "drizzle-kit": "^0.31.11",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.1.6",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}

@@ -1,5 +1,7 @@
 # BMW Swipe
 
+> **Also in this repo:** [`sorriso/`](sorriso/) — a separate app: online booking, a multi-office calendar and two-way SMS/WhatsApp/email reminders for dental practices. See its README.
+
 Tinder-style car finder for BMW. Swipe through cars to find your match based on specs, price range, and preferences.
 
 ## How it works
