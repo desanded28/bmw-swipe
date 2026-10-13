@@ -4,7 +4,6 @@ import type { Locale } from "@/i18n/config";
 import { encryptedText } from "./encrypted";
 import {
   ACTOR_RELATIONS,
-  API_SCOPES,
   APPOINTMENT_STATUSES,
   AUDIT_ACTOR_TYPES,
   AUTH_TOKEN_KINDS,

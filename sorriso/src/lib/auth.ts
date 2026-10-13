@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { cache } from "react";
 import { db } from "@/db";
 import { memberships, organizations, sessions, users } from "@/db/schema";
+import { audit } from "./audit";
 import { newToken, sha256 } from "./ids";
 
 const COOKIE = "sorriso_session";
@@ -53,7 +54,14 @@ export const getSession = cache(async () => {
   const active = orgs.find((o) => o.org.id === row.session.orgId) ?? orgs.find((o) => o.role === "owner") ?? orgs[0] ?? null;
   return {
     sessionId: row.session.id,
-    user: { id: row.user.id, name: row.user.name, email: row.user.email },
+    user: {
+      id: row.user.id,
+      name: row.user.name,
+      email: row.user.email,
+      isPlatformAdmin: row.user.isPlatformAdmin,
+      // Their own dashboard language (null = not chosen), read by getStaffLocale().
+      locale: row.user.locale,
+    },
     org: active?.org ?? null,
     role: active?.role ?? null,
     orgs,
@@ -69,4 +77,31 @@ export async function requireStaff(roles?: Role[]) {
   return { ...session, org: session.org, role: session.role };
 }
 
+/** A signed-in staff member with an active practice (org and role are non-null). */
+export type StaffSession = Awaited<ReturnType<typeof requireStaff>>;
+
 export const MANAGERS: Role[] = ["owner", "admin"];
+
+/**
+ * Re-authentication for sensitive operations (exports, privacy settings, erasure).
+ *
+ * Stub until MFA lands (WP6): always passes. The final version throws / redirects with
+ * code step_up_required when the org requires MFA and the session's mfaVerifiedAt is older
+ * than `maxAgeMinutes`. Call it already wherever step-up will be required.
+ */
+export async function requireStepUp(maxAgeMinutes = 10): Promise<void> {
+  void maxAgeMinutes;
+}
+
+// Once per request: a layout and its page may both call requirePlatformAdmin().
+const auditPlatformAccess = cache((userId: string) =>
+  audit({ orgId: null, actor: { type: "platform_admin", id: userId }, action: "platform.access" }),
+);
+
+/** For /dashboard/platform/**: Sorriso staff only (users.isPlatformAdmin). Every access is audited. */
+export async function requirePlatformAdmin(): Promise<StaffSession> {
+  const s = await requireStaff();
+  if (!s.user.isPlatformAdmin) redirect("/dashboard?denied=1");
+  await auditPlatformAccess(s.user.id);
+  return s;
+}

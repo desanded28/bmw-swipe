@@ -32,6 +32,7 @@ import { absoluteUrl } from "@/lib/config";
 import { sha256Hex } from "@/lib/crypto";
 import { appointmentLinks, getOrgAppointmentDetails } from "@/lib/appointments";
 import { MANAGERS, requireStaff, type Role } from "@/lib/auth";
+import { logError } from "@/lib/log";
 import {
   approveRequest,
   BookingError,
@@ -73,7 +74,7 @@ async function guard(fn: () => Promise<ActionResult>): Promise<ActionResult> {
     if (err instanceof z.ZodError) return fail(err.issues[0]?.message ?? "Invalid input");
     // Let Next.js redirects / notFound propagate.
     if (err && typeof err === "object" && "digest" in err) throw err;
-    console.error("[dashboard action]", err);
+    logError("dashboard action", err);
     return fail("Something went wrong.");
   }
 }

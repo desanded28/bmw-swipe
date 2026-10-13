@@ -1,6 +1,7 @@
 import { db, type Tx } from "@/db";
 import { messages, type Channel, type Message } from "@/db/schema";
 import { newId } from "../ids";
+import { logError, logInfo } from "../log";
 import { sendEmail, sendSms, sendWhatsApp, type Attachment, type SendResult } from "./providers";
 
 export type OutboundMessage = {
@@ -16,6 +17,11 @@ export type OutboundMessage = {
   replyTo?: string | null;
   attachments?: Attachment[];
   whatsappVariables?: Record<string, string>;
+  /**
+   * Stored in the message log instead of `text` (and the HTML part is not stored), for
+   * messages carrying a secret such as a one-time code: the log must not hold it in clear.
+   */
+  logBody?: string;
 };
 
 /**
@@ -55,17 +61,16 @@ export async function deliver(msg: OutboundMessage, tx: Tx = db): Promise<Messag
     to: msg.to,
     from: result?.from ?? null,
     subject: msg.subject ?? null,
-    body: msg.text,
-    html: msg.html ?? null,
+    body: msg.logBody ?? msg.text,
+    html: msg.logBody === undefined ? (msg.html ?? null) : null,
     status: result ? result.status : ("failed" as const),
     provider: result?.provider ?? (msg.channel === "email" ? "smtp" : "twilio"),
     providerId: result?.providerId ?? null,
     error,
   };
   const [saved] = await tx.insert(messages).values(row).returning();
-  if (error) console.error(`[messaging] ${msg.channel} to ${msg.to} failed: ${error}`);
-  else if (result?.status === "captured")
-    console.info(`[messaging] captured ${msg.channel} to ${msg.to}${msg.subject ? ` — ${msg.subject}` : ""}`);
+  if (error) logError("messaging", error, { channel: msg.channel, messageId: saved.id });
+  else if (result?.status === "captured") logInfo("messaging", "captured", { channel: msg.channel, messageId: saved.id });
   return saved;
 }
 

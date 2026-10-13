@@ -13,7 +13,10 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "db:seed": "tsx scripts/seed.ts",
     "db:reset": "tsx scripts/reset.ts",
-    "reminders": "tsx scripts/run-reminders.ts"
+    "reminders": "tsx scripts/run-reminders.ts",
+    "i18n:check": "I18N_STRICT=1 vitest run src/i18n",
+    "i18n:report": "tsx scripts/i18n-report.ts",
+    "gen:calendar": "tsx scripts/gen-calendar-names.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.15.15",

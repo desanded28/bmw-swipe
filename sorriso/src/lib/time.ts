@@ -7,6 +7,10 @@
  *   - instants are JS Dates (UTC under the hood)
  */
 
+import { isLocale, type Locale } from "@/i18n/config";
+import { fmtDay, fmtRelativeDay, fmtTime, zonedDate } from "@/i18n/datefmt";
+import { negotiate } from "@/i18n/negotiate";
+
 const dtfCache = new Map<string, Intl.DateTimeFormat>();
 
 function partsFormatter(tz: string) {
@@ -145,14 +149,16 @@ export function overlaps(aStart: Date, aEnd: Date, bStart: Date, bEnd: Date): bo
 }
 
 // ---------- display formatting ----------
+// Backward-compatible wrappers over the i18n date core (src/i18n/datefmt.ts): same signatures,
+// but deterministic output (no Intl long formats) in all 8 locales. `locale` accepts a Locale or
+// an Intl tag such as "it-IT"; anything else falls back to English. New code uses @/i18n/datefmt.
 
-type Locale = "it" | "en";
-const intlLocale = (l: Locale | string) => (l === "it" ? "it-IT" : "en-GB");
+function resolveLocale(locale: Locale | string): Locale {
+  return isLocale(locale) ? locale : (negotiate(locale) ?? "en");
+}
 
-export function formatTime(instant: Date, tz: string, locale: Locale | string = "en"): string {
-  return new Intl.DateTimeFormat(intlLocale(locale), { timeZone: tz, hour: "2-digit", minute: "2-digit" }).format(
-    instant,
-  );
+export function formatTime(instant: Date, tz: string, _locale: Locale | string = "en"): string {
+  return fmtTime(instant, tz);
 }
 
 export function formatDate(
@@ -161,13 +167,7 @@ export function formatDate(
   locale: Locale | string = "en",
   style: "long" | "short" | "weekday" = "long",
 ): string {
-  const opts: Intl.DateTimeFormatOptions =
-    style === "long"
-      ? { weekday: "long", day: "numeric", month: "long", year: "numeric" }
-      : style === "short"
-        ? { day: "numeric", month: "short" }
-        : { weekday: "short", day: "numeric", month: "short" };
-  return new Intl.DateTimeFormat(intlLocale(locale), { timeZone: tz, ...opts }).format(instant);
+  return fmtDay(zonedDate(instant, tz), style, resolveLocale(locale));
 }
 
 export function formatDateTime(instant: Date, tz: string, locale: Locale | string = "en"): string {
@@ -176,13 +176,9 @@ export function formatDateTime(instant: Date, tz: string, locale: Locale | strin
 
 /** Format a calendar date string (no time zone involved). */
 export function formatDay(date: string, locale: Locale | string = "en", style: "long" | "short" | "weekday" = "weekday") {
-  const [y, m, d] = date.split("-").map(Number);
-  return formatDate(new Date(Date.UTC(y, m - 1, d, 12)), "UTC", locale, style);
+  return fmtDay(date, style, resolveLocale(locale));
 }
 
 export function relativeDayLabel(date: string, today: string, locale: Locale | string = "en"): string {
-  const diff = diffDays(date, today);
-  if (diff === 0) return locale === "it" ? "Oggi" : "Today";
-  if (diff === 1) return locale === "it" ? "Domani" : "Tomorrow";
-  return formatDay(date, locale, "weekday");
+  return fmtRelativeDay(date, today, resolveLocale(locale));
 }

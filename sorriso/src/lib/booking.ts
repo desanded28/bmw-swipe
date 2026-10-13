@@ -12,6 +12,7 @@ import {
 import { evaluateSlot, loadAvailabilityContext, REJECTION_LABELS, type AvailabilityContext, type SlotRejection } from "./availability";
 import { newId } from "./ids";
 import { issueManageToken } from "./links";
+import { logError } from "./log";
 import { deliver } from "./messaging";
 import { templates } from "./messaging/templates";
 import { normalizePhone } from "./phone";
@@ -271,7 +272,7 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
   });
 
   // Send the confirmation right away (best effort; the cron retries on failure).
-  await processDueReminders({ appointmentId, now }).catch((err) => console.error("[booking] confirmation failed", err));
+  await processDueReminders({ appointmentId, now }).catch((err) => logError("booking", err, { step: "confirmation", appointmentId }));
   return (await getAppointmentDetails({ id: appointmentId }))!;
 }
 
@@ -350,7 +351,7 @@ export async function cancelAppointment(
       startsAt: updated.startsAt,
     },
     now,
-  ).catch((err) => console.error("[waitlist] offer failed", err));
+  ).catch((err) => logError("waitlist", err, { step: "offer" }));
 
   return details;
 }
@@ -479,7 +480,7 @@ export async function rescheduleAppointment(
       startsAt: before.appointment.startsAt,
     },
     now,
-  ).catch((err) => console.error("[waitlist] offer failed", err));
+  ).catch((err) => logError("waitlist", err, { step: "offer" }));
 
   return after;
 }

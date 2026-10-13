@@ -50,6 +50,8 @@ export const DIR: Record<Locale, "ltr" | "rtl"> = { it: "ltr", en: "ltr", de: "l
 export const DIAL_CODE: Record<Locale, string> = { it: "39", en: "44", de: "49", fr: "33", es: "34", pt: "351", ro: "40", pl: "48" };
 
 export const LOCALE_COOKIE = "NEXT_LOCALE";
+/** Request header the proxy sets for locale-prefixed pages (read by getRequestLocale). */
+export const LOCALE_HEADER = "x-sorriso-locale";
 
 export function isLocale(v: unknown): v is Locale {
   return typeof v === "string" && (LOCALES as readonly string[]).includes(v);

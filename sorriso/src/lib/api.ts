@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { apiKeys, organizations } from "@/db/schema";
 import { BookingError } from "./booking";
 import { newId, newToken, sha256 } from "./ids";
+import { logError } from "./log";
 
 export const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -36,7 +37,7 @@ export function handleApiError(err: unknown) {
     const status = err.code === "not_found" ? 404 : err.code === "invalid" ? 422 : 409;
     return apiError(status, err.code, err.message);
   }
-  console.error("[api]", err);
+  logError("api", err);
   return apiError(500, "internal_error", "Something went wrong.");
 }
 

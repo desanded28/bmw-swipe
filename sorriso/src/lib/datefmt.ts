@@ -1,48 +1,20 @@
 /**
- * Deterministic English date labels. Intl's long formats differ between Node
- * and browsers ("Tuesday 13 October" vs "Tuesday, 13 October"), which breaks
- * hydration for client components rendered on the server. Numeric Intl parts
- * (en-CA dates, h23 times) are stable and still used for time-zone math.
+ * Backward-compatible wrappers over the i18n date core (src/i18n/datefmt.ts), which owns the
+ * deterministic, hydration-safe formatting. The locale is a trailing optional argument so
+ * existing callers keep their English output; new code imports from "@/i18n/datefmt" and passes
+ * the locale explicitly.
  */
+import type { Locale } from "@/i18n/config";
+import { fmtDay as fmtDayCore, fmtWhen as fmtWhenCore, type DayStyle } from "@/i18n/datefmt";
 
-const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-
-type DayStyle = "long" | "medium" | "weekday" | "short" | "wd";
+export { zonedDate, zonedTime, type DayStyle } from "@/i18n/datefmt";
 
 /** Format a YYYY-MM-DD calendar date. */
-export function fmtDay(date: string, style: DayStyle = "weekday"): string {
-  const [y, m, d] = date.split("-").map(Number);
-  const wd = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
-  const weekday = WEEKDAYS[wd];
-  const month = MONTHS[m - 1];
-  switch (style) {
-    case "long":
-      return `${weekday} ${d} ${month} ${y}`;
-    case "medium":
-      return `${weekday} ${d} ${month}`;
-    case "weekday":
-      return `${weekday.slice(0, 3)} ${d} ${month.slice(0, 3)}`;
-    case "short":
-      return `${d} ${month.slice(0, 3)}`;
-    case "wd":
-      return weekday.slice(0, 3);
-  }
-}
-
-export function zonedDate(iso: string | Date, tz: string): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(
-    typeof iso === "string" ? new Date(iso) : iso,
-  );
-}
-
-export function zonedTime(iso: string | Date, tz: string): string {
-  return new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(
-    typeof iso === "string" ? new Date(iso) : iso,
-  );
+export function fmtDay(date: string, style: DayStyle = "weekday", locale: Locale = "en"): string {
+  return fmtDayCore(date, style, locale);
 }
 
 /** e.g. "Wednesday 14 October at 08:30" */
-export function fmtWhen(iso: string | Date, tz: string, style: DayStyle = "medium"): string {
-  return `${fmtDay(zonedDate(iso, tz), style)} at ${zonedTime(iso, tz)}`;
+export function fmtWhen(iso: string | Date, tz: string, style: DayStyle = "medium", locale: Locale = "en"): string {
+  return fmtWhenCore(iso, tz, locale, style);
 }
