@@ -1,6 +1,10 @@
+import type { Locale as AppLocale } from "@/i18n/config";
 import { formatDate, formatTime } from "../time";
 
-export type Locale = "it" | "en";
+export type Locale = AppLocale;
+
+/** Italian and English tables exist today; other locales fall back to English. */
+const tableFor = (l: Locale) => (l === "it" ? "it" : "en");
 
 export type AppointmentTemplateData = {
   locale: Locale;
@@ -192,7 +196,7 @@ function layout(opts: {
   details?: [string, string][];
 }): { html: string; text: string } {
   const { d } = opts;
-  const t = T[d.locale];
+  const t = T[tableFor(d.locale)];
   const details: [string, string][] =
     opts.details ??
     (opts.showDetails === false
@@ -256,7 +260,7 @@ ${buttons
 }
 
 function manageButtons(d: AppointmentTemplateData, opts: { confirm?: boolean } = {}): Button[] {
-  const t = T[d.locale];
+  const t = T[tableFor(d.locale)];
   const cancel: Button = { label: t.cancelBtn, url: `${d.manageUrl}?do=cancel`, variant: "danger" };
   if (opts.confirm) {
     return [
@@ -274,29 +278,29 @@ function manageButtons(d: AppointmentTemplateData, opts: { confirm?: boolean } =
 
 export const templates = {
   bookingConfirmation(d: AppointmentTemplateData): EmailContent {
-    const t = T[d.locale];
+    const t = T[tableFor(d.locale)];
     const { html, text } = layout({ d, intro: t.booked.intro, buttons: manageButtons(d) });
     return { subject: t.booked.subject(d.serviceName, whenLabel(d, "short")), html, text };
   },
 
   bookingConfirmationSms(d: AppointmentTemplateData): string {
-    return T[d.locale].booked.sms(d.clinicName, d.serviceName, d.practitionerName, whenLabel(d, "short"), d.manageUrl);
+    return T[tableFor(d.locale)].booked.sms(d.clinicName, d.serviceName, d.practitionerName, whenLabel(d, "short"), d.manageUrl);
   },
 
   bookingRequested(d: AppointmentTemplateData): EmailContent {
-    const t = T[d.locale];
+    const t = T[tableFor(d.locale)];
     const { html, text } = layout({ d, intro: t.requested.intro, buttons: [{ label: t.manage, url: d.manageUrl }] });
     return { subject: t.requested.subject(d.serviceName), html, text };
   },
 
   bookingApproved(d: AppointmentTemplateData): EmailContent {
-    const t = T[d.locale];
+    const t = T[tableFor(d.locale)];
     const { html, text } = layout({ d, intro: t.approved.intro, buttons: manageButtons(d) });
     return { subject: t.approved.subject(d.serviceName, whenLabel(d, "short")), html, text };
   },
 
   reminderEmail(d: AppointmentTemplateData, askConfirmation: boolean): EmailContent {
-    const t = T[d.locale];
+    const t = T[tableFor(d.locale)];
     const { html, text } = layout({
       d,
       intro: askConfirmation ? t.reminder.introAsk : t.reminder.intro,
@@ -306,7 +310,7 @@ export const templates = {
   },
 
   reminderSms(d: AppointmentTemplateData, askConfirmation: boolean): string {
-    const t = T[d.locale];
+    const t = T[tableFor(d.locale)];
     const base = t.reminder.sms(
       d.patientFirstName,
       d.serviceName,
@@ -321,7 +325,7 @@ export const templates = {
   },
 
   cancelledEmail(d: AppointmentTemplateData, by: "staff" | "patient", rebookUrl: string): EmailContent {
-    const t = T[d.locale];
+    const t = T[tableFor(d.locale)];
     const { html, text } = layout({
       d,
       intro: by === "staff" ? t.cancelled.byStaff : t.cancelled.byPatient,
@@ -331,21 +335,21 @@ export const templates = {
   },
 
   cancelledSms(d: AppointmentTemplateData, rebookUrl: string): string {
-    return T[d.locale].cancelled.sms(d.clinicName, whenLabel(d, "short"), rebookUrl);
+    return T[tableFor(d.locale)].cancelled.sms(d.clinicName, whenLabel(d, "short"), rebookUrl);
   },
 
   rescheduledEmail(d: AppointmentTemplateData): EmailContent {
-    const t = T[d.locale];
+    const t = T[tableFor(d.locale)];
     const { html, text } = layout({ d, intro: t.rescheduled.intro, buttons: manageButtons(d) });
     return { subject: t.rescheduled.subject(whenLabel(d, "short")), html, text };
   },
 
   rescheduledSms(d: AppointmentTemplateData): string {
-    return T[d.locale].rescheduled.sms(d.clinicName, whenLabel(d, "short"), d.manageUrl);
+    return T[tableFor(d.locale)].rescheduled.sms(d.clinicName, whenLabel(d, "short"), d.manageUrl);
   },
 
   waitlistOfferEmail(d: AppointmentTemplateData, bookUrl: string): EmailContent {
-    const t = T[d.locale];
+    const t = T[tableFor(d.locale)];
     const { html, text } = layout({
       d,
       intro: t.waitlist.intro(d.serviceName),
@@ -355,11 +359,11 @@ export const templates = {
   },
 
   waitlistOfferSms(d: AppointmentTemplateData, bookUrl: string): string {
-    return T[d.locale].waitlist.sms(d.clinicName, d.serviceName, whenLabel(d, "short"), bookUrl);
+    return T[tableFor(d.locale)].waitlist.sms(d.clinicName, d.serviceName, whenLabel(d, "short"), bookUrl);
   },
 
   reviewRequest(d: AppointmentTemplateData, reviewUrl: string): EmailContent {
-    const t = T[d.locale];
+    const t = T[tableFor(d.locale)];
     const { html, text } = layout({
       d,
       intro: t.review.intro(d.practitionerName),
@@ -370,12 +374,12 @@ export const templates = {
   },
 
   reply: {
-    confirmed: (d: AppointmentTemplateData) => T[d.locale].replies.confirmed(d.clinicName, whenLabel(d, "short")),
+    confirmed: (d: AppointmentTemplateData) => T[tableFor(d.locale)].replies.confirmed(d.clinicName, whenLabel(d, "short")),
     cancelled: (d: AppointmentTemplateData, rebookUrl: string) =>
-      T[d.locale].replies.cancelled(d.clinicName, whenLabel(d, "short"), rebookUrl),
-    reschedule: (d: AppointmentTemplateData) => T[d.locale].replies.reschedule(d.clinicName, `${d.manageUrl}?do=reschedule`),
-    unknown: (d: AppointmentTemplateData) => T[d.locale].replies.unknown(d.clinicName, d.manageUrl),
-    stop: (locale: Locale, clinicName: string) => T[locale].replies.stop(clinicName),
-    none: (locale: Locale, clinicName: string) => T[locale].replies.none(clinicName),
+      T[tableFor(d.locale)].replies.cancelled(d.clinicName, whenLabel(d, "short"), rebookUrl),
+    reschedule: (d: AppointmentTemplateData) => T[tableFor(d.locale)].replies.reschedule(d.clinicName, `${d.manageUrl}?do=reschedule`),
+    unknown: (d: AppointmentTemplateData) => T[tableFor(d.locale)].replies.unknown(d.clinicName, d.manageUrl),
+    stop: (locale: Locale, clinicName: string) => T[tableFor(locale)].replies.stop(clinicName),
+    none: (locale: Locale, clinicName: string) => T[tableFor(locale)].replies.none(clinicName),
   },
 };

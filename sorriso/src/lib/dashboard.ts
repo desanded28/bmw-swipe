@@ -90,7 +90,6 @@ export async function listAppointments(
     patientNote: a.patientNote,
     internalNote: a.internalNote,
     cancelReason: a.cancelReason,
-    manageToken: a.manageToken,
     patient: {
       id: patient.id,
       name: fullName(patient),

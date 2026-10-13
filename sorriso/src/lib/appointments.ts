@@ -19,6 +19,7 @@ import {
 import { absoluteUrl } from "./config";
 import { practitionerName } from "./format";
 import type { AppointmentTemplateData } from "./messaging/templates";
+import { hashToken, isManageLinkValid, manageTokenOf } from "./links";
 import { resolveSettings } from "./settings";
 
 export type AppointmentDetails = {
@@ -31,11 +32,16 @@ export type AppointmentDetails = {
   room: Room | null;
 };
 
+/**
+ * Load an appointment with everything around it. A { token } lookup is the patient's
+ * self-service link: it matches on the token hash and returns null once the link has
+ * expired, unless allowExpired is set (used to show a friendly "link expired" page).
+ */
 export async function getAppointmentDetails(
-  where: { id: string } | { token: string },
+  where: { id: string } | { token: string; allowExpired?: boolean },
   tx: Tx = db,
 ): Promise<AppointmentDetails | null> {
-  const condition: SQL = "id" in where ? eq(appointments.id, where.id) : eq(appointments.manageToken, where.token);
+  const condition: SQL = "id" in where ? eq(appointments.id, where.id) : eq(appointments.manageTokenHash, hashToken(where.token));
   const [row] = await tx
     .select({
       appointment: appointments,
@@ -54,7 +60,9 @@ export async function getAppointmentDetails(
     .innerJoin(locations, eq(locations.id, appointments.locationId))
     .leftJoin(rooms, eq(rooms.id, appointments.roomId))
     .where(condition);
-  return row ?? null;
+  if (!row) return null;
+  if ("token" in where && !where.allowExpired && !isManageLinkValid(row.appointment)) return null;
+  return row;
 }
 
 export async function getOrgAppointmentDetails(orgId: string, id: string, tx: Tx = db) {
@@ -63,11 +71,12 @@ export async function getOrgAppointmentDetails(orgId: string, id: string, tx: Tx
 }
 
 export function appointmentLinks(d: Pick<AppointmentDetails, "appointment" | "org">) {
-  const token = d.appointment.manageToken;
+  const token = manageTokenOf(d.appointment);
+  const clinicUrl = absoluteUrl(`/c/${d.org.slug}`);
   return {
-    manageUrl: absoluteUrl(`/a/${token}`),
-    icsUrl: absoluteUrl(`/api/ics/appointment/${token}`),
-    reviewUrl: absoluteUrl(`/a/${token}/review`),
+    manageUrl: token ? absoluteUrl(`/a/${token}`) : clinicUrl,
+    icsUrl: token ? absoluteUrl(`/api/ics/appointment/${token}`) : clinicUrl,
+    reviewUrl: token ? absoluteUrl(`/a/${token}/review`) : clinicUrl,
     rebookUrl: absoluteUrl(
       `/book/${d.org.slug}?service=${d.appointment.serviceId}&practitioner=${d.appointment.practitionerId}`,
     ),

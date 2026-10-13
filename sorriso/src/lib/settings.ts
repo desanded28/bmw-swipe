@@ -1,4 +1,5 @@
-import type { OrgSettings } from "@/db/schema";
+import type { OrgSettings, StoredOrgSettings } from "@/db/schema";
+import { DEFAULT_CARE, DEFAULT_PRIVACY, resolveCareSettings, resolvePrivacySettings } from "./privacy/settings";
 
 export const DEFAULT_SETTINGS: OrgSettings = {
   booking: {
@@ -17,17 +18,24 @@ export const DEFAULT_SETTINGS: OrgSettings = {
     sendBookingConfirmation: true,
     requestReviews: true,
     autoOfferToWaitlist: true,
+    smsAsciiFallback: false,
   },
+  privacy: DEFAULT_PRIVACY,
+  care: DEFAULT_CARE,
 };
 
-/** Fill in any settings keys missing from older rows. */
-export function resolveSettings(settings: Partial<OrgSettings> | null | undefined): OrgSettings {
+/** Fill in any settings keys missing from older rows and clamp out-of-range values. */
+export function resolveSettings(settings: StoredOrgSettings | OrgSettings | null | undefined): OrgSettings {
+  const s = (settings ?? {}) as StoredOrgSettings;
   return {
-    booking: { ...DEFAULT_SETTINGS.booking, ...(settings?.booking ?? {}) },
-    reminders: { ...DEFAULT_SETTINGS.reminders, ...(settings?.reminders ?? {}) },
+    booking: { ...DEFAULT_SETTINGS.booking, ...(s.booking ?? {}) },
+    reminders: { ...DEFAULT_SETTINGS.reminders, ...(s.reminders ?? {}) },
+    privacy: resolvePrivacySettings(s.privacy),
+    care: resolveCareSettings(s.care),
   };
 }
 
+/** @deprecated English-only; use the reminders namespace (src/i18n) to describe offsets. */
 export function describeOffset(minutes: number): string {
   if (minutes % (24 * 60) === 0) {
     const d = minutes / (24 * 60);

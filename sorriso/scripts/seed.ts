@@ -33,6 +33,8 @@ import {
 import { getAppointmentDetails, templateData } from "../src/lib/appointments";
 import { findSlots, loadAvailabilityContext, rangeForDates } from "../src/lib/availability";
 import { newId, newToken, sha256, slugify } from "../src/lib/ids";
+import { issueManageToken } from "../src/lib/links";
+import { parseSpokenLanguages } from "./backfill-0001";
 import { templates } from "../src/lib/messaging/templates";
 import { hashPassword } from "../src/lib/password";
 import { DEFAULT_SETTINGS } from "../src/lib/settings";
@@ -502,8 +504,10 @@ async function main() {
   for (const [orgIndex, o] of ORGS.entries()) {
     const orgId = newId();
     const settings: OrgSettings = {
+      ...DEFAULT_SETTINGS,
       booking: { ...DEFAULT_SETTINGS.booking, ...(o.settings ?? {}) },
-      reminders: { ...DEFAULT_SETTINGS.reminders },
+      // Demo practices: WhatsApp on so the flow can be tried; MFA optional (shown as a warning).
+      privacy: { ...DEFAULT_SETTINGS.privacy, whatsappEnabled: true, requireMfa: false },
     };
     await db.insert(organizations).values({
       id: orgId,
@@ -516,6 +520,10 @@ async function main() {
       brandColor: o.brandColor,
       timezone: TZ,
       settings,
+      isDemo: true,
+      emailVerifiedAt: now,
+      legalName: `${o.name} S.r.l.`,
+      privacyEmail: o.email,
     });
 
     if (orgIndex === 0) {
@@ -579,8 +587,12 @@ async function main() {
         specialty: p.specialty,
         bio: p.bio,
         languages: p.languages ?? "Italiano, English",
+        spokenLanguages: parseSpokenLanguages(p.languages ?? "Italiano, English"),
         color: p.color,
-        icsToken: newToken(),
+        icsToken: `h:${id}`,
+        icsTokenHash: sha256(newToken()),
+        publicProfile: true,
+        profileApprovedAt: now,
       });
       await db
         .insert(practitionerServices)
@@ -668,8 +680,10 @@ async function main() {
           status === "completed" || (status === "scheduled" && (hoursAhead < 48 ? chance(0.7) : chance(0.2)));
         const confirmedVia = confirmed ? pick(["sms", "sms", "whatsapp", "email", "web", "staff"]) : null;
         const createdAt = new Date(slot.start.getTime() - (2 + Math.floor(rand() * 20)) * 86_400_000);
+        const id = newId();
+        const link = issueManageToken();
         const row: Appointment = {
-          id: newId(),
+          id,
           orgId,
           locationId: slot.locationId,
           practitionerId: slot.practitionerId,
@@ -687,7 +701,21 @@ async function main() {
           isNewPatient: key === "firstVisit",
           patientNote: chance(0.15) ? pick(["Sensitive tooth on the lower left.", "Prefer morning appointments.", "Ho un po' di ansia dal dentista.", "Second opinion on an implant estimate."]) : null,
           internalNote: null,
-          manageToken: newToken(),
+          manageToken: `h:${id}`,
+          manageTokenHash: link.hash,
+          manageTokenEnc: link.token,
+          processingContext: "practice",
+          bookedFor: "self",
+          bookedByName: null,
+          bookedByPhone: null,
+          bookedByEmail: null,
+          noticeVersion: null,
+          noticeLocale: null,
+          minorFlag: false,
+          riskLevel: null,
+          riskReasons: [],
+          riskComputedAt: null,
+          fundId: null,
           cancelledAt: status === "cancelled" ? new Date(slot.start.getTime() - 30 * 3_600_000) : null,
           cancelledBy: status === "cancelled" ? (chance(0.8) ? "patient" : "staff") : null,
           cancelReason: status === "cancelled" ? pick(["Replied NO via SMS", "Work commitment", "Feeling unwell", null]) : null,
@@ -879,8 +907,11 @@ async function main() {
           practitionerId: a.practitionerId,
           appointmentId: a.id,
           rating,
-          comment: chance(0.85) ? pick(REVIEW_COMMENTS[p.locale]) : null,
+          comment: chance(0.85) ? pick(REVIEW_COMMENTS[p.locale === "it" ? "it" : "en"]) : null,
           authorName: `${p.firstName} ${p.lastName[0]}.`,
+          status: "published" as const,
+          authorDisplay: "first_initial" as const,
+          publishedAt: new Date(a.endsAt.getTime() + 5 * 3_600_000),
           createdAt: new Date(a.endsAt.getTime() + 5 * 3_600_000),
           reply: chance(0.2) ? "Grazie mille per la fiducia, a presto!" : null,
         };

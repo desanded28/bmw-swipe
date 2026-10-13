@@ -2,7 +2,9 @@ import { and, eq, gte, ne } from "drizzle-orm";
 import { db } from "@/db";
 import { appointments, locations, organizations, patients, practitioners, services } from "@/db/schema";
 import { practitionerName } from "@/lib/format";
+import { sha256Hex } from "@/lib/crypto";
 import { buildIcs } from "@/lib/ics";
+import { getPrivacy } from "@/lib/privacy/settings";
 
 /**
  * Subscribable calendar feed for one practitioner (Google Calendar, Apple
@@ -12,9 +14,13 @@ import { buildIcs } from "@/lib/ics";
 export async function GET(_req: Request, { params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
   const cleanToken = token.replace(/\.ics$/, "");
-  const [p] = await db.select().from(practitioners).where(eq(practitioners.icsToken, cleanToken));
-  if (!p) return new Response("Not found", { status: 404 });
+  const [p] = await db.select().from(practitioners).where(eq(practitioners.icsTokenHash, sha256Hex(cleanToken)));
+  if (!p || !p.icsEnabled || (p.icsTokenExpiresAt && p.icsTokenExpiresAt.getTime() < Date.now())) {
+    return new Response("Not found", { status: 404 });
+  }
   const [org] = await db.select().from(organizations).where(eq(organizations.id, p.orgId));
+  // Feeds put appointment data into third-party calendars: off unless the practice enables them.
+  if (!org || !getPrivacy(org).icsFeedsEnabled) return new Response("Not found", { status: 404 });
 
   const since = new Date(Date.now() - 30 * 86_400_000);
   const rows = await db

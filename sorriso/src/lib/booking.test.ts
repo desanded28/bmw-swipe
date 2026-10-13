@@ -47,7 +47,8 @@ describe("online booking", () => {
     const [msg] = await db.select().from(messages).where(eq(messages.appointmentId, d.appointment.id));
     expect(msg.status).toBe("captured");
     expect(msg.subject).toContain("Appuntamento prenotato");
-    expect(msg.html).toContain(`/a/${d.appointment.manageToken}`);
+    expect(msg.html).toContain(`/a/${d.appointment.manageTokenEnc}`);
+    expect(d.appointment.manageToken).toBe(`h:${d.appointment.id}`);
   });
 
   it("refuses to double-book the same practitioner", async () => {
@@ -143,7 +144,7 @@ describe("cancel, reschedule and waitlist", () => {
     // overlaps its own current slot: must be ignored when checking conflicts
     const moved = await rescheduleAppointment(d.appointment.id, { startsAt: at(10, 45), by: "patient", now: NOW });
     expect(moved.appointment.startsAt.toISOString()).toBe(at(10, 45).toISOString());
-    expect(moved.appointment.manageToken).toBe(d.appointment.manageToken);
+    expect(moved.appointment.manageTokenHash).toBe(d.appointment.manageTokenHash);
     expect(moved.appointment.confirmation).toBe("confirmed");
     const pending = await db.select().from(reminders).where(and(eq(reminders.appointmentId, d.appointment.id), eq(reminders.status, "pending")));
     expect(pending).toHaveLength(3);

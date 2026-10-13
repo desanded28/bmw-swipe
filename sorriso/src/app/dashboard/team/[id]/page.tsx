@@ -3,8 +3,7 @@ import { CalendarSync, ExternalLink } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { rotateIcsToken } from "@/app/dashboard/actions";
-import { ActionButton } from "@/components/dashboard/ActionButton";
+import { IcsLinkButton } from "@/components/dashboard/IcsLinkButton";
 import { PractitionerForm } from "@/components/dashboard/PractitionerForm";
 import { ScheduleEditor } from "@/components/dashboard/ScheduleEditor";
 import { TimeOffForm, TimeOffList } from "@/components/dashboard/TimeOff";
@@ -12,7 +11,6 @@ import { Avatar, Card } from "@/components/ui";
 import { db } from "@/db";
 import { locations, practitionerServices, practitioners, schedules, services, timeOff } from "@/db/schema";
 import { MANAGERS, requireStaff } from "@/lib/auth";
-import { absoluteUrl } from "@/lib/config";
 import { practitionerName } from "@/lib/format";
 import { minutesToHHMM, todayIn } from "@/lib/time";
 
@@ -32,7 +30,6 @@ export default async function PractitionerAdminPage({ params, searchParams }: { 
     db.select().from(timeOff).where(and(eq(timeOff.practitionerId, id), gt(timeOff.endsAt, new Date()))).orderBy(asc(timeOff.startsAt)),
   ]);
   const canManage = MANAGERS.includes(s.role);
-  const feed = absoluteUrl(`/api/ics/practitioner/${p.icsToken}.ics`);
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -88,14 +85,7 @@ export default async function PractitionerAdminPage({ params, searchParams }: { 
             <p className="mb-3 text-sm text-slate-500">
               Subscribe in Google Calendar (“From URL”), Apple Calendar or Outlook to see this agenda on your phone. Patient names are shortened.
             </p>
-            <code className="block break-all rounded-lg bg-slate-100 p-3 text-xs">{feed}</code>
-            {canManage ? (
-              <div className="mt-3">
-                <ActionButton action={rotateIcsToken.bind(null, p.id)} confirm="Generate a new link? The current one will stop working.">
-                  Generate new link
-                </ActionButton>
-              </div>
-            ) : null}
+            {canManage ? <IcsLinkButton practitionerId={p.id} hasLink={Boolean(p.icsTokenHash && p.icsEnabled)} /> : null}
           </Card>
         </div>
       </div>

@@ -10,7 +10,8 @@ import {
   type AppointmentDetails,
 } from "./appointments";
 import { evaluateSlot, loadAvailabilityContext, REJECTION_LABELS, type AvailabilityContext, type SlotRejection } from "./availability";
-import { newId, newToken } from "./ids";
+import { newId } from "./ids";
+import { issueManageToken } from "./links";
 import { deliver } from "./messaging";
 import { templates } from "./messaging/templates";
 import { normalizePhone } from "./phone";
@@ -217,10 +218,12 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
 
     const status = input.online && ctx.settings.booking.requireApproval ? "requested" : "scheduled";
     const endsAt = new Date(start.getTime() + duration * 60_000);
+    const id = newId();
+    const link = issueManageToken();
     const [appointment] = await tx
       .insert(appointments)
       .values({
-        id: newId(),
+        id,
         orgId: input.orgId,
         locationId: input.locationId,
         practitionerId: input.practitionerId,
@@ -235,7 +238,9 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
         isNewPatient: input.isNewPatient ?? createdPatient,
         patientNote: input.patientNote?.trim() || null,
         internalNote: input.internalNote?.trim() || null,
-        manageToken: newToken(),
+        manageToken: `h:${id}`,
+        manageTokenHash: link.hash,
+        manageTokenEnc: link.token,
       })
       .returning();
 

@@ -12,11 +12,13 @@ import {
 } from "@/db/schema";
 import { newId, newToken } from "@/lib/ids";
 import { DEFAULT_SETTINGS } from "@/lib/settings";
+import { backfill0001 } from "../../scripts/backfill-0001";
 
 let migrated = false;
 export async function migrateOnce() {
   if (migrated) return;
   await migrate(db, { migrationsFolder: "./drizzle" });
+  await backfill0001(db);
   migrated = true;
 }
 
@@ -30,8 +32,8 @@ export async function createPractice(overrides: Partial<OrgSettings["booking"]> 
   await migrateOnce();
   const orgId = newId();
   const settings: OrgSettings = {
+    ...DEFAULT_SETTINGS,
     booking: { ...DEFAULT_SETTINGS.booking, minNoticeMinutes: 60, ...overrides },
-    reminders: { ...DEFAULT_SETTINGS.reminders },
   };
   await db.insert(organizations).values({ id: orgId, slug: `test-${orgId.toLowerCase()}`, name: "Studio Test", timezone: TZ, settings });
 

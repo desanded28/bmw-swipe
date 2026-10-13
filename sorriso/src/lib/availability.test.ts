@@ -3,7 +3,7 @@ import { db } from "@/db";
 import { appointments, patients, timeOff } from "@/db/schema";
 import { createPractice, MONDAY, NOW, TUESDAY, TZ } from "@/test/fixtures";
 import { evaluateSlot, getAvailability, loadAvailabilityContext, rangeForDates } from "./availability";
-import { newId, newToken } from "./ids";
+import { newId } from "./ids";
 import { addMinutes, zonedToUtc } from "./time";
 
 let p: Awaited<ReturnType<typeof createPractice>>;
@@ -11,8 +11,9 @@ let patientId: string;
 
 async function book(practitionerId: string, locationId: string, roomId: string | null, date: string, minute: number, duration = 30) {
   const startsAt = zonedToUtc(date, minute, TZ);
+  const id = newId();
   await db.insert(appointments).values({
-    id: newId(),
+    id,
     orgId: p.orgId,
     locationId,
     practitionerId,
@@ -23,7 +24,7 @@ async function book(practitionerId: string, locationId: string, roomId: string |
     endsAt: addMinutes(startsAt, duration),
     blockedUntil: addMinutes(startsAt, duration),
     source: "staff",
-    manageToken: newToken(),
+    manageToken: `h:${id}`,
   });
 }
 

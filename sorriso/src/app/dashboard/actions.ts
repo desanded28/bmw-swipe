@@ -28,7 +28,9 @@ import {
   type ReminderRule,
 } from "@/db/schema";
 import { createApiKey } from "@/lib/api";
-import { getOrgAppointmentDetails } from "@/lib/appointments";
+import { absoluteUrl } from "@/lib/config";
+import { sha256Hex } from "@/lib/crypto";
+import { appointmentLinks, getOrgAppointmentDetails } from "@/lib/appointments";
 import { MANAGERS, requireStaff, type Role } from "@/lib/auth";
 import {
   approveRequest,
@@ -264,6 +266,16 @@ export async function clearAttention(id: string): Promise<ActionResult> {
   });
 }
 
+/** The patient's self-service link, for staff to open or copy (the token is stored encrypted). */
+export async function patientLink(id: string): Promise<ActionResult> {
+  return guard(async () => {
+    const s = await staff();
+    const d = await ownAppointment(s.org.id, id);
+    const { manageUrl } = appointmentLinks(d);
+    return ok(undefined, { url: manageUrl });
+  });
+}
+
 export async function appointmentMessages(id: string) {
   const s = await staff();
   return db
@@ -490,14 +502,20 @@ export async function deleteTimeOff(id: string): Promise<ActionResult> {
   });
 }
 
+/** Issue a new personal calendar-feed URL. Only its hash is stored, so it is shown once. */
 export async function rotateIcsToken(practitionerId: string): Promise<ActionResult> {
   return guard(async () => {
     const s = await staff(MANAGERS);
-    await db
+    const token = newToken();
+    const res = await db
       .update(practitioners)
-      .set({ icsToken: newToken() })
-      .where(and(eq(practitioners.id, practitionerId), eq(practitioners.orgId, s.org.id)));
-    return ok("New calendar link generated. The old one stops working.");
+      .set({ icsTokenHash: sha256Hex(token), icsEnabled: true, icsTokenExpiresAt: new Date(Date.now() + 365 * 86_400_000) })
+      .where(and(eq(practitioners.id, practitionerId), eq(practitioners.orgId, s.org.id)))
+      .returning({ id: practitioners.id });
+    if (!res.length) return fail("Practitioner not found.");
+    return ok("New calendar link generated. Copy it now: it won't be shown again. The old link stops working.", {
+      url: absoluteUrl(`/api/ics/practitioner/${token}.ics`),
+    });
   });
 }
 
@@ -663,6 +681,7 @@ export async function saveReminderSettings(input: {
     await updateSettings(s.org.id, (cur) => ({
       ...cur,
       reminders: {
+        ...cur.reminders,
         rules,
         sendBookingConfirmation: input.sendBookingConfirmation,
         requestReviews: input.requestReviews,

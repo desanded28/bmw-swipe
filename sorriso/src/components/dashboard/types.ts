@@ -15,7 +15,6 @@ export type ApptDTO = {
   patientNote: string | null;
   internalNote: string | null;
   cancelReason: string | null;
-  manageToken: string;
   patient: {
     id: string;
     name: string;

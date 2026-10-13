@@ -27,6 +27,7 @@ import {
   clearAttention,
   confirmByPhone,
   moveAppointment,
+  patientLink,
   recordOutcome,
   remindNow,
   saveInternalNote,
@@ -407,15 +408,26 @@ export function AppointmentDrawer({ appt, resources, onClose }: { appt: ApptDTO;
             )}
           </div>
 
-          <a href={`/a/${appt.manageToken}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-ink">
+          <button
+            type="button"
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-ink"
+            onClick={async () => {
+              const res = await patientLink(appt.id);
+              if (res.ok) window.open((res.data as { url: string }).url, "_blank", "noopener,noreferrer");
+              else toast.show({ tone: "error", text: res.error });
+            }}
+          >
             <ExternalLink size={13} /> Patient&apos;s self-service page
-          </a>
+          </button>
           <button
             type="button"
             className="ml-4 text-xs font-semibold text-slate-500 hover:text-ink"
-            onClick={() => {
-              navigator.clipboard?.writeText(`${window.location.origin}/a/${appt.manageToken}`);
-              toast.show({ tone: "success", text: "Link copied." });
+            onClick={async () => {
+              const res = await patientLink(appt.id);
+              if (res.ok) {
+                await navigator.clipboard?.writeText((res.data as { url: string }).url);
+                toast.show({ tone: "success", text: "Link copied." });
+              } else toast.show({ tone: "error", text: res.error });
             }}
           >
             Copy link
