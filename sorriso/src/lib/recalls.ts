@@ -20,7 +20,7 @@ import { audit, type AuditEvent } from "./audit";
 import { absoluteUrl } from "./config";
 import { isMinor, isRestricted, recipientFor } from "./contact";
 import { practitionerName } from "./format";
-import { listSubmissions, sendFormInvites, type SubmissionSummary } from "./forms";
+import { listSubmissions, mayReadPatient, sendFormInvites, type SubmissionSummary } from "./forms";
 import { newId } from "./ids";
 import { logError } from "./log";
 import { sendPatientMessage } from "./messaging";
@@ -619,7 +619,9 @@ export async function appointmentRecall(
     .where(and(eq(recalls.orgId, orgId), eq(recalls.patientId, a.patientId), eq(recalls.serviceId, a.serviceId), isNotNull(recalls.setByUserId)))
     .orderBy(desc(recalls.updatedAt))
     .limit(1);
-  const suggestedMonths = own?.intervalMonths ?? previous?.intervalMonths ?? a.recallMonths ?? null;
+  // Services accept 1–60 months; the picker and upsertRecall work in 3–24.
+  const raw = own?.intervalMonths ?? previous?.intervalMonths ?? a.recallMonths ?? null;
+  const suggestedMonths = raw ? clampRecallMonths(raw) : null;
   if (!own) return { recall: null, suggestedMonths };
   return {
     recall: { id: own.id, intervalMonths: own.intervalMonths, dueDate: own.dueDate, status: own.status, confirmed: Boolean(own.setByUserId) },
@@ -636,18 +638,29 @@ export type PatientCare = {
   /** Under 14: messages go to the guardian. */
   viaGuardian: boolean;
   guardian: { name: string | null; relation: GuardianRelation | null; phone: string | null; email: string | null } | null;
-  submissions: SubmissionSummary[];
+  /** alerts: how many red flags the form raised; null unless the viewer has patient.clinical.read. */
+  submissions: (Omit<SubmissionSummary, "redFlags"> & { alerts: number | null })[];
   /** This record may duplicate another one (or others point at it). */
-  duplicate: { ofId: string | null; ofName: string | null; flaggedBy: number } | null;
+  duplicate: { ofId: string | null; ofName: string | null; ofRestricted: boolean; flaggedBy: number } | null;
 };
 
 /**
  * Everything the patient page's care panel shows, for this viewer: guardian contacts only with
- * patient.contact.read, red-flag details only with patient.clinical.read, no answers at all.
+ * patient.contact.read, the number of medical alerts per form only with patient.clinical.read
+ * (which alerts, and the answers, only through the audited loadAnamnesis). A restricted or erased
+ * patient's care data only after a restricted-access reason (mayReadPatient): null otherwise,
+ * like an unknown patient.
  */
-export async function loadPatientCare(orgId: string, patientId: string, perms: readonly Permission[], now: Date = new Date()): Promise<PatientCare | null> {
+export async function loadPatientCare(
+  orgId: string,
+  patientId: string,
+  perms: readonly Permission[],
+  opts: { viewer?: { userId: string } | null; now?: Date } = {},
+): Promise<PatientCare | null> {
+  const now = opts.now ?? new Date();
   const [p] = await db.select().from(patients).where(and(eq(patients.id, patientId), eq(patients.orgId, orgId)));
   if (!p) return null;
+  if (!(await mayReadPatient({ orgId, patient: p, permissions: perms, userId: opts.viewer?.userId, now }))) return null;
   const recallRows = await db
     .select({ r: recalls, serviceName: services.name })
     .from(recalls)
@@ -655,13 +668,20 @@ export async function loadPatientCare(orgId: string, patientId: string, perms: r
     .where(and(eq(recalls.orgId, orgId), eq(recalls.patientId, patientId)))
     .orderBy(desc(recalls.dueDate))
     .limit(20);
-  const submissions = await listSubmissions(orgId, patientId, perms.includes("patient.clinical.read"));
+  // Only how many alerts each form raised, never which ones: the conditions themselves are shown
+  // only when a clinician opens the form (loadAnamnesis, audited as patient.clinical.view).
+  const submissions = (await listSubmissions(orgId, patientId, perms.includes("patient.clinical.read"))).map(({ redFlags, ...rest }) => ({
+    ...rest,
+    alerts: redFlags ? redFlags.length : null,
+  }));
   const [of] = p.possibleDuplicateOfId
     ? await db
-        .select({ id: patients.id, firstName: patients.firstName, lastName: patients.lastName })
+        .select({ id: patients.id, firstName: patients.firstName, lastName: patients.lastName, restrictedAt: patients.restrictedAt, erasedAt: patients.erasedAt })
         .from(patients)
         .where(and(eq(patients.id, p.possibleDuplicateOfId), eq(patients.orgId, orgId), isNull(patients.mergedIntoId)))
     : [];
+  // The other record's name stays hidden when it is restricted and the viewer may not read it.
+  const ofMasked = Boolean(of && isRestricted(of) && !perms.includes("patient.restricted.read"));
   const [flagged] = await db
     .select({ n: sql<number>`count(*)` })
     .from(patients)
@@ -691,7 +711,12 @@ export async function loadPatientCare(orgId: string, patientId: string, perms: r
     submissions,
     duplicate:
       of || Number(flagged?.n ?? 0) > 0
-        ? { ofId: of?.id ?? null, ofName: of ? `${of.firstName} ${of.lastName}`.trim() : null, flaggedBy: Number(flagged?.n ?? 0) }
+        ? {
+            ofId: of?.id ?? null,
+            ofName: of && !ofMasked ? `${of.firstName} ${of.lastName}`.trim() : null,
+            ofRestricted: ofMasked,
+            flaggedBy: Number(flagged?.n ?? 0),
+          }
         : null,
   };
 }

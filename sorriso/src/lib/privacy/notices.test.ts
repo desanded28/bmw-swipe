@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { and, eq, isNull } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { db } from "@/db";
@@ -11,6 +13,7 @@ import { DEFAULT_SETTINGS } from "@/lib/settings";
 import { migrateOnce } from "@/test/fixtures";
 import { consentTextKey } from "./consent";
 import {
+  BROWSER_STORAGE,
   buildNotice,
   clearNoticeCache,
   COOKIES,
@@ -18,6 +21,7 @@ import {
   noticePath,
   practicePurposes,
   publishNotice,
+  recordBookingNotices,
   recordNoticeVersion,
   recordPracticeNotices,
   type NoticeOrg,
@@ -205,6 +209,41 @@ describe("buildNotice", () => {
     expect(all).toContain("Art. 122");
   });
 
+  it("the cookie notice lists every localStorage and sessionStorage key the code uses", () => {
+    const root = path.resolve(__dirname, "../..");
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) walk(full);
+        else if (/\.(ts|tsx)$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) files.push(full);
+      }
+    };
+    walk(root);
+    const used = new Set<string>();
+    for (const file of files) {
+      const src = readFileSync(file, "utf8");
+      if (!/\b(localStorage|sessionStorage)\b/.test(src) || file.endsWith(path.join("privacy", "notices.ts"))) continue;
+      // The key argument: a string literal, or a constant defined in the same file.
+      for (const m of src.matchAll(/(?:localStorage|sessionStorage)\s*\.\s*(?:getItem|setItem|removeItem)\(\s*([^,)]+)/g)) {
+        const arg = m[1].trim();
+        const literal = /^["'`]([^"'`]+)["'`]$/.exec(arg)?.[1];
+        const constant = literal ? null : new RegExp(`\\b${arg}\\s*=\\s*["'\`]([^"'\`]+)["'\`]`).exec(src)?.[1];
+        const key = literal ?? constant;
+        expect(key, `${path.relative(root, file)}: storage key ${arg} must be a literal or a constant in the same file`).toBeTruthy();
+        used.add(key!);
+      }
+    }
+    expect(used.size).toBeGreaterThan(0);
+    const listed = new Set<string>(BROWSER_STORAGE.map((s) => s.key));
+    for (const key of used) expect(listed, `${key} is missing from BROWSER_STORAGE`).toContain(key);
+    const all = text("cookies", null);
+    for (const s of BROWSER_STORAGE) {
+      expect(all).toContain(s.key);
+      expect(all).toContain(getT("en", "legalPatient")(`cookies.storageItems.${s.purpose}`));
+    }
+  });
+
   it("the staff notice explains the access log (Art. 4 L. 300/1970)", () => {
     const all = text("staff", null);
     expect(all).toContain("access log");
@@ -277,6 +316,23 @@ describe("recording notice versions", () => {
     const b = await recordNoticeVersion(n, { kind: "cookies", orgId: null, locale: "en" }, { now: new Date("2030-05-01T00:00:00Z") });
     expect(b).toEqual(a);
     expect((await rows(null, "cookies", "en")).filter((r) => r.contentHash === n.contentHash)).toHaveLength(1);
+  });
+
+  it("records the notices a booking shows when it is made, before anyone opens the notice page", async () => {
+    const at = new Date("2030-06-01T08:00:00Z");
+    await recordBookingNotices({ orgId: realOrg.id, locale: "pl", context: "marketplace", now: at });
+    const practice = await db.select().from(noticeVersions).where(and(eq(noticeVersions.orgId, realOrg.id), eq(noticeVersions.kind, "practice_patient"), eq(noticeVersions.locale, "pl")));
+    expect(practice).toHaveLength(1);
+    expect(practice[0].publishedAt).toEqual(at);
+    const platform = await db.select().from(noticeVersions).where(and(isNull(noticeVersions.orgId), eq(noticeVersions.kind, "platform_patient"), eq(noticeVersions.locale, "pl")));
+    expect(platform.map((r) => r.publishedAt)).toContainEqual(at);
+    // The page opened later shows the booking's moment as "in force since".
+    clearNoticeCache();
+    const [row] = await db.select().from(organizations).where(eq(organizations.id, realOrg.id));
+    const page = await publishNotice("practice_patient", { org: row, locale: "pl", now: new Date("2030-07-01T08:00:00Z") });
+    expect(page.publishedAt).toEqual(at);
+    // Never throws, even for an unknown practice.
+    await expect(recordBookingNotices({ orgId: "nope", locale: "it", context: "practice" })).resolves.toBeUndefined();
   });
 
   it("records the practice notices in every language on demand", async () => {

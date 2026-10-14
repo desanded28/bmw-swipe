@@ -6,14 +6,16 @@ import type { ActionResult } from "@/app/dashboard/actions/_shared";
 import { saveOrgFunds } from "@/app/dashboard/actions/funds";
 import { FUND_MODES, type FundKind, type FundMode } from "@/db/enums";
 import { useT } from "@/i18n/provider";
-import { Badge, Button, cx, Input } from "../ui";
+import { Badge, Button, cx } from "../ui";
+import { AdCheckedText } from "./AdCheckedText";
 
 type Current = { mode: FundMode; serviceIds: string[] | null; note: string | null };
 
 /**
  * Which health funds and insurers the practice works with: per fund, direct billing or
- * reimbursement, all treatments or a selection, and an optional note for patients. One form, one
- * save (the list is replaced as a whole).
+ * reimbursement, all treatments or a selection, and an optional note for patients (checked for
+ * promotional wording while typing, Law 145/2018). One form, one save (the list is replaced as a
+ * whole).
  */
 export function FundsForm({
   funds,
@@ -104,7 +106,7 @@ export function FundsForm({
                     <label htmlFor={`${uid}note${f.id}`} className="mb-1 block text-xs font-semibold text-slate-600">
                       {t("funds.note")}
                     </label>
-                    <Input id={`${uid}note${f.id}`} name={`note.${f.id}`} defaultValue={c?.note ?? ""} maxLength={200} aria-describedby={`${uid}notehint`} />
+                    <AdCheckedText id={`${uid}note${f.id}`} name={`note.${f.id}`} defaultValue={c?.note ?? ""} maxLength={200} aria-describedby={`${uid}notehint`} />
                   </div>
                 </div>
               ) : null}

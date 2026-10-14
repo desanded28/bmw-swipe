@@ -416,8 +416,13 @@ export default {
       purpose: "keeps you signed in to the privacy center after you enter a one-time code.",
       duration: "30 minutes",
     },
-    storageNone: "Sorriso stores nothing else in your browser's storage.",
+    storageIntro: "Apart from these cookies, Sorriso keeps only this in your browser's storage. It never leaves your device and is set only when you use the feature:",
     storageItem: "{key}: {purpose}",
+    /** One per BROWSER_STORAGE entry in src/lib/privacy/notices.ts. */
+    storageItems: {
+      dashboardPrivacyScreen:
+        "remembers, on that device, whether practice staff turned on the dashboard's privacy screen, which blurs patient names on the calendar so people at the front desk can't read them. Kept until it is switched off.",
+    },
     thirdPartiesIntro:
       "Pages don't load scripts, fonts, images or frames from other companies. Two exceptions happen only when you ask for them:",
     map: "the map on a practice's page appears only after you click to show it. Your browser then loads it from OpenStreetMap (OpenStreetMap Foundation), which receives your IP address under its own privacy policy: https://osmfoundation.org/wiki/Privacy_Policy;",

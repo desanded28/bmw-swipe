@@ -121,6 +121,8 @@ export default {
     reportedTitle: "Your review was reported",
     reportedBody:
       "Your review was reported for this reason: \"{ground}\". It is hidden while Sorriso's moderators check it. You can tell us your side by {date}: we read it before deciding.",
+    reportedBodyVisible:
+      "Your review was reported for this reason: \"{ground}\". It stays published while Sorriso's moderators check it. You can tell us your side by {date}: we read it before deciding.",
     response: "Your reply to the moderators",
     responseHint: "Don't include health details: a moderator reads this, the practice does not.",
     send: "Send my reply",
@@ -159,7 +161,9 @@ export default {
     warningTitle: "Before you reply",
     warning:
       "Your reply is public. Don't mention treatments, health details, appointment dates or anything from the patient's record, and don't confirm more than the reviewer wrote: professional secrecy and data protection law apply.",
-    flagged: "The highlighted words may be health or contact details. Remove them unless you are certain they say nothing about the patient.",
+    flagged: "Remove the highlighted words before publishing: they may be health or contact details, and a practice's reply must never contain them.",
+    warned: "Check the highlighted words: a reply should not mention treatments or symptoms the reviewer did not write about.",
+    healthTerms: "The reply may contain health or contact details. Remove them and try again.",
     confirm: "I confirm that my reply contains no information about the patient's health or treatment.",
     confirmRequired: "Confirm the statement above to publish the reply.",
     templates: "Start from a neutral template",
@@ -194,7 +198,7 @@ export default {
     submit: "Send report",
     submitAppeal: "Send appeal",
     note:
-      "While Sorriso's moderators check a reported review it is not shown, and its author is asked for their side. You'll receive the decision with its reasons, and you can appeal once.",
+      "While Sorriso's moderators check a reported review it is not shown, and its author is asked for their side. You'll receive the decision with its reasons; if the review is kept, you can appeal once.",
     sent: "Report sent. The review is hidden until Sorriso's moderators decide.",
     appealSent: "Appeal sent. A different moderator will review the decision.",
     already: "This review is already being checked by the moderators.",

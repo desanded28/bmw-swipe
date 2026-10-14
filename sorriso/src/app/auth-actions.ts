@@ -264,7 +264,7 @@ export async function signup(_prev: FormState, fd: FormData): Promise<FormState>
         orgId,
         userId,
         slug: slugify(input.name),
-        title: "Dr.",
+        title: t("starter.title"),
         name: input.name,
         specialty: t("starter.specialty"),
         // Non-secret placeholder: feeds are issued by rotateIcsToken, which stores only the hash.
@@ -305,7 +305,20 @@ export async function verifyEmail(_prev: FormState, fd: FormData): Promise<FormS
   const row = await findAuthToken(field(fd, "token"), "email_verify");
   if (!row?.userId || !(await consumeAuthToken(row.id))) return { error: t("verify.invalid") };
   const now = new Date();
+  const h = await requestHeaders();
   await db.update(users).set({ emailVerifiedAt: now }).where(eq(users.id, row.userId));
+  // Every confirmation is on record (as a change to the account: there is no auth.email.* action yet),
+  // in the chain of the practice it was issued for, else the user's own.
+  const auditOrg = row.orgId ?? (await defaultOrgFor(row.userId))?.id ?? null;
+  await audit({
+    orgId: auditOrg,
+    actor: { type: "user", id: row.userId },
+    action: "settings.update",
+    entity: { type: "user", id: row.userId },
+    metadata: { emailVerified: true, tokenId: row.id.slice(0, 16) },
+    headers: h,
+    at: now,
+  });
   if (row.orgId) {
     // The practice's email is confirmed only through its owner's own address.
     const [owner] = await db
@@ -321,7 +334,7 @@ export async function verifyEmail(_prev: FormState, fd: FormData): Promise<FormS
         action: "settings.update",
         entity: { type: "org", id: row.orgId },
         metadata: { emailVerified: true },
-        headers: await requestHeaders(),
+        headers: h,
       });
     }
   }

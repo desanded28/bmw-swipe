@@ -39,6 +39,26 @@ export type BookingLabels = { services: ServiceLabels };
  */
 export type EmbedMessaging = { parentOrigin: string | null; events: boolean; includeId: boolean };
 
+/**
+ * In the widget's dialog focus is almost always inside this frame, and key events in a cross-origin
+ * frame never reach the host page: Escape asks the host to close the dialog with { source, type }
+ * only, posted to the validated parent only. widget.js checks the message's origin and source,
+ * ignores it for an inline frame, and keeps the frame (what was typed) when it closes. An Escape a
+ * control already handled (e.g. closing a picker) is left alone. Returns the cleanup.
+ */
+export function relayEscapeToHost(
+  doc: Pick<Document, "addEventListener" | "removeEventListener">,
+  host: Pick<Window, "postMessage">,
+  parentOrigin: string,
+): () => void {
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key !== "Escape" || e.defaultPrevented || e.isComposing) return;
+    host.postMessage({ source: "sorriso", type: "close" }, parentOrigin);
+  };
+  doc.addEventListener("keydown", onKey);
+  return () => doc.removeEventListener("keydown", onKey);
+}
+
 /** Everything the flow holds, in memory only (never web storage): survives Back and a taken slot. */
 export type FlowState = {
   step: Step;
@@ -56,7 +76,12 @@ export type FlowState = {
 };
 
 export type FlowAction =
-  | { type: "selectService"; serviceId: string; keepPractitioner: boolean }
+  /**
+   * keepPractitioner / keepLocation: the chosen practitioner offers the new service, the chosen
+   * office has a practitioner who does (computed by the component, which knows the clinic). Anything
+   * not kept is reset to "first available" / "any office".
+   */
+  | { type: "selectService"; serviceId: string; keepPractitioner: boolean; keepLocation?: boolean }
   | { type: "setPractitioner"; practitionerId: string }
   | { type: "setLocation"; locationId: string }
   | { type: "pickSlot"; slot: PickedSlot }
@@ -86,6 +111,9 @@ export function flowReducer(state: FlowState, action: FlowAction): FlowState {
         slot: null,
         slotTaken: false,
         practitionerId: action.keepPractitioner ? state.practitionerId : "",
+        // An office kept from another service could have no one offering this one: no times, and
+        // its select may be hidden (one eligible office), so nothing could reset it.
+        locationId: action.keepLocation ? state.locationId : "",
       });
     case "setPractitioner":
       return { ...state, practitionerId: action.practitionerId, locationId: "", slot: null };
@@ -106,6 +134,21 @@ export function flowReducer(state: FlowState, action: FlowAction): FlowState {
     case "waitlist":
       return { ...state, waitlist: { ...state.waitlist, ...action.patch } };
   }
+}
+
+/** The selectService action for `id`, keeping the practitioner and office only where they offer it. */
+export function selectServiceAction(
+  clinic: Pick<PublicClinic, "practitioners">,
+  state: Pick<FlowState, "practitionerId" | "locationId">,
+  serviceId: string,
+): Extract<FlowAction, { type: "selectService" }> {
+  const offering = clinic.practitioners.filter((p) => p.serviceIds.includes(serviceId));
+  const keepPractitioner = Boolean(state.practitionerId && offering.some((p) => p.id === state.practitionerId));
+  const keepLocation = Boolean(
+    state.locationId &&
+      offering.some((p) => (!keepPractitioner || p.id === state.practitionerId) && p.locationIds.includes(state.locationId)),
+  );
+  return { type: "selectService", serviceId, keepPractitioner, keepLocation };
 }
 
 export function initialFlowState(
@@ -181,7 +224,7 @@ export function BookingFlow({
   const headingId = `${uid}-step`;
   const tz = clinic.org.timezone;
   const [state, dispatch] = useReducer(flowReducer, undefined, () => initialFlowState(clinic, initial, today, locale));
-  const { step, serviceId, practitionerId, locationId, slot, form } = state;
+  const { step, serviceId, practitionerId, slot, form } = state;
 
   const practitionerById = useMemo(() => new Map(clinic.practitioners.map((p) => [p.id, p])), [clinic]);
   const locationById = useMemo(() => new Map(clinic.locations.map((l) => [l.id, l])), [clinic]);
@@ -204,6 +247,8 @@ export function BookingFlow({
       p.locationIds.includes(l.id),
     ),
   );
+  // An office nobody eligible works at (e.g. from the link) is ignored rather than searched in vain.
+  const locationId = eligibleLocations.some((l) => l.id === state.locationId) ? state.locationId : "";
   const visibleServices = fixedPractitioner
     ? clinic.services.filter((s) => fixedPractitioner.serviceIds.includes(s.id))
     : clinic.services.filter((s) => clinic.practitioners.some((p) => p.serviceIds.includes(s.id)));
@@ -222,6 +267,10 @@ export function BookingFlow({
     const ro = new ResizeObserver(post);
     ro.observe(document.body);
     return () => ro.disconnect();
+  }, [parentOrigin]);
+  useEffect(() => {
+    if (!parentOrigin || !window.parent || window.parent === window) return;
+    return relayEscapeToHost(document, window.parent, parentOrigin);
   }, [parentOrigin]);
 
   const chosenPractitioner = slot ? practitionerById.get(slot.practitionerId) : practitionerById.get(practitionerId);
@@ -266,13 +315,7 @@ export function BookingFlow({
             selected={serviceId}
             labels={serviceLabels}
             headingId={headingId}
-            onSelect={(id) =>
-              dispatch({
-                type: "selectService",
-                serviceId: id,
-                keepPractitioner: Boolean(practitionerId && practitionerById.get(practitionerId)?.serviceIds.includes(id)),
-              })
-            }
+            onSelect={(id) => dispatch(selectServiceAction(clinic, state, id))}
           />
         ) : null}
 

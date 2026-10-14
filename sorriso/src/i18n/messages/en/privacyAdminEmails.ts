@@ -71,7 +71,7 @@ export default {
   },
   closureCancelled: {
     subject: "Account closure cancelled",
-    body: "The closure of {practice}'s account has been cancelled and no data will be deleted. Online booking stays paused until you list the practice again in Settings.",
+    body: "The closure of {practice}'s account has been cancelled and no data will be deleted. Online booking through your own booking page, widget and links works again. The practice stays hidden from Sorriso's search until you list it again in Settings.",
   },
   closureCertificate: {
     subject: "Certificate of deletion: {practice}",

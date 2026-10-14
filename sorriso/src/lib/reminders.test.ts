@@ -1,13 +1,31 @@
 import { and, asc, eq } from "drizzle-orm";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
-import { appointments, messages, organizations, reminders, type OrgSettings, type ReminderRule } from "@/db/schema";
+import { appointments, messages, organizations, reminders, waitlist, type OrgSettings, type ReminderRule } from "@/db/schema";
 import { createPractice, MONDAY, NOW, TZ } from "@/test/fixtures";
-import { createAppointment, type NewPatientInput } from "./booking";
-import { getAppointmentDetails } from "./appointments";
+import { cancelAppointment, createAppointment, type NewPatientInput } from "./booking";
+import { appointmentLinks, getAppointmentDetails } from "./appointments";
+import { newId } from "./ids";
 import { recordConsent, withdrawConsent } from "./privacy/consent";
 import { appointmentIcs, enqueueNow, processDueReminders, reminderRiskGate } from "./reminders";
 import { addDays, zonedToUtc } from "./time";
+
+/** Set to make the next deliver() throw, as a failed insert into the message log would. */
+const deliveryFailure = vi.hoisted(() => ({ error: null as Error | null }));
+vi.mock("./messaging", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("./messaging")>();
+  return {
+    ...mod,
+    deliver: async (...args: Parameters<typeof mod.deliver>) => {
+      const error = deliveryFailure.error;
+      if (error) {
+        deliveryFailure.error = null;
+        throw error;
+      }
+      return mod.deliver(...args);
+    },
+  };
+});
 
 type Practice = Awaited<ReturnType<typeof createPractice>>;
 
@@ -304,5 +322,60 @@ describe("calendar invites", () => {
       .set({ endsAt: new Date(Date.now() - 61 * 86_400_000), startsAt: new Date(Date.now() - 61 * 86_400_000 - 1_800_000) })
       .where(eq(appointments.id, d.appointment.id));
     expect((await get(d.appointment.manageTokenEnc!)).status).toBe(404);
+  });
+});
+
+describe("failures", () => {
+  it("store no contact, name or message text in reminders.error", async () => {
+    const start = nextSlot();
+    const d = await book(A, person({ firstName: "Ottavia", lastName: "Quercia" }), start);
+    const phone = d.patient.phone!;
+    const email = d.patient.email!;
+    // DrizzleQueryError's message ends with the bound values.
+    deliveryFailure.error = new Error(
+      `Failed query: insert into "messages" ("id", "to", "body") values (?, ?, ?)\nparams: m1,${phone},Ottavia Quercia: promemoria per ${email}`,
+    );
+    await processDueReminders({ appointmentId: d.appointment.id, now: dayBefore(start) });
+    const [failed] = (await reminderRows(d.appointment.id)).filter((r) => r.error);
+    expect(failed.status).toBe("pending"); // retried later
+    expect(failed.error).toContain("params: [redacted]");
+    for (const secret of [phone, email, "Ottavia", "Quercia", "promemoria"]) expect(failed.error).not.toContain(secret);
+
+    // A provider-style message quoting the recipient is masked too.
+    const later = nextSlot();
+    const e = await book(A, person(), later);
+    deliveryFailure.error = new Error(`Twilio 400: The 'To' number ${e.patient.phone} is not valid`);
+    await processDueReminders({ appointmentId: e.appointment.id, now: dayBefore(later) });
+    const [masked] = (await reminderRows(e.appointment.id)).filter((r) => r.error);
+    expect(masked.error).toMatch(/^Twilio 400: The 'To' number \+39•••\d{4} is not valid$/);
+  });
+});
+
+describe("the privacy-choices link without a manage link", () => {
+  it("opens the privacy center in the patient's language", async () => {
+    const d = await book(A, person({ locale: "de" }));
+    const details = (await getAppointmentDetails({ id: d.appointment.id }))!;
+    const appointment = { ...details.appointment, manageTokenEnc: null };
+    expect(appointmentLinks({ ...details, appointment }).preferencesUrl).toBe("https://sorriso.test/de/privacy");
+    // Without the patient: the practice's language.
+    expect(appointmentLinks({ appointment, org: details.org }).preferencesUrl).toBe(`https://sorriso.test/${details.org.defaultLocale}/privacy`);
+    expect(appointmentLinks(details).preferencesUrl).toBe(`https://sorriso.test/a/${d.appointment.manageTokenEnc}/privacy`);
+  });
+
+  it("is in the patient's language in a waiting-list offer", async () => {
+    const W = await createPractice();
+    const start = nextSlot();
+    const cancelled = await book(W, person(), start);
+    const waiting = await book(W, person({ firstName: "Wanda", locale: "de", preferredChannel: "email" }), nextSlot());
+    await db
+      .insert(waitlist)
+      .values({ id: newId(), orgId: W.orgId, patientId: waiting.patient.id, serviceId: W.visit, earliestDate: MONDAY, latestDate: addDays(MONDAY, 30) });
+    await cancelAppointment(cancelled.appointment.id, { by: "staff", now: NOW });
+    const [offer] = await db
+      .select({ channel: messages.channel, html: messages.html })
+      .from(messages)
+      .where(and(eq(messages.patientId, waiting.patient.id), eq(messages.channel, "email")));
+    expect(offer.html).toContain('href="https://sorriso.test/de/privacy"');
+    expect(offer.html).not.toContain('href="https://sorriso.test/privacy"');
   });
 });

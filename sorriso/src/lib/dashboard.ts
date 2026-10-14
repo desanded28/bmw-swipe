@@ -317,7 +317,15 @@ export async function loadAppointmentDetail(s: StaffSession, id: string, locale:
       .where(and(eq(messages.appointmentId, id), eq(messages.orgId, s.org.id)))
       .orderBy(desc(messages.createdAt))
       .limit(MESSAGE_LIMIT);
-    thread = rows.reverse().map((m) => ({ ...m, createdAt: m.createdAt.toISOString() }));
+    // Sent texts carry the patient's personal links (manage page, review, calendar file): staff
+    // get those only through issuePatientLink(), which is audited, never off the thread.
+    const linkLabel = getT(locale, "calendar")("drawer.linkRedacted");
+    thread = rows.reverse().map((m) => ({
+      ...m,
+      subject: m.subject === null ? null : redactPatientLinks(m.subject, linkLabel),
+      body: redactPatientLinks(m.body, linkLabel),
+      createdAt: m.createdAt.toISOString(),
+    }));
   }
 
   const detail: ApptDetailDTO = {
@@ -344,6 +352,54 @@ export async function loadAppointmentDetail(s: StaffSession, id: string, locale:
     },
   );
   return detail;
+}
+
+/**
+ * A URL path that works as a patient's key: the manage page and everything under it (/a/<token>,
+ * review, privacy, rebook, forms; with or without a locale prefix) and the visit's calendar file.
+ */
+const TOKEN_PATH = /^\/(?:[a-z]{2}\/)?(?:a|api\/ics\/appointment)\/[^/?#]+/;
+const URL_IN_TEXT = /\bhttps?:\/\/[^\s<>"']+/gi;
+
+/** Replace every personal patient link in a message text with `placeholder`; other links stay. */
+export function redactPatientLinks(text: string, placeholder: string): string {
+  return text.replace(URL_IN_TEXT, (raw) => {
+    // Punctuation that ends the sentence is not part of the link.
+    const trail = /[.,;:!?)\]]+$/.exec(raw)?.[0] ?? "";
+    const url = trail ? raw.slice(0, -trail.length) : raw;
+    let path: string;
+    try {
+      path = new URL(url).pathname;
+    } catch {
+      return raw;
+    }
+    return TOKEN_PATH.test(path) ? `${placeholder}${trail}` : raw;
+  });
+}
+
+// ---------------------------------------------------------------- the list's "Call" button
+
+export type PhoneLookup = { ok: true; phone: string | null } | { ok: false; code: "forbidden" | "not_found" | "restricted" };
+
+/**
+ * Only the patient's mobile number, for a list row's "Call" button: needs patient.contact.read;
+ * a restricted (or erased) patient's number only after the viewer gave a reason (as in the
+ * drawer). Audited as appointment.view (view "call"); another org's id is not_found, unaudited.
+ */
+export async function loadAppointmentPhone(s: StaffSession, id: string): Promise<PhoneLookup> {
+  if (!can(s.role, "patient.contact.read")) return { ok: false, code: "forbidden" };
+  const [row] = await db
+    .select({ patientId: patients.id, phone: patients.phone, restrictedAt: patients.restrictedAt, erasedAt: patients.erasedAt })
+    .from(appointments)
+    .innerJoin(patients, and(eq(patients.id, appointments.patientId), eq(patients.orgId, s.org.id)))
+    .where(and(eq(appointments.id, id), eq(appointments.orgId, s.org.id)));
+  if (!row) return { ok: false, code: "not_found" };
+  if (row.restrictedAt || row.erasedAt) {
+    const unlocked = can(s.role, "patient.restricted.read") && (await hasRestrictedAccess(s, row.patientId));
+    if (!unlocked) return { ok: false, code: "restricted" };
+  }
+  await auditStaff(s, "appointment.view", { type: "appointment", id }, { metadata: { view: "call", contacts: true } });
+  return { ok: true, phone: row.phone };
 }
 
 // ---------------------------------------------------------------- list views in the access log

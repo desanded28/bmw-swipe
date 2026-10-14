@@ -318,6 +318,41 @@ export async function completePrivacyRequest(
   return row;
 }
 
+// ---------------------------------------------------------------- contact kept for the answer
+
+/**
+ * When a patient is erased while one of their requests is still open, the request keeps the
+ * contact the record had, appended to its (encrypted) details after this marker, so staff can
+ * still answer it (Art. 12(3)-(4)). The text goes once the request is answered, or 30 days after
+ * it is closed (ERASED_REQUEST_TEXT_DAYS, the retention job).
+ */
+export const CONTACT_SNAPSHOT_MARK = "[contact] ";
+
+/** Days the free text of a closed request of an erased patient is kept, to answer by hand. */
+export const ERASED_REQUEST_TEXT_DAYS = 30;
+
+/** The contacts a record could be answered at (its own and a guardian's), without duplicates. */
+export function contactsOf(p: Pick<Patient, "email" | "phone" | "guardianEmail" | "guardianPhone">): string[] {
+  return [...new Set([p.email, p.phone, p.guardianEmail, p.guardianPhone].filter((v): v is string => Boolean(v)))];
+}
+
+export function withContactSnapshot(details: string | null, contacts: readonly string[]): string | null {
+  if (!contacts.length) return details;
+  const { text } = splitContactSnapshot(details);
+  return `${text ? `${text}\n\n` : ""}${CONTACT_SNAPSHOT_MARK}${contacts.join(" · ")}`;
+}
+
+/** The requester's own words and the contact kept from an erased record, apart (for display). */
+export function splitContactSnapshot(details: string | null): { text: string | null; contact: string | null } {
+  if (!details) return { text: null, contact: null };
+  const at = details.startsWith(CONTACT_SNAPSHOT_MARK) ? 0 : details.lastIndexOf(`\n\n${CONTACT_SNAPSHOT_MARK}`);
+  if (at < 0) return { text: details, contact: null };
+  const markAt = at === 0 ? 0 : at + 2;
+  const contact = details.slice(markAt + CONTACT_SNAPSHOT_MARK.length).trim();
+  if (!contact || contact.includes("\n")) return { text: details, contact: null };
+  return { text: details.slice(0, at).trim() || null, contact };
+}
+
 // ---------------------------------------------------------------- messages to the requester
 
 /** The privacyAdminEmails kinds sent to patients. */
@@ -428,14 +463,23 @@ export async function notifyPatientDirect(
 export async function notifyRequester(
   r: PrivacyRequest,
   kind: RequesterMessageKind,
-  opts: { now?: Date } = {},
+  opts: {
+    now?: Date;
+    /**
+     * The record as it was before an erasure (erasePatient answering the request): the answer goes
+     * to the contact the patient had, which the erasure is about to remove or has removed.
+     */
+    patient?: ContactTarget;
+  } = {},
   tx: Tx = db,
 ): Promise<boolean> {
   if (!r.patientId) return false;
-  const [patient] = await tx
-    .select()
-    .from(patients)
-    .where(and(eq(patients.id, r.patientId), r.orgId === null ? undefined : eq(patients.orgId, r.orgId)));
+  const [patient] = opts.patient
+    ? [opts.patient]
+    : await tx
+        .select()
+        .from(patients)
+        .where(and(eq(patients.id, r.patientId), r.orgId === null ? undefined : eq(patients.orgId, r.orgId)));
   if (!patient) return false;
   const locale = isLocale(r.requesterLocale) ? r.requesterLocale : patient.locale;
   const org = await senderOf(r.orgId, tx);

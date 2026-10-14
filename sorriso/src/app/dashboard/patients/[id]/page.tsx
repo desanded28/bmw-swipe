@@ -6,6 +6,7 @@ import { notFound } from "next/navigation";
 import { AppointmentList } from "@/components/dashboard/AppointmentList";
 import { PatientCarePanel } from "@/components/dashboard/slots/PatientCarePanel";
 import { PatientDetailsForm, PatientNotesForm, RestrictedReasonForm } from "@/components/privacy-admin/PatientForms";
+import { ComplianceBanner } from "@/components/privacy-admin/ComplianceBanner";
 import { PatientPrivacyActions, type PrivacyActionKind } from "@/components/privacy-admin/PatientPrivacyActions";
 import { AccessLog, ConsentTimeline, PanelCard, RequestList } from "@/components/privacy-admin/PrivacyPanel";
 import { Avatar, Badge, Card } from "@/components/ui";
@@ -20,8 +21,9 @@ import { listAppointments, loadResources } from "@/lib/dashboard";
 import { fullName } from "@/lib/format";
 import { can, permissionsFor, requirePermission } from "@/lib/permissions";
 import { currentConsents, isObjectable } from "@/lib/privacy/consent";
-import { hasRestrictedAccess, restrictedView } from "@/lib/privacy/erasure";
-import { dueBadge, listPrivacyRequests } from "@/lib/privacy/requests";
+import { hasRestrictedAccess, isDeferredErasure, restrictedView, restrictionReasonView } from "@/lib/privacy/erasure";
+import { gatePage } from "@/lib/privacy/gates";
+import { dueBadge, isOpenRequest, listPrivacyRequests } from "@/lib/privacy/requests";
 import { isPlatformConsentPurpose } from "@/lib/privacy/roles";
 import { getPrivacy } from "@/lib/privacy/settings";
 import { todayIn } from "@/lib/time";
@@ -39,21 +41,24 @@ const ACTIONS: readonly PrivacyActionKind[] = ["export", "restrict", "erase", "c
  * ledger, who accessed the record, privacy requests, and the export / restriction / erasure /
  * consent actions). Every view is audited as patient.view. Restricted records are a placeholder
  * for staff without patient.restricted.read, and need an audited reason for those with it.
+ * Opened from a privacy request (?action=erase&request=<id>), the erasure also answers it.
  */
 export default async function PatientPage({
   params,
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ action?: string }>;
+  searchParams: Promise<{ action?: string; request?: string }>;
 }) {
   const s = await requirePermission("patient.read");
+  const banner = await gatePage(s);
   const { id } = await params;
-  const action = (await searchParams).action;
+  const { action, request: requestId } = await searchParams;
   const locale = await getStaffLocale();
   const t = getT(locale, "privacyAdmin");
   const tc = getT(locale, "common");
   const tConsents = getT(locale, "consents");
+  const tReminders = getT(locale, "reminders");
   const tz = s.org.timezone;
 
   const [p] = await db
@@ -142,9 +147,13 @@ export default async function PatientPage({
     return t.has(key) ? t(key) : r.row.actorType;
   };
   const purposes = CONSENT_PURPOSES.filter((c) => !isPlatformConsentPurpose(c)).map((c) => ({ id: c, title: tConsents(`${c}.title`) }));
+  // The open request of this patient the erasure answers (from the request's one-click link).
+  const answering = requests.find(({ request: r }) => r.id === requestId && isOpenRequest(r))?.request;
+  const restriction = restrictionReasonView(p.restrictionReason);
 
   return (
     <div className="mx-auto max-w-6xl">
+      <ComplianceBanner state={banner} />
       {back}
       <div className="mb-6 mt-3 flex flex-wrap items-center gap-4">
         <Avatar name={name} color={readOnly ? "#94a3b8" : "#475569"} size={56} />
@@ -180,7 +189,12 @@ export default async function PatientPage({
         <div role="status" className="mb-6 rounded-xl bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-amber-200">
           <p className="font-semibold">{t("patient.restrictedBanner.title")}</p>
           <p>{t("patient.restrictedBanner.body", { date: fmtDay(zonedDate(p.restrictedAt, tz), "long", locale) })}</p>
-          {p.restrictionReason ? <p className="mt-1">{t("patient.restrictedBanner.reason", { reason: p.restrictionReason })}</p> : null}
+          {isDeferredErasure(p) ? <p className="mt-1">{t("patient.restrictedBanner.erasureDeferred")}</p> : null}
+          {restriction.kind === "retention_inactive" || restriction.kind === "retention_never_seen" ? (
+            <p className="mt-1">{t(`patient.restrictionReasons.${restriction.kind}`)}</p>
+          ) : restriction.text ? (
+            <p className="mt-1">{t("patient.restrictedBanner.reason", { reason: restriction.text })}</p>
+          ) : null}
           {p.retainUntil ? <p className="mt-1">{t("patient.restrictedBanner.retainUntil", { date: fmtDay(p.retainUntil, "long", locale) })}</p> : null}
         </div>
       ) : null}
@@ -216,7 +230,7 @@ export default async function PatientPage({
                     ) : (
                       <p className="mt-0.5 line-clamp-2 text-slate-700">{m.subject || m.body}</p>
                     )}
-                    {m.intent ? <p className="mt-0.5 text-xs text-slate-500">{t("patient.understoodAs", { intent: m.intent })}</p> : null}
+                    {m.intent ? <p className="mt-0.5 text-xs text-slate-500">{t("patient.understoodAs", { intent: tReminders(`messages.intent.${m.intent}`) })}</p> : null}
                   </div>
                 ))}
               </Card>
@@ -262,6 +276,7 @@ export default async function PatientPage({
                     email: !p.emailOptIn || current.email_channel?.granted === false,
                     whatsapp: current.whatsapp_channel?.granted === false,
                   },
+                  whatsappGranted: current.whatsapp_channel?.granted === true,
                 }}
               />
             )}
@@ -298,6 +313,16 @@ export default async function PatientPage({
                   purposes={purposes}
                   initial={ACTIONS.find((a) => a === action) ?? null}
                   today={todayIn(tz)}
+                  answering={
+                    answering && allow("patient.erase")
+                      ? {
+                          id: answering.id,
+                          type: t(`requests.types.${answering.type}`),
+                          received: fmtDay(zonedDate(answering.receivedAt, tz), "long", locale),
+                          language: ENDONYM[answering.requesterLocale],
+                        }
+                      : null
+                  }
                 />
               </div>
             </div>

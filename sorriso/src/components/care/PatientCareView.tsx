@@ -51,7 +51,9 @@ export function PatientCareView({ data }: { data: PatientCareData }) {
             <p className="mt-1 text-amber-900">
               {data.duplicate.ofName
                 ? t("patient.duplicateOf", { name: data.duplicate.ofName })
-                : t("patient.duplicateOthers", { count: data.duplicate.flaggedBy })}
+                : data.duplicate.ofRestricted
+                  ? t("patient.duplicateOfRestricted")
+                  : t("patient.duplicateOthers", { count: data.duplicate.flaggedBy })}
             </p>
             <Link
               href={`/dashboard/patients/duplicates#p-${data.patientId}`}
@@ -123,10 +125,10 @@ export function PatientCareView({ data }: { data: PatientCareData }) {
                   <div className="min-w-0">
                     <p className="font-semibold">{t("patient.signed", { date: day(s.signedAt), name: s.signerName ?? "—" })}</p>
                     <div className="mt-0.5 flex flex-wrap gap-1">
-                      {s.redFlags ? (
-                        s.redFlags.length ? (
+                      {s.alerts !== null ? (
+                        s.alerts ? (
                           <Badge tone="red">
-                            <TriangleAlert size={12} aria-hidden /> {t("patient.alerts", { count: s.redFlags.length })}
+                            <TriangleAlert size={12} aria-hidden /> {t("patient.alerts", { count: s.alerts })}
                           </Badge>
                         ) : (
                           <Badge tone="green">{t("patient.noAlerts")}</Badge>

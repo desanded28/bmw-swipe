@@ -68,9 +68,10 @@ describe("Stars", () => {
     expect(html.match(/<svg[^>]*aria-hidden="true"/g)).toHaveLength(5);
   });
 
-  it("falls back to a language-neutral label and gives each instance its own gradients", () => {
-    const html = render(h("div", null, h(Stars, { value: 3 }), h(Stars, { value: 3 })));
-    expect(html).toContain('aria-label="3.0/5"');
+  it("requires a label (no unlocalised fallback) and gives each instance its own gradients", () => {
+    // @ts-expect-error: label is required; a caller without one doesn't compile.
+    expect(render(h(Stars, { value: 3 }))).not.toContain("3.0/5");
+    const html = render(h("div", null, h(Stars, { value: 3, label: "3 su 5" }), h(Stars, { value: 3, label: "3 su 5" })));
     const ids = [...html.matchAll(/linearGradient id="([^"]+)"/g)].map((m) => m[1]);
     expect(new Set(ids).size).toBe(10);
   });

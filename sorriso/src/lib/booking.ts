@@ -972,6 +972,8 @@ export async function setOutcome(appointmentId: string, outcome: "completed" | "
     // undoing "completed" takes back a recall nothing was sent for.
     if (outcome === "completed") await upsertRecall(tx, { orgId: row.orgId, appointmentId, now });
     else if (before.appointment.status === "completed") await dropRecallForVisit(tx, row.orgId, appointmentId);
+    // A recall this visit had booked wasn't honoured: it is open again (sent again, then the call list).
+    if (outcome === "no_show") await reopenRecallsFor(tx, row.orgId, appointmentId, now);
     if (outcome === "scheduled") {
       // Undoing a mistaken outcome: bring back the reminders, drop the review request.
       await cancelPendingReminders(tx, appointmentId, ["review_request"]);
@@ -1109,6 +1111,11 @@ export type DuplicateSide = {
   phone: string | null;
   createdAt: Date;
   restricted: boolean;
+  /**
+   * A restricted record (Art. 18) and a viewer without patient.restricted.read: names, birth
+   * date, contacts and visits are left out (empty, null or 0); show a placeholder instead.
+   */
+  masked: boolean;
   appointments: number;
   lastVisit: Date | null;
 };
@@ -1118,9 +1125,13 @@ export type DuplicatePair = { patient: DuplicateSide; other: DuplicateSide };
 /**
  * Records flagged possibleDuplicateOfId (upsertPatient: same first name and a shared contact, but
  * a birth date or identifier that didn't match), each with the record it may duplicate. Both
- * must be live records of this practice (not merged, not erased).
+ * must be live records of this practice (not merged, not erased). A restricted side is masked
+ * unless `restricted` (the viewer has patient.restricted.read), like the calendar.
  */
-export async function listDuplicatePairs(orgId: string, opts: { contacts: boolean; limit?: number }): Promise<DuplicatePair[]> {
+export async function listDuplicatePairs(
+  orgId: string,
+  opts: { contacts: boolean; restricted?: boolean; limit?: number },
+): Promise<DuplicatePair[]> {
   const live = and(eq(patients.orgId, orgId), isNull(patients.mergedIntoId), isNull(patients.erasedAt));
   const flagged = await db
     .select()
@@ -1140,17 +1151,20 @@ export async function listDuplicatePairs(orgId: string, opts: { contacts: boolea
     : [];
   const side = (p: Patient): DuplicateSide => {
     const v = visits.find((x) => x.patientId === p.id);
+    const restricted = isRestricted(p);
+    const masked = restricted && !opts.restricted;
     return {
       id: p.id,
-      firstName: p.firstName,
-      lastName: p.lastName,
-      birthDate: p.birthDate,
-      email: opts.contacts ? p.email : null,
-      phone: opts.contacts ? p.phone : null,
+      firstName: masked ? "" : p.firstName,
+      lastName: masked ? "" : p.lastName,
+      birthDate: masked ? null : p.birthDate,
+      email: opts.contacts && !masked ? p.email : null,
+      phone: opts.contacts && !masked ? p.phone : null,
       createdAt: p.createdAt,
-      restricted: isRestricted(p),
-      appointments: Number(v?.n ?? 0),
-      lastVisit: v?.last ? new Date(Number(v.last)) : null,
+      restricted,
+      masked,
+      appointments: masked ? 0 : Number(v?.n ?? 0),
+      lastVisit: !masked && v?.last ? new Date(Number(v.last)) : null,
     };
   };
   return flagged.flatMap((p) => {

@@ -11,6 +11,8 @@ import { APP_URL } from "@/lib/config";
 import { can } from "@/lib/permissions";
 import { signPracticeRef } from "@/lib/privacy/context";
 import { resolveSettings } from "@/lib/settings";
+import { ComplianceBanner } from "@/components/privacy-admin/ComplianceBanner";
+import { gatePage } from "@/lib/privacy/gates";
 
 export async function generateMetadata(): Promise<Metadata> {
   return { title: getT(await getStaffLocale(), "privacyAdmin")("settings.title") };
@@ -24,6 +26,7 @@ export async function generateMetadata(): Promise<Metadata> {
  */
 export default async function SettingsPage() {
   const s = await requireStaff();
+  const banner = await gatePage(s);
   const locale = await getStaffLocale();
   const t = getT(locale, "privacyAdmin");
   const tc = getT(locale, "common");
@@ -43,6 +46,7 @@ export default async function SettingsPage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
+      <ComplianceBanner state={banner} />
       <PageHeader title={t("settings.title")} />
       {!canManage ? <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{t("settings.managersOnly")}</p> : null}
 

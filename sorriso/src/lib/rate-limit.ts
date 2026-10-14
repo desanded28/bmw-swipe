@@ -22,14 +22,26 @@ function firstValid(...candidates: (string | null | undefined)[]): string | null
 }
 
 /**
- * The caller's IP as seen by our edge. x-forwarded-for is client-controlled except for the
- * hop our proxy appended last, so only that one is trusted.
+ * The caller's IP as seen by our edge. Only a header the deployment's own edge writes is believed;
+ * any other a client can send with any value (and so pick its rate-limit bucket, or pass an API
+ * key's IP allow-list):
+ * - TRUSTED_IP_HEADER set (e.g. "x-real-ip" behind an nginx that overwrites it, "cf-connecting-ip"
+ *   behind Cloudflare): that header only ("x-forwarded-for" means its last hop).
+ * - On Vercel (VERCEL is set by the platform): x-vercel-forwarded-for, which its edge overwrites.
+ * - Otherwise (self-hosted behind a proxy such as Caddy or nginx): the last x-forwarded-for hop,
+ *   the one our proxy appended; everything before it is client-controlled. x-real-ip and
+ *   x-vercel-forwarded-for are ignored, since a proxy that doesn't know them passes them through.
+ *   (Next itself fills in x-forwarded-for with the socket address when it's missing, so x-real-ip
+ *   is read only by code running without Next, such as tests and scripts.)
+ * Without a usable address: "local".
  */
 export function clientIp(h: Headers): string {
   const xff = h.get("x-forwarded-for")?.split(",");
-  return (
-    firstValid(h.get("x-vercel-forwarded-for")?.split(",")[0], h.get("x-real-ip"), xff?.[xff.length - 1]) ?? "local"
-  );
+  const lastHop = xff?.[xff.length - 1];
+  const trusted = process.env.TRUSTED_IP_HEADER?.trim().toLowerCase();
+  if (trusted) return firstValid(trusted === "x-forwarded-for" ? lastHop : h.get(trusted)?.split(",")[0]) ?? "local";
+  if (process.env.VERCEL) return firstValid(h.get("x-vercel-forwarded-for")?.split(",")[0], lastHop) ?? "local";
+  return firstValid(xff ? lastHop : h.get("x-real-ip")) ?? "local";
 }
 
 /**

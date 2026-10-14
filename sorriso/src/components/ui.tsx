@@ -225,9 +225,8 @@ export function Avatar({
 }
 
 /**
- * A star rating drawn as one image. Pass `label`, the localised reading of the rating (for example
- * t("rating.stars", { rating }) from the a11y namespace): it is what screen readers announce. Without
- * it the label falls back to a language-neutral "4.5/5" (kept optional only for existing callers).
+ * A star rating drawn as one image. `label` is required: the localised reading of the rating (for
+ * example t("rating.stars", { rating }) from the a11y namespace), which screen readers announce.
  */
 export function Stars({
   value,
@@ -238,11 +237,11 @@ export function Stars({
   value: number;
   size?: number;
   className?: string;
-  label?: string;
+  label: string;
 }) {
   const uid = useId();
   return (
-    <span role="img" aria-label={label ?? `${value.toFixed(1)}/5`} className={clsx("inline-flex", className)}>
+    <span role="img" aria-label={label} className={clsx("inline-flex", className)}>
       {[1, 2, 3, 4, 5].map((i) => {
         const fill = Math.max(0, Math.min(1, value - (i - 1)));
         const gradient = `${uid}star${i}`;

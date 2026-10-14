@@ -5,7 +5,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CareAppointment } from "@/components/dashboard/slots/contracts";
 import { CalendarEventBadges } from "@/components/dashboard/slots/CalendarEventBadges";
 import { client, db } from "@/db";
-import { auditLog, formSubmissions, organizations } from "@/db/schema";
+import { auditLog, formSubmissions, organizations, patients } from "@/db/schema";
 import { I18nProvider } from "@/i18n/provider";
 import { getMessages } from "@/i18n/t";
 import { createPractice, MONDAY, NOW, TZ } from "@/test/fixtures";
@@ -14,6 +14,7 @@ import {
   anamnesisStatuses,
   clinicalAnamnesis,
   DEFAULT_ANAMNESIS_V1,
+  markFormExported,
   parseAnswers,
   redFlagsOf,
   sendFormInvites,
@@ -23,6 +24,7 @@ import {
 import { manageTokenOf } from "./links";
 import { sendOtp } from "./otp";
 import { permissionsFor } from "./permissions";
+import { grantRestrictedAccess } from "./privacy/erasure";
 import { loadCareFlags } from "./risk";
 import { zonedToUtc } from "./time";
 
@@ -223,6 +225,46 @@ describe("signing the medical history", () => {
     expect(forReception).not.toContain('data-badge="flag"');
     expect(forReception).not.toContain("Medical alert");
     expect(forReception).toContain("Medical history received");
+  });
+});
+
+describe("the clinical team's side", () => {
+  it("every opening is on the patient's access log; a restricted patient's answers need a recent reason", async () => {
+    const { token, d } = await upcoming("Riservata", 13);
+    const c = await code(token);
+    const res = await submitAnamnesis({ token, answers: ANSWERS, challengeId: c.challengeId, code: c.code, signerName: "Riservata Form", locale: "it", headers: visitor(), now: NOW });
+    if (!res.ok) throw new Error(res.reason);
+    const owner = permissionsFor("owner");
+    const actor = { type: "user" as const, id: "user-owner-forms" };
+    const views = () =>
+      db
+        .select()
+        .from(auditLog)
+        .where(and(eq(auditLog.action, "patient.clinical.view"), eq(auditLog.entityType, "patient"), eq(auditLog.entityId, d.patient.id)));
+
+    expect((await clinicalAnamnesis({ orgId: p.orgId, submissionId: res.submissionId, permissions: owner, actor })).ok).toBe(true);
+    const logged = await views();
+    expect(logged).toHaveLength(1);
+    expect(logged[0].metadata).toMatchObject({ view: "answers", kind: "anamnesis", submissionId: res.submissionId, appointmentId: d.appointment.id });
+    expect(JSON.stringify(logged[0].metadata)).not.toContain("Warfarin");
+
+    await db.update(patients).set({ restrictedAt: NOW, restrictionReason: "Art. 18 request" }).where(eq(patients.id, d.patient.id));
+    const restricted = { ok: false, reason: "restricted" };
+    expect(await clinicalAnamnesis({ orgId: p.orgId, submissionId: res.submissionId, permissions: owner, actor })).toEqual(restricted);
+    expect(await clinicalAnamnesis({ orgId: p.orgId, appointmentId: d.appointment.id, permissions: permissionsFor("practitioner"), actor })).toEqual(restricted);
+    expect(await markFormExported({ orgId: p.orgId, submissionId: res.submissionId, permissions: owner, actor })).toBe(false);
+    // Nothing read, nothing logged.
+    expect(await views()).toHaveLength(1);
+
+    await grantRestrictedAccess({ user: { id: actor.id }, org: { id: p.orgId } }, d.patient.id, "Patient in the chair now");
+    expect((await clinicalAnamnesis({ orgId: p.orgId, submissionId: res.submissionId, permissions: owner, actor })).ok).toBe(true);
+    expect(await views()).toHaveLength(2);
+    // The reason is personal: another staff member, or a role without patient.restricted.read, still can't.
+    expect(await clinicalAnamnesis({ orgId: p.orgId, submissionId: res.submissionId, permissions: owner, actor: { type: "user", id: "someone-else" } })).toEqual(
+      restricted,
+    );
+    expect(await clinicalAnamnesis({ orgId: p.orgId, submissionId: res.submissionId, permissions: permissionsFor("practitioner"), actor })).toEqual(restricted);
+    expect(await markFormExported({ orgId: p.orgId, submissionId: res.submissionId, permissions: owner, actor })).toBe(true);
   });
 });
 

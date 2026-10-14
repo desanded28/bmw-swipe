@@ -27,7 +27,8 @@ export default async function DuplicatesPage() {
   const t = getT(locale, "care");
   const contacts = can(s.role, "patient.contact.read");
   const canWrite = can(s.role, "patient.write");
-  const pairs = await listDuplicatePairs(s.org.id, { contacts });
+  // Restricted records (Art. 18) are masked unless the viewer may read them, as on the calendar.
+  const pairs = await listDuplicatePairs(s.org.id, { contacts, restricted: can(s.role, "patient.restricted.read") });
   await auditStaff(s, "patient.search", undefined, { metadata: { view: "duplicates", pairs: pairs.length } });
 
   /** A day inside a sentence ("Born 3 March 1990"): never capitalised. */
@@ -40,19 +41,23 @@ export default async function DuplicatesPage() {
     return (
       <div id={anchor} className="min-w-0 flex-1 basis-64 space-y-2 rounded-xl bg-slate-50 p-4 scroll-mt-20">
         <Link href={`/dashboard/patients/${p.id}`} className="text-base font-bold hover:underline">
-          {`${p.firstName} ${p.lastName}`.trim()}
+          {p.masked ? t("duplicates.maskedName") : `${p.firstName} ${p.lastName}`.trim()}
         </Link>
-        <div className="space-y-0.5 text-sm text-slate-700">
-          <p className={p.birthDate !== other.birthDate ? "font-semibold text-amber-800" : undefined}>
-            {p.birthDate ? t("duplicates.born", { date: day(p.birthDate) }) : t("duplicates.noBirthDate")}
-          </p>
-          {p.phone || p.email ? <p>{[formatPhone(p.phone), p.email].filter(Boolean).join(" · ")}</p> : null}
-          <p className="text-xs text-slate-500">{t("duplicates.record", { date: day(zonedDate(p.createdAt, s.org.timezone)) })}</p>
-          <p className="text-xs text-slate-500">
-            {t("duplicates.visits", { count: p.appointments })} ·{" "}
-            {p.lastVisit ? t("duplicates.lastVisit", { date: day(zonedDate(p.lastVisit, s.org.timezone)) }) : t("duplicates.noVisit")}
-          </p>
-        </div>
+        {p.masked ? (
+          <p className="text-sm text-slate-600">{t("duplicates.maskedHint")}</p>
+        ) : (
+          <div className="space-y-0.5 text-sm text-slate-700">
+            <p className={p.birthDate !== other.birthDate && !other.masked ? "font-semibold text-amber-800" : undefined}>
+              {p.birthDate ? t("duplicates.born", { date: day(p.birthDate) }) : t("duplicates.noBirthDate")}
+            </p>
+            {p.phone || p.email ? <p>{[formatPhone(p.phone), p.email].filter(Boolean).join(" · ")}</p> : null}
+            <p className="text-xs text-slate-500">{t("duplicates.record", { date: day(zonedDate(p.createdAt, s.org.timezone)) })}</p>
+            <p className="text-xs text-slate-500">
+              {t("duplicates.visits", { count: p.appointments })} ·{" "}
+              {p.lastVisit ? t("duplicates.lastVisit", { date: day(zonedDate(p.lastVisit, s.org.timezone)) }) : t("duplicates.noVisit")}
+            </p>
+          </div>
+        )}
         {p.restricted ? (
           <Badge tone="red">
             <ShieldAlert size={12} aria-hidden /> {t("duplicates.restricted")}
@@ -79,6 +84,8 @@ export default async function DuplicatesPage() {
         <ul className="space-y-4">
           {pairs.map(({ patient, other }) => {
             const restricted = patient.restricted || other.restricted;
+            // Deciding about a record the viewer can't see would be guesswork.
+            const masked = patient.masked || other.masked;
             return (
               <li key={`${patient.id}:${other.id}`}>
                 <Card className="p-4">
@@ -88,7 +95,7 @@ export default async function DuplicatesPage() {
                   </div>
                   <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                     {restricted ? <p className="text-xs text-red-700">{t("duplicates.restrictedHint")}</p> : <span />}
-                    {canWrite ? (
+                    {canWrite && !masked ? (
                       <ActionButton action={dismissDuplicateAction.bind(null, patient.id)} variant="ghost" confirm={t("duplicates.notSameConfirm")}>
                         {t("duplicates.notSame")}
                       </ActionButton>

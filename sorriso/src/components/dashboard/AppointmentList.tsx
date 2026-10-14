@@ -1,8 +1,8 @@
 "use client";
 
-import { BellRing, Check, NotebookPen, Phone, UserX } from "lucide-react";
+import { BellRing, Check, Lock, NotebookPen, Phone, UserX } from "lucide-react";
 import { useState } from "react";
-import { approve, confirmByPhone, getAppointmentDetail, remindNow } from "@/app/dashboard/actions/appointments";
+import { approve, confirmByPhone, getAppointmentPhone, remindNow } from "@/app/dashboard/actions/appointments";
 import { capitalizeFirst, fmtDay } from "@/i18n/datefmt";
 import { useLocale, useT } from "@/i18n/provider";
 import { Badge, Button, EmptyState, cx } from "../ui";
@@ -16,8 +16,9 @@ import { useRunAction } from "./useRunAction";
 
 /**
  * A list of appointments (overview, confirmations, the calendar's list view, a patient's record).
- * Rows carry no contact details: "Call" fetches the number through getAppointmentDetail(), which
- * checks patient.contact.read and is audited. Each row opens the appointment drawer.
+ * Rows carry no contact details: "Call" fetches only the number (getAppointmentPhone, which checks
+ * patient.contact.read and is audited). A restricted patient's row offers no call, reminder or
+ * confirmation: the drawer asks for a reason first. Each row opens the appointment drawer.
  */
 export function AppointmentList({
   appointments,
@@ -47,11 +48,10 @@ export function AppointmentList({
   if (!appointments.length) return <EmptyState title={empty ?? t("list.empty")} />;
 
   async function call(id: string) {
-    const res = await getAppointmentDetail(id);
+    const res = await getAppointmentPhone(id);
     if (!res.ok) return toast.show({ tone: "error", text: res.error });
-    const phone = res.data.contacts?.phone;
-    if (!phone) return toast.show({ tone: "error", text: res.data.access.contacts ? t("list.noPhone") : t("drawer.contactsHidden") });
-    window.location.href = `tel:${phone}`;
+    if (!res.phone) return toast.show({ tone: "error", text: t("list.noPhone") });
+    window.location.href = `tel:${res.phone}`;
   }
 
   return (
@@ -106,10 +106,18 @@ export function AppointmentList({
                         <span className="sr-only">{t("list.hasNotes")}</span>
                       </span>
                     ) : null}
+                    {/* A masked row's placeholder name already says it is restricted. */}
+                    {a.restricted && !a.patient.masked ? (
+                      <Badge tone="amber" title={t("list.restrictedHint")}>
+                        <Lock size={11} aria-hidden /> {t("list.restricted")}
+                      </Badge>
+                    ) : null}
                     <CalendarEventBadges appt={toCareAppointment(a)} />
                   </p>
                   <p className="truncate text-xs text-slate-600">{t("list.prefers", { channel: tc(`channels.${a.patient.preferredChannel}`) })}</p>
-                  {showLastMessage?.[a.id] ? (
+                  {a.restricted && showLastMessage ? (
+                    <p className="mt-1 text-xs text-slate-600">{t("list.restrictedHint")}</p>
+                  ) : showLastMessage?.[a.id] ? (
                     <p className="mt-1 truncate rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-950">
                       {t("list.lastReply", { text: showLastMessage[a.id] })}
                     </p>
@@ -133,7 +141,7 @@ export function AppointmentList({
                       <Check size={14} aria-hidden /> {t("list.approve")}
                     </Button>
                   ) : null}
-                  {quickActions && a.status === "scheduled" && a.confirmation === "pending" && upcoming && !a.patient.masked ? (
+                  {quickActions && a.status === "scheduled" && a.confirmation === "pending" && upcoming && !a.restricted ? (
                     <>
                       <Button size="sm" variant="secondary" aria-label={t("list.call")} title={t("list.call")} onClick={() => call(a.id)}>
                         <Phone size={14} aria-hidden />

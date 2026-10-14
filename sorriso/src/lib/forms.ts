@@ -13,11 +13,12 @@ import {
   type FormSubmission,
   type FormTemplate,
   type Locale,
+  type Patient,
   type SignedVia,
 } from "@/db/schema";
 import { fmtWhen } from "@/i18n/datefmt";
 import { getAppointmentDetails, type AppointmentDetails } from "./appointments";
-import { audit, type AuditEvent } from "./audit";
+import { audit, type AuditEvent, type AuditMetadata } from "./audit";
 import { absoluteUrl } from "./config";
 import { contactHash, isRestricted, markContactVerified, recipientFor, type ContactPatient } from "./contact";
 import { newId } from "./ids";
@@ -26,6 +27,7 @@ import { logError, maskEmail, maskPhone } from "./log";
 import { sendPatientMessage } from "./messaging";
 import { sendOtp, verifyOtp } from "./otp";
 import type { Permission } from "./permissions";
+import { hasRestrictedAccess } from "./privacy/erasure";
 import { getCare } from "./privacy/settings";
 import { isDateString } from "./time";
 
@@ -42,7 +44,8 @@ import { isDateString } from "./time";
  * - Answers are stored encrypted (form_submissions.answers, AES-256-GCM: "v1:…"); red flags are
  *   stored beside them as field ids so the calendar can show "medical alert" without decrypting.
  * - Everyone on the team sees whether the form is complete or missing. The red flags and the
- *   answers need patient.clinical.read, and reading the answers is audited (patient.clinical.view).
+ *   answers need patient.clinical.read; showing either is audited (patient.clinical.view, on the
+ *   patient); a restricted patient's need a recent restricted-access reason too (mayReadPatient).
  * - An unsigned row (signedAt NULL, empty answers) records that an invitation was sent for that
  *   visit, so the scheduled job never invites twice; it holds no health data.
  */
@@ -609,9 +612,56 @@ function decodeAnswers(raw: string): Answers {
 export const CLINICAL_PERMISSION: Permission = "patient.clinical.read";
 
 /**
+ * May this viewer read the data of this patient now? An open record: yes. A restricted (Art. 18)
+ * or erased one: only with patient.restricted.read and a reason the same person gave in the last
+ * minutes (patient.restricted_access, hasRestrictedAccess), as the patient page and the drawer
+ * require. Server-side, whatever the UI hid.
+ */
+export async function mayReadPatient(i: {
+  orgId: string;
+  patient: Pick<Patient, "id" | "restrictedAt" | "erasedAt">;
+  permissions: readonly Permission[];
+  /** The staff member reading (null for anything else: jobs, scripts). */
+  userId: string | null | undefined;
+  now?: Date;
+}): Promise<boolean> {
+  if (!isRestricted(i.patient)) return true;
+  if (!i.permissions.includes("patient.restricted.read") || !i.userId) return false;
+  return hasRestrictedAccess({ user: { id: i.userId }, org: { id: i.orgId } }, i.patient.id, i.now);
+}
+
+/**
+ * Record that clinical content of a patient was shown to someone (patient.clinical.view): the
+ * answers of a form, or which red flags it raised. On the patient (with the submission in the
+ * metadata), so it shows in the patient's access log, the privacy center and the Art. 15 export.
+ */
+export async function auditClinicalView(i: {
+  orgId: string;
+  patientId: string;
+  actor: AuditEvent["actor"];
+  /** What was shown: "answers" (the form) or "red_flags" (the list of alerts). */
+  view: "answers" | "red_flags";
+  metadata?: AuditMetadata;
+  headers?: Headers;
+  at?: Date;
+}): Promise<void> {
+  await audit({
+    orgId: i.orgId,
+    actor: i.actor,
+    action: "patient.clinical.view",
+    entity: { type: "patient", id: i.patientId },
+    metadata: { kind: "anamnesis", view: i.view, ...i.metadata },
+    headers: i.headers,
+    at: i.at,
+  });
+}
+
+/**
  * The answers of a signed form, for the clinical team. Needs patient.clinical.read ("forbidden"
- * otherwise, nothing read or logged) and is audited as patient.clinical.view. Pass the submission,
- * or an appointment to get the form that counts for that visit. "none" when there is no form.
+ * otherwise, nothing read or logged); a restricted or erased patient's form also needs
+ * mayReadPatient ("restricted" otherwise, nothing read or logged). Audited as
+ * patient.clinical.view (auditClinicalView). Pass the submission, or an appointment to get the
+ * form that counts for that visit. "none" when there is no form.
  * (No PermissionError here: this module also runs in scripts, where src/lib/auth.ts can't load.)
  */
 export async function clinicalAnamnesis(i: {
@@ -621,7 +671,7 @@ export async function clinicalAnamnesis(i: {
   permissions: readonly Permission[];
   actor: AuditEvent["actor"];
   headers?: Headers;
-}): Promise<{ ok: true; form: ClinicalAnamnesis } | { ok: false; reason: "forbidden" | "none" }> {
+}): Promise<{ ok: true; form: ClinicalAnamnesis } | { ok: false; reason: "forbidden" | "none" | "restricted" }> {
   if (!i.permissions.includes(CLINICAL_PERMISSION)) return { ok: false, reason: "forbidden" };
   let submissionId = i.submissionId ?? null;
   if (!submissionId && i.appointmentId) {
@@ -642,12 +692,14 @@ export async function clinicalAnamnesis(i: {
     .leftJoin(appointments, eq(appointments.id, formSubmissions.appointmentId))
     .where(and(eq(formSubmissions.id, submissionId), eq(formSubmissions.orgId, i.orgId), isNotNull(formSubmissions.signedAt)));
   if (!row) return { ok: false, reason: "none" };
-  await audit({
+  const userId = i.actor.type === "user" ? i.actor.id : null;
+  if (!(await mayReadPatient({ orgId: i.orgId, patient: row.p, permissions: i.permissions, userId }))) return { ok: false, reason: "restricted" };
+  await auditClinicalView({
     orgId: i.orgId,
+    patientId: row.p.id,
     actor: i.actor,
-    action: "patient.clinical.view",
-    entity: { type: "form_submission", id: row.s.id },
-    metadata: { patientId: row.p.id, kind: "anamnesis" },
+    view: "answers",
+    metadata: { submissionId: row.s.id, appointmentId: row.a?.id ?? null },
     headers: i.headers,
   });
   const form: ClinicalAnamnesis = {
@@ -669,8 +721,8 @@ export async function clinicalAnamnesis(i: {
 
 /**
  * Record that the form was added to the practice's clinical record (printed or copied into it):
- * retention may delete a form only after that. Needs patient.clinical.read. Returns false when
- * the viewer lacks it or there is no such signed form.
+ * retention may delete a form only after that. Needs patient.clinical.read (and, for a restricted
+ * patient, mayReadPatient). Returns false when the viewer lacks it or there is no such signed form.
  */
 export async function markFormExported(i: {
   orgId: string;
@@ -681,6 +733,13 @@ export async function markFormExported(i: {
 }): Promise<boolean> {
   if (!i.permissions.includes(CLINICAL_PERMISSION)) return false;
   const now = i.now ?? new Date();
+  const [owner] = await db
+    .select({ id: patients.id, restrictedAt: patients.restrictedAt, erasedAt: patients.erasedAt })
+    .from(formSubmissions)
+    .innerJoin(patients, eq(patients.id, formSubmissions.patientId))
+    .where(and(eq(formSubmissions.id, i.submissionId), eq(formSubmissions.orgId, i.orgId)));
+  const userId = i.actor.type === "user" ? i.actor.id : null;
+  if (!owner || !(await mayReadPatient({ orgId: i.orgId, patient: owner, permissions: i.permissions, userId, now }))) return false;
   return db.transaction(async (tx) => {
     const [row] = await tx
       .update(formSubmissions)

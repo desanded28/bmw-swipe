@@ -83,14 +83,30 @@ describe("bookingPrivacyFormErrors (the browser's copy of the rules)", () => {
   });
 
   it("agrees with the server rule on every combination", () => {
-    for (const context of ["practice", "marketplace"] as const)
-      for (const preferredChannel of ["sms", "email", "whatsapp"] as const)
-        for (const whatsappEnabled of [true, false])
-          for (const platformConsent of [true, false])
-            for (const whatsapp of [true, false]) {
-              const i = { context, preferredChannel, choices: { platformConsent, whatsapp }, org: { whatsappEnabled, marketingEnabled: false } };
-              expect(Object.keys(bookingPrivacyFormErrors(i)).length === 0).toBe(validateBookingPrivacy(i).ok);
-            }
+    for (const bookedFor of [undefined, "self", "minor", "other_adult"] as const)
+      for (const context of ["practice", "marketplace"] as const)
+        for (const preferredChannel of ["sms", "email", "whatsapp"] as const)
+          for (const whatsappEnabled of [true, false])
+            for (const platformConsent of [true, false])
+              for (const whatsapp of [true, false]) {
+                const i = { context, preferredChannel, bookedFor, choices: { platformConsent, whatsapp }, org: { whatsappEnabled, marketingEnabled: false } };
+                expect(Object.keys(bookingPrivacyFormErrors(i)).length === 0).toBe(validateBookingPrivacy(i).ok);
+              }
+  });
+
+  it("asks no consent of someone booking for another adult, and records none", () => {
+    // Nothing can be ticked for them: no box is shown, so nothing may be required...
+    expect(validateBookingPrivacy(input({ bookedFor: "other_adult", context: "marketplace" }))).toEqual({ ok: true });
+    expect(validateBookingPrivacy(input({ bookedFor: "other_adult", preferredChannel: "whatsapp" }))).toEqual({ ok: true });
+    expect(bookingPrivacyFormErrors({ ...input({ bookedFor: "other_adult", context: "marketplace", preferredChannel: "whatsapp" }) })).toEqual({});
+    // ...but a practice without WhatsApp still refuses it, and a guardian still confirms it for a child.
+    expect(validateBookingPrivacy(input({ bookedFor: "other_adult", preferredChannel: "whatsapp", org: { whatsappEnabled: false, marketingEnabled: false } }))).toMatchObject({
+      code: "whatsapp_unavailable",
+    });
+    expect(validateBookingPrivacy(input({ bookedFor: "minor", preferredChannel: "whatsapp" }))).toMatchObject({ code: "whatsapp_consent_required" });
+    // ...and whatever a client sends anyway is not recorded.
+    const all = { platformConsent: true, whatsapp: true, feedback: true, marketing: true };
+    expect(effectiveBookingChoices({ context: "marketplace", bookedFor: "other_adult", choices: all, org: { whatsappEnabled: true, marketingEnabled: true } })).toEqual({});
   });
 });
 

@@ -11,10 +11,11 @@ import { alternatesFor } from "@/i18n/seo";
 import { getT } from "@/i18n/server";
 import { safeNext } from "@/lib/auth";
 import { isDemoMode } from "@/lib/demo";
+import { DEMO_OWNER_EMAIL, DEMO_RECEPTION_EMAIL } from "@/lib/security/demo-accounts";
 
 /** The seeded demo logins (scripts/seed.ts), shown only in demo mode. */
-const DEMO_OWNER = "demo@sorriso.dev";
-const DEMO_RECEPTION = "reception@sorriso.dev";
+const DEMO_OWNER = DEMO_OWNER_EMAIL;
+const DEMO_RECEPTION = DEMO_RECEPTION_EMAIL;
 
 type Props = { params: Promise<{ locale: string }>; searchParams: Promise<{ demo?: string; next?: string; notice?: string }> };
 

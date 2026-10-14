@@ -5,7 +5,7 @@ import { useCallback, useEffect, useId, useState } from "react";
 import { loadAnamnesis, loadAppointmentCare, setRecallIntervalAction, sendFormInviteAction } from "@/app/dashboard/actions/care";
 import { sendRebookOffersAction } from "@/app/dashboard/actions/timeoff";
 import { AnamnesisSheet } from "@/components/care/AnamnesisSheet";
-import { RECALL_INTERVALS, type AnamnesisSheetData, type AppointmentCareData, type CareResult } from "@/components/care/types";
+import { recallOptions, type AnamnesisSheetData, type AppointmentCareData, type CareResult } from "@/components/care/types";
 import { capitalizeFirst, fmtDay, zonedDate } from "@/i18n/datefmt";
 import { useLocale, useT } from "@/i18n/provider";
 import { Badge, Button, Select, cx } from "../../ui";
@@ -64,6 +64,9 @@ export function AppointmentCarePanel({ appt, canManage }: AppointmentCarePanelPr
 
   const months0 = data ? String(data.recall?.status !== "dismissed" ? (data.recall?.intervalMonths ?? data.suggestedMonths ?? "") : "") : "";
   const picked = months ?? months0;
+  // The interval in force may be one the list doesn't offer (a treatment's suggestion of 5 months):
+  // offer it too, so the picker shows what is set rather than silently falling back to "No recall".
+  const intervals = recallOptions(months0);
 
   return (
     <section aria-labelledby={headingId} className="space-y-4 rounded-xl ring-1 ring-slate-200 p-4">
@@ -114,7 +117,11 @@ export function AppointmentCarePanel({ appt, canManage }: AppointmentCarePanelPr
                 <CalendarClock size={15} aria-hidden /> {t("panel.rebook.title")}
               </p>
               <p className="mt-1 text-amber-900">{t("panel.rebook.needed")}</p>
-              {data.rebook.callRequested ? <p className="mt-1 font-semibold text-amber-900">{t("panel.rebook.callRequested")}</p> : null}
+              {data.rebook.callRequested ? (
+                <p className="mt-1 font-semibold text-amber-900">{t("panel.rebook.callRequested")}</p>
+              ) : data.rebook.offerSent ? (
+                <p className="mt-1 text-amber-900">{t("panel.rebook.offerSent")}</p>
+              ) : null}
               {canManage ? (
                 <Button
                   type="button"
@@ -208,7 +215,7 @@ export function AppointmentCarePanel({ appt, canManage }: AppointmentCarePanelPr
                     </label>
                     <Select id={pickerId} value={picked} onChange={(e) => setMonths(e.target.value)}>
                       <option value="">{t("panel.recall.none")}</option>
-                      {RECALL_INTERVALS.map((m) => (
+                      {intervals.map((m) => (
                         <option key={m} value={String(m)}>
                           {t("panel.recall.months", { count: m })}
                         </option>

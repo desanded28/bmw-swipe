@@ -76,7 +76,7 @@ export default {
   inbound: {
     title: "Reply number",
     description:
-      "With a number of your own (in Sorriso's Twilio account), your texts go out from it and patients' replies come back to it, so a reply can never be taken for another practice's. Without one, texts use the shared sender and a reply goes to the practice that texted the patient last.",
+      "With a number of your own (in Sorriso's Twilio account), your texts go out from it and patients' replies come back to it, so a reply can never be taken for another practice's. Without one, texts use the shared sender and a reply goes to the practice that texted the patient last from it.",
     label: "Your number or Twilio Messaging Service",
     placeholder: "+39 02 1234 5678",
     hint: "International format, e.g. +39 02 1234 5678, or a Messaging Service SID (MG…). Leave empty to use the shared sender.",
@@ -194,6 +194,8 @@ export default {
     inboundCleared: "Reply number removed: replies now come through the shared sender.",
     inboundInvalid: "Enter a phone number in international format (+39…) or a Messaging Service SID (MG…).",
     inboundTaken: "This number is already used by another practice.",
+    inboundShared:
+      "This is Sorriso's shared sender, which every practice's patients reply to. Enter a number or Messaging Service set aside for your practice.",
     ownerOnly: "Only the practice owner can change the reply number.",
     invalidPhone: "Enter a valid phone number.",
     noPatient: "No patient of this practice has that number.",

@@ -2,7 +2,7 @@ import type { Tx } from "@/db";
 import type { Patient, PrivacySettings } from "@/db/schema";
 import type { Locale } from "@/i18n/config";
 import { pickTextChannel, type ContactPatient } from "../contact";
-import { isAllowedRecipient } from "../demo";
+import { isAllowedRecipient, isLiveMessaging } from "../demo";
 import { logError } from "../log";
 import { isAllowed } from "../privacy/consent";
 import { twilioCreateMessage, whatsappConfigured, type SendResult } from "./providers";
@@ -27,9 +27,12 @@ import { twilioCreateMessage, whatsappConfigured, type SendResult } from "./prov
  * rescheduled, waitlist) and, for other namespaces' messages sent through sendPatientMessage,
  * "<namespace>.<kind>" (e.g. "careMessages.recall").
  *
- * Development convenience: when TWILIO_WHATSAPP_CONTENT_SIDS is not set and WhatsApp is not
+ * Development convenience: outside the live deployment (isLiveMessaging() false: a dev machine,
+ * demo mode, a preview), when TWILIO_WHATSAPP_CONTENT_SIDS is not set and WhatsApp is not
  * configured (every message is captured anyway), every kind counts as having a template, so the
  * WhatsApp path shows up in the message log. Once either is set, only listed templates are used.
+ * The live deployment never takes that shortcut: WhatsApp is used only when it is configured and
+ * the kind has an approved template; otherwise the patient gets SMS or email.
  */
 
 export type WhatsAppTemplates = Record<string, Partial<Record<Locale, string>>>;
@@ -66,8 +69,13 @@ export function whatsappTemplateSid(kind: string, locale: Locale): string | null
   return whatsappTemplates()[kind]?.[locale] ?? null;
 }
 
-/** May a message of this kind go to a patient in this language on WhatsApp? */
+/**
+ * May a message of this kind go to a patient in this language on WhatsApp? In the live deployment
+ * only with WhatsApp configured and an approved template; elsewhere also through the development
+ * shortcut described above.
+ */
 export function hasWhatsAppTemplate(kind: string, locale: Locale): boolean {
+  if (isLiveMessaging()) return whatsappConfigured() && whatsappTemplateSid(kind, locale) !== null;
   if (!process.env.TWILIO_WHATSAPP_CONTENT_SIDS?.trim() && !whatsappConfigured()) return true;
   return whatsappTemplateSid(kind, locale) !== null;
 }
@@ -108,12 +116,15 @@ export function whatsappVariables(v: WhatsAppVariables): Record<string, string> 
   return out;
 }
 
-export type WhatsAppSkip = { status: "skipped"; reason: "no_template" };
+/** no_template: no approved template for the kind in that language; not_configured: the live deployment has no WhatsApp sender. */
+export type WhatsAppSkip = { status: "skipped"; reason: "no_template" | "not_configured" };
 
 /**
  * Send a WhatsApp message. With `kind`, through that kind's approved template in `locale`
  * (skipped with no_template when there is none); without `kind`, `text` as a free-form reply,
- * valid only within 24 hours of the patient's last message.
+ * valid only within 24 hours of the patient's last message. In the live deployment without
+ * WhatsApp credentials the message is skipped (not_configured), so deliver() records it as failed
+ * instead of "captured": nobody takes an undelivered message for a sent one.
  */
 export async function sendWhatsApp(input: {
   to: string;
@@ -128,7 +139,9 @@ export async function sendWhatsApp(input: {
     if (!input.locale || !hasWhatsAppTemplate(input.kind, input.locale)) return { status: "skipped", reason: "no_template" };
     template = whatsappTemplateSid(input.kind, input.locale);
   }
-  if (!whatsappConfigured()) return { status: "captured", provider: "dev", providerId: null, from };
+  if (!whatsappConfigured()) {
+    return isLiveMessaging() ? { status: "skipped", reason: "not_configured" } : { status: "captured", provider: "dev", providerId: null, from };
+  }
   if (!isAllowedRecipient(input.to)) return { status: "captured", provider: "allowlist", providerId: null, from };
   if (input.kind && !template) return { status: "skipped", reason: "no_template" };
   const to = `whatsapp:${input.to.replace(/^whatsapp:/i, "")}`;

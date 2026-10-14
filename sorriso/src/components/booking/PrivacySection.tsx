@@ -1,11 +1,12 @@
 "use client";
 
-import { ExternalLink, ShieldCheck } from "lucide-react";
+import { ExternalLink, Info, ShieldCheck } from "lucide-react";
 import { useId, type ReactNode } from "react";
 import type { ConsentPurpose } from "@/db/enums";
 import { lhref } from "@/i18n/href";
 import { useLocale, useT } from "@/i18n/provider";
 import { rich } from "@/i18n/rich";
+import { OTHER_ADULT_ON_MARKETPLACE } from "@/lib/privacy/minors";
 import { cx } from "../ui";
 import type { BookingPrivacyState, PrivacySectionProps } from "./contracts";
 
@@ -22,6 +23,11 @@ import type { BookingPrivacyState, PrivacySectionProps } from "./contracts";
  *   unticked confirmation, required.
  * - Optional and unticked (booking only): the feedback invitation and, where the practice runs
  *   it, news and offers.
+ * - Booking for another adult: no consent box at all. Consent can only come from the patient, so
+ *   the section says they make their own choices later; that WhatsApp can't be chosen for them
+ *   (it needs their consent: SMS or email instead); and, on the marketplace, that only they
+ *   can agree to Sorriso's processing (OTHER_ADULT_ON_MARKETPLACE: refused, or held for them).
+ *   Errors the form raises for a box that isn't shown are attached to these lines.
  *
  * Every consent label and description comes verbatim from the frozen `consents` namespace: the
  * ledger stores that key as proof of what was shown. Required boxes carry aria-required and, with
@@ -32,6 +38,7 @@ export function PrivacySection({ clinic, context, variant, preferredChannel, rel
   const locale = useLocale();
   const id = useId();
   const marketplace = context === "marketplace";
+  const forOther = relation.bookedFor === "other_adult";
   const whatsapp = preferredChannel === "whatsapp" && clinic.privacy.whatsappEnabled;
   const controller = clinic.legal.controllerName;
   const set = (patch: Partial<BookingPrivacyState>) => onChange({ ...value, ...patch });
@@ -78,7 +85,16 @@ export function PrivacySection({ clinic, context, variant, preferredChannel, rel
         </p>
       </div>
 
-      {marketplace ? (
+      {forOther ? (
+        <OtherAdultNotes
+          marketplace={marketplace}
+          whatsapp={whatsapp}
+          variant={variant}
+          errors={{ platform: errors.platformConsent, whatsapp: errors.whatsapp }}
+        />
+      ) : null}
+
+      {marketplace && !forOther ? (
         <ConsentBox
           purpose="platform_booking_art9"
           heading={t("booking.platformHeading")}
@@ -89,7 +105,7 @@ export function PrivacySection({ clinic, context, variant, preferredChannel, rel
         />
       ) : null}
 
-      {whatsapp ? (
+      {whatsapp && !forOther ? (
         <ConsentBox
           purpose="whatsapp_channel"
           heading={t("booking.whatsappHeading")}
@@ -101,7 +117,7 @@ export function PrivacySection({ clinic, context, variant, preferredChannel, rel
         />
       ) : null}
 
-      {variant === "booking" ? (
+      {variant === "booking" && !forOther ? (
         <fieldset className="space-y-2" aria-describedby={`${id}optional`}>
           <legend className="text-[13px] font-semibold text-slate-700">{t("booking.optionalHeading")}</legend>
           <p id={`${id}optional`} className="text-xs text-slate-500">
@@ -120,6 +136,40 @@ export function PrivacySection({ clinic, context, variant, preferredChannel, rel
         </fieldset>
       ) : null}
     </section>
+  );
+}
+
+/**
+ * What replaces the consent boxes when booking for another adult. A line the form flagged (it
+ * still asks for a box that isn't shown) is marked as an error, so the booker sees why.
+ */
+function OtherAdultNotes({
+  marketplace,
+  whatsapp,
+  variant,
+  errors,
+}: {
+  marketplace: boolean;
+  whatsapp: boolean;
+  variant: PrivacySectionProps["variant"];
+  errors: { platform?: string; whatsapp?: string };
+}) {
+  const t = useT("privacy");
+  const line = (text: string, error: string | undefined) => (
+    <p
+      role={error ? "alert" : undefined}
+      className={cx("flex items-start gap-2 rounded-xl p-3 text-[13px] leading-relaxed ring-1", error ? "bg-red-50 text-red-800 ring-red-200" : "bg-white text-slate-700 ring-slate-200")}
+    >
+      <Info size={16} className="mt-0.5 shrink-0" aria-hidden />
+      <span>{text}</span>
+    </p>
+  );
+  return (
+    <div className="space-y-2">
+      {marketplace ? line(OTHER_ADULT_ON_MARKETPLACE === "held" ? t("booking.otherAdult.marketplaceHeld") : t("booking.otherAdult.marketplaceRefused"), errors.platform) : null}
+      {whatsapp ? line(t("booking.otherAdult.whatsapp"), errors.whatsapp) : null}
+      {variant === "booking" ? line(t("booking.otherAdult.choices"), undefined) : null}
+    </div>
   );
 }
 

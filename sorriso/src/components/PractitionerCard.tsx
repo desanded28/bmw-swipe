@@ -67,7 +67,7 @@ export function PractitionerCard({ result, headingLevel = 2 }: { result: SearchR
                 {name}
               </Link>
             </Heading>
-            <p className="text-sm font-medium text-slate-600">{practitioner.specialty}</p>
+            <p className="text-sm font-medium text-slate-600">{practitioner.specialty.trim() || t("profile.defaultSpecialty")}</p>
             {practitioner.alboVerified ? (
               <p className="mt-0.5 inline-flex items-center gap-1 text-xs font-semibold text-emerald-700">
                 <BadgeCheck size={13} aria-hidden /> {t("card.alboVerified")}

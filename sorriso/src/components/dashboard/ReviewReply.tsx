@@ -18,6 +18,9 @@ const REPLY_MAX = 1000;
  * health-term check on the reply, neutral templates in the review's language, and a confirmation
  * without which nothing is published), and a report to Sorriso's moderators, or the practice's
  * one appeal after a decision. Nothing here can hide or publish a review.
+ *
+ * Health or contact details in the reply ("hold" findings) block publishing, here and on the
+ * server (replyAsPractice); treatment names and symptoms ("warn") are highlighted as a reminder.
  */
 export function ReviewReply({
   id,
@@ -47,7 +50,8 @@ export function ReviewReply({
   const [details, setDetails] = useState("");
   const { run, pending } = useRunAction();
   const uid = useId();
-  const findings = scanHealthTerms(text).filter((f) => f.severity === "hold");
+  const scanned = scanHealthTerms(text);
+  const findings = scanned.filter((f) => f.severity === "hold");
   const reportable = status === "published" || canAppeal;
   const replyable = canReply && status === "published";
   if (!replyable && !(canReport && reportable)) return null;
@@ -90,12 +94,20 @@ export function ReviewReply({
           <label htmlFor={`${uid}text`} className="mb-1 block text-[13px] font-semibold text-slate-700">
             {t("reply.label")}
           </label>
-          <Textarea id={`${uid}text`} rows={3} maxLength={REPLY_MAX} value={text} onChange={(e) => setText(e.target.value)} aria-describedby={findings.length ? `${uid}flag` : undefined} />
+          <Textarea
+            id={`${uid}text`}
+            rows={3}
+            maxLength={REPLY_MAX}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            aria-invalid={findings.length ? true : undefined}
+            aria-describedby={scanned.length ? `${uid}flag` : undefined}
+          />
           <div aria-live="polite">
-            {findings.length ? (
-              <div id={`${uid}flag`} className="mt-2 text-sm text-red-800">
-                <p>{t("reply.flagged")}</p>
-                <FindingsPreview text={text} findings={findings} />
+            {scanned.length ? (
+              <div id={`${uid}flag`} className={findings.length ? "mt-2 text-sm text-red-800" : "mt-2 text-sm text-amber-900"}>
+                <p>{findings.length ? t("reply.flagged") : t("reply.warned")}</p>
+                <FindingsPreview text={text} findings={scanned} />
               </div>
             ) : null}
           </div>
@@ -107,7 +119,7 @@ export function ReviewReply({
         <div className="flex flex-wrap gap-2">
           <Button
             size="sm"
-            disabled={pending || !confirmed || !text.trim()}
+            disabled={pending || !confirmed || !text.trim() || findings.length > 0}
             onClick={() => run(() => replyToReview(id, text, confirmed), (r) => r.ok && setMode("idle"))}
           >
             {t("reply.publish")}

@@ -34,6 +34,21 @@ function findElement(node: ReactNode, type: unknown): ReactElement<Record<string
   return findElement((node.props as { children?: ReactNode }).children, type);
 }
 
+/** The first element whose only child is this text. */
+function findText(node: ReactNode, text: string): ReactElement<Record<string, unknown>> | null {
+  if (Array.isArray(node)) {
+    for (const n of node) {
+      const hit = findText(n, text);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (!isValidElement(node)) return null;
+  const props = node.props as { children?: ReactNode };
+  if (props.children === text) return node as ReactElement<Record<string, unknown>>;
+  return findText(props.children, text);
+}
+
 let p: Awaited<ReturnType<typeof createPractice>>;
 let slug: string;
 const open = (practitioner: string, locale = "it") =>
@@ -87,6 +102,16 @@ describe("/[locale]/c/[org]/[practitioner]", () => {
     expect(facts.albo).toBeNull();
     expect(facts.specializations).toEqual([]);
     await db.update(practitioners).set({ alboVerifiedAt: NOW }).where(eq(practitioners.id, p.drA));
+  });
+
+  it("shows the practice's areas of interest with their language, and a translated default when left empty", async () => {
+    await db.update(practitioners).set({ specialty: "Implantologia" }).where(eq(practitioners.id, p.drA));
+    expect(findText(await open("a", "en"), "Implantologia")?.props.lang).toBe("it");
+    await db.update(practitioners).set({ specialty: "" }).where(eq(practitioners.id, p.drA));
+    const fallback = findText(await open("a", "en"), "Dentist");
+    expect(fallback).not.toBeNull();
+    expect(fallback!.props.lang).toBeUndefined();
+    await db.update(practitioners).set({ specialty: "Dentist" }).where(eq(practitioners.id, p.drA));
   });
 
   it("counts a view per visit (no cookie)", async () => {

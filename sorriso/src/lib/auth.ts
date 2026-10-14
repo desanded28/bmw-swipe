@@ -27,8 +27,8 @@ import { StepUpRequiredError } from "./security/errors";
  * - Idle timeout: 30 minutes. lastSeenAt slides at most once a minute, so a page view is not a
  *   database write each time.
  * - The id rotates on sign-in, after the second step and on switching practice, and every
- *   session of a user is deleted on a password change or reset, an MFA reset and on removal from
- *   a practice.
+ *   session of a user is deleted on a password change or reset and an MFA reset. Removal from a
+ *   practice deletes the sessions open in that practice (all of them when it was their only one).
  * - Two-step verification: a user with TOTP enabled gets a "pending" session after the password
  *   (10 minutes to enter the code, not usable for anything else); sessions.mfaVerifiedAt marks
  *   the second step, and also the last re-authentication for requireStepUp().
@@ -270,11 +270,21 @@ export async function switchSessionOrg(s: Pick<SessionInfo, "sessionId" | "user"
   return true;
 }
 
-/** Delete every session of a user (password change or reset, MFA reset, removal), except `except`. */
-export async function revokeUserSessions(userId: string, opts: { except?: string } = {}, t: Tx = db): Promise<number> {
+/**
+ * Delete every session of a user (password change or reset, MFA reset, removal), except `except`.
+ * With `orgId`, only the sessions open in that practice (removal from one practice must not sign
+ * the person out of the others they work for).
+ */
+export async function revokeUserSessions(userId: string, opts: { except?: string; orgId?: string } = {}, t: Tx = db): Promise<number> {
   const res = await t
     .delete(sessions)
-    .where(and(eq(sessions.userId, userId), opts.except ? ne(sessions.id, opts.except) : undefined));
+    .where(
+      and(
+        eq(sessions.userId, userId),
+        opts.except ? ne(sessions.id, opts.except) : undefined,
+        opts.orgId ? eq(sessions.orgId, opts.orgId) : undefined,
+      ),
+    );
   return res.rowsAffected;
 }
 

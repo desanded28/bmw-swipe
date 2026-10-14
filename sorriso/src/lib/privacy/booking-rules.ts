@@ -1,4 +1,4 @@
-import type { Channel, ProcessingContext } from "@/db/enums";
+import type { BookedFor, Channel, ProcessingContext } from "@/db/enums";
 import type { BookingPrivacyChoices } from "./consent";
 import { NOTICE_VERSIONS } from "./versions";
 
@@ -33,7 +33,15 @@ export type BookingPrivacyInput = {
    */
   noticeVersion?: string | null;
   org: { whatsappEnabled: boolean; marketingEnabled: boolean };
+  /**
+   * Who the appointment is for (the form's relation; "self" when not given). Booking for another
+   * adult asks the booker for no consent at all: consent can only come from the data subject.
+   */
+  bookedFor?: BookedFor;
 };
+
+/** The booker of another adult's appointment gives no consent for them, so none is asked or recorded. */
+const consentsAsked = (bookedFor: BookedFor | undefined) => bookedFor !== "other_adult";
 
 /**
  * - marketplace bookings need Sorriso's Art. 9(2)(a) consent (platform_consent_required);
@@ -42,14 +50,19 @@ export type BookingPrivacyInput = {
  * - the notice shown must be the current one (notice_outdated);
  * - marketing and feedback are optional: never required, and marketing is ignored where the
  *   practice doesn't run it (effectiveBookingChoices).
+ * For another adult none of the consents is required: the relation rule refuses the marketplace
+ * booking or holds it for the adult's own consent (minors.ts, adult-confirmation.ts). The form tells
+ * the booker WhatsApp can't be chosen for someone else; a WhatsApp choice that arrives anyway is
+ * not honoured (no consent is recorded, so their messages go by SMS until they choose it).
  */
 export function validateBookingPrivacy(i: BookingPrivacyInput): RuleResult<BookingPrivacyCode> {
-  if (i.context === "marketplace" && i.choices.platformConsent !== true) {
+  const asked = consentsAsked(i.bookedFor);
+  if (asked && i.context === "marketplace" && i.choices.platformConsent !== true) {
     return { ok: false, code: "platform_consent_required", field: "platformConsent" };
   }
   if (i.preferredChannel === "whatsapp") {
     if (!i.org.whatsappEnabled) return { ok: false, code: "whatsapp_unavailable", field: "preferredChannel" };
-    if (i.choices.whatsapp !== true) return { ok: false, code: "whatsapp_consent_required", field: "whatsapp" };
+    if (asked && i.choices.whatsapp !== true) return { ok: false, code: "whatsapp_consent_required", field: "whatsapp" };
   }
   if (i.noticeVersion != null && i.noticeVersion !== noticeVersionFor(i.context)) {
     return { ok: false, code: "notice_outdated", field: "" };
@@ -59,10 +72,12 @@ export function validateBookingPrivacy(i: BookingPrivacyInput): RuleResult<Booki
 
 /**
  * The choices that may actually be recorded: the platform consent only on the marketplace,
- * WhatsApp only where the practice offers it, marketing only where the practice runs it.
- * Anything else a client sends is ignored rather than stored as a consent nobody was shown.
+ * WhatsApp only where the practice offers it, marketing only where the practice runs it, and
+ * nothing from someone booking for another adult. Anything else a client sends is ignored rather
+ * than stored as a consent nobody was shown.
  */
 export function effectiveBookingChoices(i: Omit<BookingPrivacyInput, "preferredChannel" | "noticeVersion">): BookingPrivacyChoices {
+  if (!consentsAsked(i.bookedFor)) return {};
   return {
     platformConsent: i.context === "marketplace" && i.choices.platformConsent === true,
     whatsapp: i.org.whatsappEnabled && i.choices.whatsapp === true,
@@ -85,10 +100,11 @@ export function noticeVersionFor(context: ProcessingContext): string {
  */
 export function bookingPrivacyFormErrors(i: Omit<BookingPrivacyInput, "noticeVersion">): Record<string, BookingPrivacyCode> {
   const out: Record<string, BookingPrivacyCode> = {};
-  if (i.context === "marketplace" && i.choices.platformConsent !== true) out.platformConsent = "platform_consent_required";
+  const asked = consentsAsked(i.bookedFor);
+  if (asked && i.context === "marketplace" && i.choices.platformConsent !== true) out.platformConsent = "platform_consent_required";
   if (i.preferredChannel === "whatsapp") {
     if (!i.org.whatsappEnabled) out.preferredChannel = "whatsapp_unavailable";
-    else if (i.choices.whatsapp !== true) out.whatsapp = "whatsapp_consent_required";
+    else if (asked && i.choices.whatsapp !== true) out.whatsapp = "whatsapp_consent_required";
   }
   return out;
 }

@@ -34,7 +34,8 @@ export default async function RecallsPage() {
   const care = getCare(s.org);
   const [board, calls] = await Promise.all([
     recallDashboard(s.org.id, s.org.timezone, now, { contacts }),
-    frontDeskCallList(s.org.id, now, { contacts }),
+    // Restricted patients (Art. 18) are masked unless the viewer may read them, as on the calendar.
+    frontDeskCallList(s.org.id, now, { contacts, restricted: can(s.role, "patient.restricted.read") }),
   ]);
   await auditStaff(s, "patient.search", undefined, {
     metadata: {
@@ -100,7 +101,7 @@ export default async function RecallsPage() {
     <li key={c.appointmentId} className="flex flex-wrap items-center gap-x-4 gap-y-2 p-4">
       <div className="min-w-0 flex-1 basis-56">
         <Link href={`/dashboard/patients/${c.patientId}`} className="font-semibold hover:underline">
-          {c.patientName}
+          {c.masked ? t("recalls.row.restricted") : c.patientName}
         </Link>
         <p className="mt-0.5 text-xs">{phoneLink(c.phone)}</p>
       </div>

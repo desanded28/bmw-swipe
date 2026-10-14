@@ -102,7 +102,9 @@ export default async function ReviewModerationPage({ params, searchParams }: { p
           </h2>
           {view.canRespond && view.responseDue ? (
             <>
-              <p className="text-sm text-slate-700">{t("respond.reportedBody", { ground: t(`grounds.${report.ground}`), date: day(view.responseDue) })}</p>
+              <p className="text-sm text-slate-700">
+                {t(review.status === "published" ? "respond.reportedBodyVisible" : "respond.reportedBody", { ground: t(`grounds.${report.ground}`), date: day(view.responseDue) })}
+              </p>
               <TextActionForm action={respondAction.bind(null, token, locale)} name="response" label={t("respond.response")} hint={t("respond.responseHint")} submitLabel={t("respond.send")} maxLength={REPORT_TEXT_MAX} />
             </>
           ) : report.patientResponse ? (

@@ -158,9 +158,14 @@ Kinds: `booked`, `approved`, `reminder`, `reminderAsk` (a reminder asking YES/NO
 packages send through `sendPatientMessage` (e.g. `careMessages.recall`). Staff notices sent by
 `src/lib/booking.ts` (cancelled/moved by the practice) pass no kind today, so they go by SMS.
 
-Development: without `TWILIO_WHATSAPP_CONTENT_SIDS` and without WhatsApp credentials, every kind
+Development: outside the live deployment (`isLiveMessaging()` false: a dev machine, demo mode, a
+preview), without `TWILIO_WHATSAPP_CONTENT_SIDS` and without WhatsApp credentials, every kind
 counts as templated so the WhatsApp path shows up (captured) in the message log. As soon as either
-is set, only the listed templates are used.
+is set, only the listed templates are used. **The live deployment never takes that shortcut:**
+WhatsApp is chosen only when `TWILIO_WHATSAPP_FROM` (with its credentials) is set and the kind has
+an approved template in the patient's language; otherwise the patient gets SMS or email. A WhatsApp
+message that still reaches `sendWhatsApp()` there without a sender is recorded as failed
+(`not_configured`), never as captured or sent.
 
 ## Replies in 8 languages
 
@@ -195,12 +200,26 @@ Replies never cross practice boundaries (`replyScope()`):
 
 1. If the number (or Messaging Service) that received the text is a practice's
    `organizations.inboundNumber`, only that practice's patients are considered. Owners set it on
-   the Reminders page; the number must belong to Sorriso's Twilio account (and region). The
-   practice's SMS are then sent from it (`deliver()` passes it to `sendSms`), so replies come back
-   to it.
+   the Reminders page; the number must belong to Sorriso's Twilio account (and region) and be set
+   aside for that practice. The practice's SMS are then sent from it (`deliver()` passes it to
+   `sendSms`), so replies come back to it.
+   - **The platform's shared senders are no practice's:** `TWILIO_FROM`,
+     `TWILIO_MESSAGING_SERVICE_SID`, `TWILIO_WHATSAPP_FROM` and `TWILIO_SHARED_SENDERS` (the
+     numbers of the shared Messaging Service's pool, and former shared senders) are refused by
+     `saveInboundNumber` and ignored by the routing, even if an older row stores one. Otherwise the
+     practice claiming one would receive every practice's replies.
+   - When Twilio names the Messaging Service of the receiving number (`MessagingServiceSid`), the
+     service decides: the shared service means the shared sender, whichever pool number got the
+     text; a practice's service means that practice, whatever another practice claims about the
+     number.
 2. Otherwise the text reached the **shared platform sender**: the practice that most recently
-   texted this number is the one being answered.
-3. If no practice texted it, the only practice with a patient texted at that number; with several,
+   texted this number **from the shared sender, on the same channel** is the one being answered.
+   `messages.from` records the number or Messaging Service each SMS left from; a practice that
+   texts from its own number is answered there, so its SMS don't count here (those it sent from the
+   shared sender before it had a number of its own still do). WhatsApp has one platform-wide
+   sender, so a WhatsApp reply follows the last WhatsApp message.
+3. If no practice texted it from the shared sender, the only practice with a patient texted at
+   that number, if it uses the shared sender; with several, or one that has its own number,
    nobody, and nothing changes.
 
 Within the practice, the reply is about the visit that practice last texted the number about,
@@ -213,11 +232,22 @@ out in that practice's name, in the patient's language.
   `Cancelled by SMS reply` (or WhatsApp), never the patient's words.
 - **A matched reply verifies the number** (`markContactVerified`).
 - **STOP** records a `sms_channel` withdrawal (`granted: false`, source and method `sms_reply`) in
-  the consent ledger, which turns `smsOptIn` off; on WhatsApp it withdraws `whatsapp_channel`.
-  **START** (and ISCRIVI) records a grant. On a practice's own number they apply to that practice's
-  patients only. **On the shared platform sender they apply to every practice's patients texted at
-  that number**: carriers and Twilio block the whole sender for that number after a STOP, so no
-  practice using it can text the number anyway, and the ledger says so.
+  the consent ledger, which turns `smsOptIn` off; on WhatsApp it withdraws `whatsapp_channel`. On a
+  practice's own number it applies to that practice's patients only. **On the shared platform
+  sender it applies to every practice's patients texted at that number**: carriers and Twilio block
+  the whole sender for that number after a STOP, so no practice using it can text the number
+  anyway, and the ledger says so.
+- **START** (and ISCRIVI) records a grant **only for the practice the reply was matched to**, on
+  the shared sender too. Each practice is a separate controller: a START sent in answer to one
+  practice is no specific, informed choice about another, where the patient may have withdrawn on
+  purpose (privacy center, staff). The carrier lifts its block on the shared sender, but the other
+  practices keep the withdrawal in their ledgers and don't text until the patient opts in there.
+- **The automatic answer** is sent through the Messages API (`deliver()`), from the number or
+  Messaging Service the patient wrote to, never as an inline TwiML `<Message>` (the webhook
+  answers with an empty `<Response></Response>`). Twilio's copy of an inline answer has a SID we never
+  learn, so it could not be deleted; sent through the API, its SID is stored like any other
+  message's and the copy is deleted after `providerMessageDays`. Outside the live deployment the
+  answer, like any message, goes only to `MESSAGING_ALLOWLIST`.
 - Twilio's own opt-out handling: configure Advanced Opt-Out on the Messaging Service so that
   `CANCEL`/`ANNULLA` are **not** opt-out keywords there (they cancel an appointment here).
 
@@ -225,7 +255,9 @@ out in that practice's name, in the patient's language.
 
 `processDueReminders({ orgId?, appointmentId?, now?, limit? })` sends what is due. The cron and
 the in-process worker run it for every practice; "Send due reminders now" (permission
-`reminders.run`) only for the signed-in practice.
+`reminders.run`) only for the signed-in practice, and the run is on the practice's access log with
+its counts (`appointment.update` on the practice, `metadata.job = "reminders.run"`, until the audit
+list has a reminders action).
 
 - Recipients come from `recipientFor()`: under 14 with guardian contacts, the guardian.
   Restricted (Art. 18) and erased patients get nothing (the reminder is skipped).
@@ -262,7 +294,9 @@ still a transfer (DPF + SCC, see `src/lib/privacy/subprocessors.ts` and the TIA)
 3. Set `TWILIO_ACCOUNT_SID`, `TWILIO_REGION=ie1`, `TWILIO_EDGE=dublin`,
    `TWILIO_IE1_API_KEY_SID`, `TWILIO_IE1_API_KEY_SECRET`, `TWILIO_IE1_AUTH_TOKEN`, and
    `TWILIO_FROM` or `TWILIO_MESSAGING_SERVICE_SID`. SMS requests then go to
-   `https://api.dublin.ie1.twilio.com`.
+   `https://api.dublin.ie1.twilio.com`. List the numbers of the shared Messaging Service's pool
+   (and any former shared sender) in `TWILIO_SHARED_SENDERS`, comma-separated, so no practice can
+   claim one as its own reply number.
 4. WhatsApp is not available in IE1 and stays on the default US1 region: set
    `TWILIO_US1_AUTH_TOKEN` (or `TWILIO_AUTH_TOKEN`) and `TWILIO_WHATSAPP_FROM`.
 5. Point "A message comes in" of the number and of the WhatsApp sender to
@@ -280,16 +314,23 @@ Use a neutral sender: a number or a generic alphanumeric ID, never the practice'
 - The status webhook records `messages.finalStatusAt` once a message is delivered, undelivered,
   failed, read or cancelled.
 - The reminders cron (`purgeProviderCopies()`) asks Twilio to delete its copies (outbound and
-  inbound, SMS and WhatsApp) older than the practice's `privacy.retention.providerMessageDays`, in
-  the region each went through, and sets `messages.providerDeletedAt`. Copies Twilio can't delete
-  yet stay unmarked and are retried. Erasure (WP5) calls `deleteProviderMessage()` directly.
+  inbound, SMS and WhatsApp, the automatic answers to replies included) older than the practice's
+  `privacy.retention.providerMessageDays`, oldest first, in the region each went through, and sets
+  `messages.providerDeletedAt`. Copies that can't be deleted don't hold up the others: a region
+  whose credentials aren't set here (e.g. after leaving IE1) is not tried, and its copies wait
+  until the credentials are back; a provider that fails five times in a row is left for the next
+  run; a copy that failed is skipped for six hours (remembered by the process: the schema has no
+  column for attempts yet). One error line per provider and run. Erasure (WP5) calls
+  `deleteProviderMessage()` directly.
 - Email can't be recalled from an SMTP relay; choose an EU provider with short log retention.
 
 ### Fences and logs
 
 - Outside the live deployment (`isLiveMessaging()`), and always in demo mode, messages go only to
   `MESSAGING_ALLOWLIST`; everyone else is recorded as `captured` and never handed to a provider.
-- Provider errors are stored in `messages.error` through `redact()` (they often quote the number).
+- Provider errors are stored in `messages.error` through `redact()` (they often quote the number),
+  and so is `reminders.error`: a failed query's bound values (`params: …`) are dropped, numbers and
+  emails masked.
 - Logs carry ids and counts only: never a phone number, an email, a message text or SQL parameters.
 
 ## Breach notice (Art. 34)

@@ -2,6 +2,7 @@ import nodemailer, { type Transporter } from "nodemailer";
 import type SMTPTransport from "nodemailer/lib/smtp-transport";
 import { APP_NAME, APP_URL } from "../config";
 import { isAllowedRecipient } from "../demo";
+import { normalizePhone } from "../phone";
 
 /**
  * Delivery providers. Each one is optional: when its environment variables are missing the
@@ -19,6 +20,8 @@ import { isAllowedRecipient } from "../demo";
  *             TWILIO_IE1_AUTH_TOKEN): requests then go to https://api.dublin.ie1.twilio.com.
  *   WhatsApp  TWILIO_WHATSAPP_FROM, always on the default US1 region (TWILIO_US1_AUTH_TOKEN, else
  *             TWILIO_AUTH_TOKEN); templates in src/lib/messaging/whatsapp.ts.
+ *   Shared    TWILIO_SHARED_SENDERS (optional, comma-separated): the numbers in the shared Messaging
+ *             Service's pool and former shared senders, which no practice may claim as its own.
  */
 
 export type Attachment = { filename: string; content: string; contentType: string };
@@ -201,26 +204,98 @@ export async function twilioCreateMessage(
 
 const MESSAGING_SERVICE = /^MG[0-9a-fA-F]{32}$/;
 
+/** A Twilio Messaging Service SID ("MG" + 32 hex), as Twilio writes it (lower-case hex). */
+export function isMessagingServiceSid(value: string | null | undefined): boolean {
+  return Boolean(value && MESSAGING_SERVICE.test(value));
+}
+
+/**
+ * A sender in comparable form: "whatsapp:+39 02 1234 5678" -> "+390212345678", a Messaging Service
+ * SID with lower-case hex, an alphanumeric sender ID in lower case. Null when empty.
+ */
+export function senderKey(value: string | null | undefined): string | null {
+  const v = value?.trim().replace(/^whatsapp:/i, "").trim();
+  if (!v) return null;
+  if (MESSAGING_SERVICE.test(v)) return `MG${v.slice(2).toLowerCase()}`;
+  if (/^(\+|00)?[\d\s().\-/]+$/.test(v)) return normalizePhone(v) ?? v.replace(/[\s().\-/]/g, "");
+  return v.toLowerCase();
+}
+
+/**
+ * The platform's shared senders, which every practice without a number of its own texts from:
+ * TWILIO_FROM, TWILIO_MESSAGING_SERVICE_SID, the WhatsApp sender TWILIO_WHATSAPP_FROM, and
+ * TWILIO_SHARED_SENDERS (comma-separated: the numbers in the shared Messaging Service's pool, and
+ * any former shared sender). A reply to one of them belongs to no single practice, so none of
+ * them can ever be a practice's organizations.inboundNumber (saveInboundNumber refuses them and
+ * src/lib/inbound.ts ignores them).
+ */
+export function platformSenders(): Set<string> {
+  const values = [
+    env("TWILIO_FROM"),
+    env("TWILIO_MESSAGING_SERVICE_SID"),
+    env("TWILIO_WHATSAPP_FROM"),
+    ...(env("TWILIO_SHARED_SENDERS") ?? "").split(","),
+  ];
+  return new Set(values.map(senderKey).filter((k): k is string => k !== null));
+}
+
+export function isPlatformSender(value: string | null | undefined): boolean {
+  const key = senderKey(value);
+  return key !== null && platformSenders().has(key);
+}
+
+/**
+ * The practice's own sender (organizations.inboundNumber), or null when it has none, or when the
+ * stored value is one of the platform's shared senders (then it is the shared sender like any other).
+ */
+export function practiceSender(inboundNumber: string | null | undefined): string | null {
+  const own = inboundNumber?.trim() || null;
+  return own && !isPlatformSender(own) ? own : null;
+}
+
 /**
  * Send an SMS. `sender` is the practice's own number or Messaging Service
  * (organizations.inboundNumber), so that replies come back to it and are matched to that practice
  * only; without one, the shared platform sender (TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM).
+ * `from` in the result (stored as messages.from) is the number or Messaging Service SID it left
+ * from: inbound.ts reads it to tell texts sent from the shared sender from a practice's own.
  */
 export async function sendSms(input: { to: string; text: string; sender?: string | null }): Promise<SendResult> {
   const own = input.sender?.trim() || null;
   const service = own ? (MESSAGING_SERVICE.test(own) ? own : undefined) : env("TWILIO_MESSAGING_SERVICE_SID");
-  const from = own ? (MESSAGING_SERVICE.test(own) ? null : own) : (env("TWILIO_FROM") ?? null);
+  const from = service ?? (own || env("TWILIO_FROM")) ?? null;
   if (!smsConfigured()) return { status: "captured", provider: "dev", providerId: null, from };
   if (!isAllowedRecipient(input.to)) return { status: "captured", provider: "allowlist", providerId: null, from };
   const { sid, provider } = await twilioCreateMessage("sms", {
     To: input.to,
     Body: input.text,
-    ...(service ? { MessagingServiceSid: service } : { From: from! }),
+    ...(service ? { MessagingServiceSid: service } : { From: from ?? "" }),
   });
   return { status: "sent", provider, providerId: sid, from };
 }
 
 const MESSAGE_SID = /^(SM|MM|IM)[0-9a-fA-F]{32}$/;
+
+/** Where a stored message's provider copy lives ("twilio" = US1, "twilio:<region>"), or null when it isn't Twilio's. */
+function deletionTarget(provider: string): TwilioTarget | null {
+  const [name, regionName] = provider.split(":");
+  if (name !== "twilio") return null;
+  const current = twilioSmsRegion();
+  const region = regionName
+    ? { region: regionName, edge: current?.region === regionName ? current.edge : (DEFAULT_EDGE[regionName] ?? regionName) }
+    : null;
+  return twilioTarget(region);
+}
+
+/**
+ * Can this deployment delete copies kept by `provider`? False for a Twilio region whose
+ * credentials are not set here (e.g. after moving from IE1 back to US1): the reminders cron then
+ * leaves those rows alone instead of failing on them every run.
+ */
+export function canDeleteProviderCopies(provider: string): boolean {
+  const target = deletionTarget(provider);
+  return target === null || Boolean(env("TWILIO_ACCOUNT_SID") && target.authorization);
+}
 
 /**
  * Delete a message's copy at the provider (data minimisation: the reminders cron after
@@ -237,14 +312,9 @@ const MESSAGE_SID = /^(SM|MM|IM)[0-9a-fA-F]{32}$/;
  * caller does not mark it deleted.
  */
 export async function deleteProviderMessage(provider: string, providerId: string): Promise<void> {
-  const [name, regionName] = provider.split(":");
-  if (name !== "twilio") return;
+  const target = deletionTarget(provider);
+  if (!target) return;
   if (!MESSAGE_SID.test(providerId)) return; // not a Twilio message SID (e.g. a test or simulator id)
-  const current = twilioSmsRegion();
-  const region = regionName
-    ? { region: regionName, edge: current?.region === regionName ? current.edge : (DEFAULT_EDGE[regionName] ?? regionName) }
-    : null;
-  const target = twilioTarget(region);
   const sid = env("TWILIO_ACCOUNT_SID");
   if (!sid || !target.authorization) throw new Error(`Twilio (${provider}) is not configured: can't delete the provider copy`);
   const res = await fetch(`${target.baseUrl}/2010-04-01/Accounts/${sid}/Messages/${providerId}.json`, {

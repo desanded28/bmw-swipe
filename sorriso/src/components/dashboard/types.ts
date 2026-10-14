@@ -109,6 +109,9 @@ export type ApptDetailDTO = ApptListDTO & {
 
 export type DetailResult = { ok: true; data: ApptDetailDTO } | { ok: false; error: string; code?: string };
 
+/** getAppointmentPhone(): only the patient's mobile number (a list row's "Call" button). */
+export type PhoneResult = { ok: true; phone: string | null } | { ok: false; error: string; code?: string };
+
 export type Resources = {
   timezone: string;
   practitioners: { id: string; name: string; color: string; serviceIds: string[] }[];

@@ -5,8 +5,11 @@ import { appointments, consents, messages, organizations, patients } from "@/db/
 import type { Locale } from "@/i18n/config";
 import { createPractice, MONDAY, NOW, TZ } from "@/test/fixtures";
 import { createAppointment, type NewPatientInput } from "./booking";
+import { newId } from "./ids";
 import { KEYWORDS, normalizeReply, parseIntent, handleInboundMessage, type Intent } from "./inbound";
 import { deliver } from "./messaging";
+import { withdrawConsent } from "./privacy/consent";
+import { purgeProviderCopies } from "./reminders";
 import { addDays, zonedToUtc } from "./time";
 
 /** Everything written to the log during these tests, to check it never carries contacts. */
@@ -257,6 +260,188 @@ describe("replies stay within one practice", () => {
   });
 });
 
+// ---------------------------------------------------------------- the shared sender
+
+const SHARED = "+15550009999";
+/** An outbound text as deliver() records it: `from` is the number or Messaging Service it left from. */
+const sentText = (orgId: string, to: string, appointmentId: string, from: string | null, minutesBeforeNow: number, channel: "sms" | "whatsapp" = "sms") =>
+  db.insert(messages).values({
+    id: newId(),
+    orgId,
+    appointmentId,
+    channel,
+    direction: "outbound",
+    to,
+    from,
+    body: "Promemoria",
+    status: "sent",
+    provider: "twilio",
+    createdAt: new Date(NOW.getTime() - minutesBeforeNow * 60_000),
+  });
+const inboundRow = async (phone: string) =>
+  (
+    await db
+      .select()
+      .from(messages)
+      .where(and(eq(messages.direction, "inbound"), eq(messages.from, phone)))
+      .orderBy(desc(messages.createdAt))
+  )[0];
+
+describe("the shared sender belongs to no practice", () => {
+  it("a practice whose inboundNumber holds the shared sender doesn't receive other practices' replies", async () => {
+    vi.stubEnv("TWILIO_FROM", SHARED);
+    const H = await createPractice();
+    // Stored before saveInboundNumber refused platform senders.
+    await db.update(organizations).set({ inboundNumber: SHARED }).where(eq(organizations.id, H.orgId));
+    const c = await book(B, person());
+    const phone = c.patient.phone!;
+    await sentText(B.orgId, phone, c.appointment.id, SHARED, 1);
+    const res = await handleInboundMessage({
+      channel: "sms",
+      from: phone,
+      to: SHARED,
+      body: "Ho ancora dolore dopo l'estrazione, devo venire?",
+      replyMode: "return",
+      now: NOW,
+    });
+    expect(res.orgId).toBe(B.orgId);
+    expect((await inboundRow(phone)).orgId).toBe(B.orgId);
+    expect(res.reply).toContain("Studio Beta");
+    await db.update(organizations).set({ inboundNumber: null }).where(eq(organizations.id, H.orgId));
+  });
+
+  it("a number of the shared Messaging Service's pool stays shared, whoever claims it", async () => {
+    const service = `MG${"5".repeat(32)}`;
+    const pooled = "+15550004444";
+    vi.stubEnv("TWILIO_MESSAGING_SERVICE_SID", service);
+    const H = await createPractice();
+    await db.update(organizations).set({ inboundNumber: pooled }).where(eq(organizations.id, H.orgId));
+    const c = await book(B, person());
+    const phone = c.patient.phone!;
+    await sentText(B.orgId, phone, c.appointment.id, service, 1);
+    const res = await handleInboundMessage({ channel: "sms", from: phone, to: pooled, messagingServiceSid: service, body: "SI", replyMode: "return", now: NOW });
+    expect(res).toMatchObject({ orgId: B.orgId, appointmentId: c.appointment.id, intent: "confirm" });
+    await db.update(organizations).set({ inboundNumber: null }).where(eq(organizations.id, H.orgId));
+  });
+
+  it("a reply to the shared sender skips a practice that texted the number from its own", async () => {
+    const phone = `+39${seq++}`;
+    const a = await book(A, person({ phone }));
+    const b = await book(B, person({ phone }));
+    // B texted from the shared sender first; A texted later, from its own number.
+    await sentText(B.orgId, phone, b.appointment.id, SHARED, 60);
+    await sentText(A.orgId, phone, a.appointment.id, A_NUMBER, 1);
+    // The patient answers B's text: it reaches the shared sender.
+    const res = await handleInboundMessage({ channel: "sms", from: phone, to: SHARED, body: "NO", replyMode: "return", now: NOW });
+    expect(res).toMatchObject({ orgId: B.orgId, appointmentId: b.appointment.id, intent: "cancel" });
+    expect((await row(b.appointment.id)).status).toBe("cancelled");
+    expect((await row(a.appointment.id)).status).toBe("scheduled");
+    expect((await inboundRow(phone)).orgId).toBe(B.orgId);
+  });
+
+  it("a WhatsApp reply follows the last WhatsApp message, not an SMS", async () => {
+    const phone = `+39${seq++}`;
+    const a = await book(A, person({ phone }));
+    const b = await book(B, person({ phone }));
+    await sentText(B.orgId, phone, b.appointment.id, SHARED, 60, "whatsapp");
+    await sentText(A.orgId, phone, a.appointment.id, A_NUMBER, 1);
+    const res = await handleInboundMessage({
+      channel: "whatsapp",
+      from: `whatsapp:${phone}`,
+      to: `whatsapp:${SHARED}`,
+      body: "NO",
+      replyMode: "return",
+      now: NOW,
+    });
+    expect(res).toMatchObject({ orgId: B.orgId, appointmentId: b.appointment.id });
+    expect((await row(b.appointment.id)).status).toBe("cancelled");
+    expect((await row(a.appointment.id)).status).toBe("scheduled");
+  });
+
+  it("an SMS that A sent from the shared sender before it had a number of its own is still A's", async () => {
+    const phone = `+39${seq++}`;
+    const a = await book(A, person({ phone }));
+    const b = await book(B, person({ phone }));
+    await sentText(B.orgId, phone, b.appointment.id, SHARED, 60);
+    await sentText(A.orgId, phone, a.appointment.id, SHARED, 30);
+    const res = await handleInboundMessage({ channel: "sms", from: phone, to: SHARED, body: "SI", replyMode: "return", now: NOW });
+    expect(res).toMatchObject({ orgId: A.orgId, appointmentId: a.appointment.id, intent: "confirm" });
+  });
+
+  it("with no text from the shared sender, a lone practice that texts from its own number is not assumed", async () => {
+    const d = await book(A, person());
+    const phone = d.patient.phone!;
+    await db.delete(messages).where(eq(messages.to, phone));
+    const res = await handleInboundMessage({ channel: "sms", from: phone, to: SHARED, body: "NO", replyMode: "return", now: NOW });
+    expect(res).toMatchObject({ orgId: null, appointmentId: null });
+    expect((await row(d.appointment.id)).status).toBe("scheduled");
+  });
+});
+
+describe("the automatic answer", () => {
+  const SM = (n: number) => `SM${n.toString(16).padStart(32, "0")}`;
+  const calls: { url: string; method: string; body: string }[] = [];
+  const twilio = (phone: string) => {
+    vi.stubEnv("TWILIO_ACCOUNT_SID", "ACtest");
+    vi.stubEnv("TWILIO_AUTH_TOKEN", "tok");
+    vi.stubEnv("TWILIO_FROM", SHARED);
+    vi.stubEnv("MESSAGING_ALLOWLIST", phone);
+    calls.length = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        calls.push({ url: String(input), method, body: String(init?.body ?? "") });
+        return method === "DELETE" ? new Response(null, { status: 204 }) : new Response(JSON.stringify({ sid: SM(77) }), { status: 201 });
+      }),
+    );
+  };
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("goes out through the Messages API from the number the patient wrote to, so its copy can be deleted", async () => {
+    const d = await book(A, person());
+    const phone = d.patient.phone!;
+    twilio(phone);
+    const res = await handleInboundMessage({ channel: "sms", from: phone, to: A_NUMBER, body: "SI", providerId: SM(76), replyMode: "return", now: NOW });
+    expect(res.intent).toBe("confirm");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("https://api.twilio.com/2010-04-01/Accounts/ACtest/Messages.json");
+    const params = new URLSearchParams(calls[0].body);
+    expect(params.get("From")).toBe(A_NUMBER);
+    expect(params.get("To")).toBe(phone);
+    expect(params.get("Body")).toBe(res.reply);
+    const [answer] = await db
+      .select()
+      .from(messages)
+      .where(and(eq(messages.to, phone), eq(messages.direction, "outbound"), eq(messages.providerId, SM(77))));
+    expect(answer).toMatchObject({ orgId: A.orgId, status: "sent", provider: "twilio", from: A_NUMBER, body: res.reply });
+
+    // After the retention period the cron deletes Twilio's copies: the answer's and the patient's text.
+    await purgeProviderCopies(new Date(Date.now() + 120 * 86_400_000));
+    const deleted = calls.filter((c) => c.method === "DELETE").map((c) => c.url);
+    expect(deleted).toContain(`https://api.twilio.com/2010-04-01/Accounts/ACtest/Messages/${SM(77)}.json`);
+    expect(deleted).toContain(`https://api.twilio.com/2010-04-01/Accounts/ACtest/Messages/${SM(76)}.json`);
+    const [after] = await db.select().from(messages).where(eq(messages.id, answer.id));
+    expect(after.providerDeletedAt).not.toBeNull();
+  });
+
+  it("the webhook answers with an empty TwiML response", async () => {
+    vi.stubEnv("DEMO_MODE", "1");
+    const { POST } = await import("@/app/api/webhooks/twilio/route");
+    const res = await POST(
+      new Request("http://localhost:3010/api/webhooks/twilio", {
+        method: "POST",
+        headers: { host: "localhost:3010" },
+        body: new URLSearchParams({ From: "+393330000000", To: A_NUMBER, Body: "SI" }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const xml = await res.text();
+    expect(xml).toContain("<Response></Response>");
+    expect(xml).not.toContain("<Message>");
+  });
+});
+
 describe("STOP and START", () => {
   const ledger = (patientId: string) =>
     db.select().from(consents).where(and(eq(consents.patientId, patientId), eq(consents.purpose, "sms_channel"))).orderBy(desc(consents.createdAt));
@@ -297,6 +482,27 @@ describe("STOP and START", () => {
     expect((await patientRow(a.patient.id)).smsOptIn).toBe(false);
     expect((await patientRow(b.patient.id)).smsOptIn).toBe(false);
     expect((await ledger(a.patient.id))[0]).toMatchObject({ granted: false, source: "sms_reply" });
+  });
+
+  it("START to the shared sender turns texts back on only at the practice it answers", async () => {
+    const C = await createPractice();
+    const phone = `+39${seq++}`;
+    const b = await book(B, person({ phone }));
+    const c = await book(C, person({ phone }));
+    // The patient withdrew SMS at practice C, on purpose.
+    await withdrawConsent(db, { orgId: C.orgId, patientId: c.patient.id, purpose: "sms_channel", locale: "it", method: "web_checkbox", source: "privacy_center" });
+    expect((await patientRow(c.patient.id)).smsOptIn).toBe(false);
+    // Practice B texts from the shared sender; the patient answers START to B.
+    await sentText(B.orgId, phone, b.appointment.id, SHARED, 1);
+    const res = await handleInboundMessage({ channel: "sms", from: phone, to: SHARED, body: "START", replyMode: "return", now: NOW });
+    expect(res).toMatchObject({ intent: "start", orgId: B.orgId });
+    expect((await ledger(b.patient.id))[0]).toMatchObject({ granted: true, source: "sms_reply", orgId: B.orgId });
+    expect((await patientRow(b.patient.id)).smsOptIn).toBe(true);
+    // C is another controller: its withdrawal stands.
+    expect((await patientRow(c.patient.id)).smsOptIn).toBe(false);
+    const cLedger = await ledger(c.patient.id);
+    expect(cLedger).toHaveLength(1);
+    expect(cLedger[0]).toMatchObject({ granted: false, source: "privacy_center" });
   });
 });
 

@@ -90,6 +90,24 @@ describe("PrivacySection", () => {
   it("adds the Art. 14 line when booking for another adult", () => {
     expect(render(privacy({ relation: { ...INITIAL_RELATION, bookedFor: "other_adult" } }))).toContain("Art. 14 GDPR");
   });
+
+  it("asks someone booking for another adult for no consent at all, and says why", () => {
+    const forOther = { ...INITIAL_RELATION, bookedFor: "other_adult" as const };
+    const practice = render(privacy({ relation: forOther }));
+    expect(checkboxes(practice)).toHaveLength(0);
+    expect(practice).toContain("Only they can give consent for themselves");
+    // WhatsApp needs their own consent: no confirmation box, the booker is told it can't be chosen.
+    const whatsapp = render(privacy({ relation: forOther, preferredChannel: "whatsapp" }));
+    expect(checkboxes(whatsapp)).toHaveLength(0);
+    expect(whatsapp).toContain("WhatsApp can&#x27;t be chosen for someone else");
+    expect(whatsapp).not.toContain("Meta");
+    // On the marketplace, no Art. 9 box: only the patient can give it.
+    const marketplace = render(privacy({ relation: forOther, context: "marketplace", errors: { platformConsent: "Please consent" } }));
+    expect(checkboxes(marketplace)).toHaveLength(0);
+    expect(marketplace).toContain("adults book for themselves here");
+    expect(marketplace).toMatch(/role="alert"/);
+    expect(marketplace).not.toContain("Please consent");
+  });
 });
 
 const relation = (value: RelationState, birthDate = "", errors: Record<string, string> = {}) =>

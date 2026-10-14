@@ -6,6 +6,7 @@ import { LOCALES } from "@/i18n/config";
 import { lhref } from "@/i18n/href";
 import { APP_URL } from "@/lib/config";
 import { isDemoMode } from "@/lib/demo";
+import { listedPractitioner } from "@/lib/directory";
 
 // Reads the directory on every request: listings and opt-outs show up (and disappear) at once.
 export const dynamic = "force-dynamic";
@@ -39,9 +40,10 @@ function localizedEntries(path: string): MetadataRoute.Sitemap {
 
 /**
  * /sitemap.xml: the static pages, every listed practice (/c/<org>) and every practitioner with an
- * approved public profile (/c/<org>/<practitioner>), once per language. Practices that asked to
- * close, practitioners who opted out of the marketplace and demo practices (outside demo mode)
- * are left out.
+ * approved public profile (/c/<org>/<practitioner>), once per language. The practitioner condition
+ * is the directory's own (listedPractitioner: active, public, approved, not opted out), so the
+ * sitemap never names someone whose page would 404. Practices that asked to close and demo
+ * practices (outside demo mode) are left out.
  */
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const demo = isDemoMode();
@@ -56,9 +58,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     ? await db
         .select({ orgId: practitioners.orgId, slug: practitioners.slug })
         .from(practitioners)
-        .where(
-          and(eq(practitioners.active, true), eq(practitioners.publicProfile, true), isNull(practitioners.marketplaceOptOutAt)),
-        )
+        .where(listedPractitioner())
     : [];
 
   const paths = [

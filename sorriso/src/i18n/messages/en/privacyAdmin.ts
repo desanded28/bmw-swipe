@@ -77,7 +77,10 @@ export default {
     optInReason: "Why a channel is turned back on",
     optInReasonHint:
       "The patient had opted out. Write who asked to receive messages again, when and how (for example: asked at the front desk on 12 October). It is recorded in the consent ledger.",
-    whatsappHint: "WhatsApp is used only with the patient's consent, which is recorded when you choose it.",
+    whatsappHint: "WhatsApp is used only with the patient's consent: confirm below that they agreed, and how.",
+    whatsappAgreed: "The patient agreed to receive appointment messages on WhatsApp, a Meta service whose data may be transferred outside the EU.",
+    whatsappHow: "How the patient agreed",
+    whatsappHowHint: "For example: asked at the front desk on 12 October. It is recorded in the consent ledger with your name.",
     notes: "Notes",
     notesHint: "Internal. Clinical findings belong in the clinical record.",
     saveNotes: "Save notes",
@@ -90,6 +93,11 @@ export default {
       body: "Processing has been restricted since {date} (Art. 18 GDPR). The record is read-only and receives no messages.",
       reason: "Reason: {reason}",
       retainUntil: "Kept until {date}.",
+      erasureDeferred: "The patient asked for erasure. The record is kept on a legal ground until the date below, then pseudonymised automatically.",
+    },
+    restrictionReasons: {
+      retention_inactive: "Restricted automatically: no visit for longer than the practice's retention period.",
+      retention_never_seen: "Restricted automatically: the patient never came to a visit.",
     },
     erasedBanner: {
       title: "Erased record",
@@ -125,6 +133,12 @@ export default {
       optin_reason_required: "The patient had opted out of this channel: write why it's being turned back on.",
       guardian_required: "The patient is under 14: a parent or legal guardian must give this consent.",
       confirm_mismatch: "Type the patient's full name exactly to confirm.",
+      whatsapp_disabled: "WhatsApp is turned off in the practice's privacy settings.",
+      whatsapp_consent_required: "Confirm that the patient agreed to receive messages on WhatsApp.",
+      whatsapp_how_required: "Write how the patient agreed to WhatsApp.",
+      answer_required: "Write the answer to send to the requester.",
+      request_invalid: "That privacy request doesn't belong to this patient.",
+      request_closed: "That privacy request is already closed.",
     },
   },
 
@@ -191,6 +205,8 @@ export default {
     unrestrict: "Lift restriction",
     unrestrictTitle: "Lift the restriction",
     unrestrictHint: "The patient is told before the restriction is lifted (Art. 18(3)).",
+    unrestrictReason: "Why the restriction is lifted",
+    unrestrictReasonPlaceholder: "For example: the patient's data was checked and corrected",
     informedOtherwise: "I informed the patient another way (no contact on file)",
     erase: "Erase",
     eraseTitle: "Erase this patient",
@@ -200,11 +216,15 @@ export default {
       "Removes name, contacts, birth date, notes and message texts; cancels future visits without telling the patient; keeps the anonymous appointment history and the consent records as proof.",
     modeRestrict: "Keep on a legal ground and restrict",
     modeRestrictHint:
-      "When the practice must keep the record (for example the clinical record, for 10 years): restricts it until the date below and cancels future visits.",
+      "When the practice must keep the record (for example the clinical record, for 10 years): restricts it until the date below and cancels future visits; the day after that date it is pseudonymised automatically.",
     eraseReason: "Reason or legal ground",
     eraseReasonPlaceholder: "For example: erasure request of 12 October",
     confirmLabel: "Type “{name}” to confirm",
     eraseButton: "Erase",
+    answerFor: "This also answers the {type} request received on {date}: it is closed with your answer.",
+    answerLabel: "Answer to the requester (sent in {language})",
+    answerHint:
+      "Sent to the patient's email or phone before they are removed. Pseudonymising grants the request; keeping the record on a legal ground grants it in part, so say why and until when.",
     recordConsent: "Record consent or withdrawal",
     recordTitle: "Record a consent or a withdrawal",
     recordHint: "For what the patient told you in person, by phone or in writing. Recorded with your name, as staff-recorded.",
@@ -222,6 +242,11 @@ export default {
     unrestrictedNoNotice: "Restriction lifted.",
     erased: "The patient's data was pseudonymised.",
     erasedRestricted: "The record is kept on a legal ground and restricted.",
+    erasedAnswered: "The patient's data was pseudonymised, the request closed and the answer sent.",
+    erasedAnswerNotSent:
+      "The patient's data was pseudonymised and the request closed, but the answer couldn't be sent. The request keeps the contact for 30 days so you can send it yourself.",
+    erasedRestrictedAnswered: "The record is kept on a legal ground and restricted; the request was closed and the answer sent.",
+    erasedRestrictedAnswerNotSent: "The record is kept on a legal ground and restricted, and the request closed, but the answer couldn't be sent: send it yourself.",
     consentRecorded: "Recorded in the consent ledger.",
   },
 
@@ -315,6 +340,8 @@ export default {
       requester: "Requester",
       details: "Request",
       noDetails: "No details given.",
+      contactSnapshot: "Contact kept from the erased record",
+      contactSnapshotHint: "Only to answer this request. It is deleted once the request is answered, or 30 days after it is closed.",
       status: "Status",
       decision: "Decision",
       reason: "Answer and reasons",
@@ -341,6 +368,8 @@ export default {
         submit: "Send the answer and close",
         done: "Request closed; the answer was sent.",
         doneNoNotice: "Request closed. Send the answer yourself: there is no contact on file.",
+        doneKeptContact:
+          "Request closed. The patient's record was erased: send the answer yourself to the contact kept on the request, which is deleted 30 days after closing.",
       },
       oneClick: {
         title: "Act on it",
@@ -649,7 +678,7 @@ export default {
       export: "Download everything first: all tables as CSV and JSON, and a FHIR file you can import elsewhere.",
       stop: "When you confirm, online booking stops at once and the practice leaves the search.",
       retrieve: "For {days} days you keep access to download your data, and you can cancel.",
-      purge: "Then every record is deleted, with the staff accounts that belong only to this practice. You receive a certificate of deletion.",
+      purge: "Then every record is deleted, including the access log, with the staff accounts that belong only to this practice. You receive a certificate of deletion.",
     },
     exportButton: "Download all data (ZIP)",
     confirmLabel: "Type “{name}” to confirm",
@@ -658,7 +687,8 @@ export default {
     requested: "Closure requested. The data will be deleted on {date}.",
     scheduled: "This account is being closed. Online booking has stopped. The data will be permanently deleted on {date}.",
     cancel: "Cancel the closure",
-    cancelled: "Closure cancelled. List the practice again in Settings to reopen online booking.",
+    cancelled:
+      "Closure cancelled. Online booking through your own booking page, widget and links works again; list the practice again in Settings to appear in Sorriso's search.",
     errors: {
       already_requested: "The closure has already been requested.",
       not_requested: "No closure is in progress.",
@@ -700,6 +730,9 @@ export default {
       brandColor: "Brand colour",
       listed: "Listed in the public search",
       saved: "Profile saved.",
+      savedVerify: "Profile saved. We sent a link to the new email address: online booking pauses until it is confirmed.",
+      savedUnverified:
+        "Profile saved. The new email address isn't verified: online booking pauses until it is. Use an owner's verified address, or ask an owner to save it to receive a confirmation link.",
     },
     legal: {
       title: "Data controller",
@@ -840,5 +873,21 @@ export default {
     jsonSchemaHint: "Machine-readable, draft 2020-12.",
     fhirNote: "FHIR resources reference each other with stable urn:uuid identifiers; the Sorriso id is in each resource's identifier (system urn:sorriso:id).",
     versioning: "New fields may be added within version 1; a field is never removed or changed in meaning without a new major version.",
+    /** Descriptions of the fields (the JSON Schema itself keeps the English ones). */
+    descriptions: {
+      instant: "Instant, ISO 8601 in UTC",
+      date: "Calendar date, YYYY-MM-DD",
+      schema: "Documentation of this format",
+      locale: "Language of summary.html",
+      controller: "The practice: data controller for this record",
+      patient: "The patient record",
+      patientPhone: "Mobile number in international format (E.164)",
+      patientNotes: "The practice's notes about the patient",
+      patientGuardian: "Parent or legal guardian who books for a minor",
+      consents: "The consent ledger: every grant, withdrawal and objection",
+      formsAnswers: "The answers as given (JSON)",
+      accessLog: "Who accessed or changed the record (the practice's audit log)",
+      accessLogActorRole: "Role of the staff member, when a person acted",
+    },
   },
 } as const;

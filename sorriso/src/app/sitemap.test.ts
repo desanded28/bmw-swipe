@@ -10,16 +10,19 @@ import sitemap from "./sitemap";
 const APP = "https://sorriso.test";
 
 describe("/sitemap.xml", () => {
-  it("lists each listed clinic and each public practitioner once per locale, with alternates and x-default", async () => {
+  it("lists each listed clinic and each approved public practitioner once per locale, with alternates and x-default", async () => {
     const p = await createPractice();
     const [org] = await db.select().from(organizations).where(eq(organizations.id, p.orgId));
-    await db.update(practitioners).set({ publicProfile: true }).where(eq(practitioners.id, p.drA));
-    // Opted out of the marketplace: never listed, even with a public profile.
-    await db.update(practitioners).set({ publicProfile: true, marketplaceOptOutAt: new Date() }).where(eq(practitioners.id, p.drB));
+    const approved = { publicProfile: true, profileApprovedAt: new Date() };
+    await db.update(practitioners).set(approved).where(eq(practitioners.id, p.drA));
+    // Opted out of the marketplace: never listed, even with an approved public profile.
+    await db.update(practitioners).set({ ...approved, marketplaceOptOutAt: new Date() }).where(eq(practitioners.id, p.drB));
+    // Public but never approved (e.g. after the backfill, during the grace period): its page is a 404.
+    await db.update(practitioners).set({ publicProfile: true, profileApprovedAt: null }).where(eq(practitioners.id, p.drC));
 
     const hidden = await createPractice();
     await db.update(organizations).set({ listed: false }).where(eq(organizations.id, hidden.orgId));
-    await db.update(practitioners).set({ publicProfile: true }).where(eq(practitioners.orgId, hidden.orgId));
+    await db.update(practitioners).set({ publicProfile: true, profileApprovedAt: new Date() }).where(eq(practitioners.orgId, hidden.orgId));
 
     const entries = await sitemap();
     const urls = entries.map((e) => e.url);
@@ -30,7 +33,7 @@ describe("/sitemap.xml", () => {
       expect(urls.filter((u) => u === `${APP}/${l}${clinic}`)).toHaveLength(1);
       expect(urls.filter((u) => u === `${APP}/${l}${clinic}/a`)).toHaveLength(1);
       expect(urls).not.toContain(`${APP}/${l}${clinic}/b`); // opted out
-      expect(urls).not.toContain(`${APP}/${l}${clinic}/c`); // no public profile
+      expect(urls).not.toContain(`${APP}/${l}${clinic}/c`); // public profile not approved
       expect(urls).toContain(l === "it" ? `${APP}/it` : `${APP}/${l}`);
     }
     expect(urls.some((u) => u.includes(hidden.orgId.toLowerCase()))).toBe(false);
@@ -40,6 +43,16 @@ describe("/sitemap.xml", () => {
     expect(Object.keys(languages).sort()).toEqual([...LOCALES, "x-default"].sort());
     expect(languages["x-default"]).toBe(`${APP}${clinic}`);
     expect(languages.pl).toBe(`${APP}/pl${clinic}`);
+  });
+
+  it("leaves out practitioners without a public profile and inactive ones, approved or not", async () => {
+    const p = await createPractice();
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, p.orgId));
+    await db.update(practitioners).set({ publicProfile: false, profileApprovedAt: new Date() }).where(eq(practitioners.id, p.drA));
+    await db.update(practitioners).set({ publicProfile: true, profileApprovedAt: new Date(), active: false }).where(eq(practitioners.id, p.drB));
+    const urls = (await sitemap()).map((e) => e.url);
+    for (const slug of ["a", "b", "c"]) expect(urls).not.toContain(`${APP}/it/c/${org.slug}/${slug}`);
+    expect(urls).toContain(`${APP}/it/c/${org.slug}`);
   });
 
   it("never lists patient links, booking forms or the dashboard", async () => {

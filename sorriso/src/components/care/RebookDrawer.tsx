@@ -1,26 +1,38 @@
 "use client";
 
 import { CalendarX, LoaderCircle, PhoneCall, Send, X } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useState } from "react";
+import { createPortal } from "react-dom";
 import { cancelForClosureAction, loadClosureClashes, sendRebookOffersAction } from "@/app/dashboard/actions/timeoff";
 import { capitalizeFirst, fmtDay, fmtTime, zonedDate } from "@/i18n/datefmt";
 import { useLocale, useT } from "@/i18n/provider";
 import { Badge, Button } from "../ui";
 import { useRunAction } from "../dashboard/useRunAction";
+import { useNativeModal } from "./modal";
 import type { CareResult, ClashItem } from "./types";
+
+/** Class names of a drawer docked to the right edge (a native <dialog>), as WP2's drawers. */
+const DRAWER =
+  "fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-dvh w-full max-w-[480px] overflow-hidden bg-white p-0 text-ink shadow-pop backdrop:bg-slate-900/30 open:animate-slide-in";
 
 /**
  * "Rebook N patients": the visits a closure covers, to offer new times (one message each, in the
  * patient's language, with a one-tap rebooking link) or to cancel with reason
- * practice_unavailable. A side drawer: Escape or the close button closes it, focus starts on its
- * title and returns where it was.
+ * practice_unavailable. A side drawer on a native modal <dialog> (focus trapped, page inert,
+ * Escape or the backdrop closes it), rendered at the end of <body>: focus starts on its title
+ * and returns where it was.
  */
 export function RebookDrawer({ timeOffId, onClose }: { timeOffId: string; onClose(): void }) {
+  // Out of the time-off <form> it is opened from: its controls are not that form's.
+  return createPortal(<RebookDrawerDialog timeOffId={timeOffId} onClose={onClose} />, document.body);
+}
+
+function RebookDrawerDialog({ timeOffId, onClose }: { timeOffId: string; onClose(): void }) {
   const t = useT("care");
   const locale = useLocale();
   const titleId = useId();
   const descId = useId();
-  const titleRef = useRef<HTMLHeadingElement>(null);
+  const { ref, props: dialogProps } = useNativeModal(onClose);
   const { run, pending } = useRunAction();
   const [version, setVersion] = useState(0);
   const [loaded, setLoaded] = useState<{ v: number; res: CareResult<ClashItem[]> } | null>(null);
@@ -36,19 +48,6 @@ export function RebookDrawer({ timeOffId, onClose }: { timeOffId: string; onClos
       alive = false;
     };
   }, [timeOffId, version]);
-
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    titleRef.current?.focus();
-    return () => previous?.focus?.();
-  }, []);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const res = loaded?.v === version ? loaded.res : null;
   const items = res?.ok ? res.data : [];
@@ -67,18 +66,11 @@ export function RebookDrawer({ timeOffId, onClose }: { timeOffId: string; onClos
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/30" onClick={onClose}>
-      <div
-        className="animate-slide-in flex h-full w-full max-w-[480px] flex-col bg-white shadow-pop"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={descId}
-      >
+    <dialog ref={ref} aria-labelledby={titleId} aria-describedby={descId} className={DRAWER} {...dialogProps}>
+      <div className="flex h-full flex-col">
         <div className="flex items-start justify-between gap-3 border-b border-slate-100 p-5">
           <div className="min-w-0">
-            <h2 id={titleId} ref={titleRef} tabIndex={-1} className="text-lg font-bold focus:outline-none">
+            <h2 id={titleId} data-autofocus tabIndex={-1} className="text-lg font-bold focus:outline-none">
               {t("drawer.title")}
             </h2>
             <p id={descId} className="mt-1 text-sm text-slate-600">
@@ -127,10 +119,10 @@ export function RebookDrawer({ timeOffId, onClose }: { timeOffId: string; onClos
                       className="mt-1 h-4 w-4 accent-brand-700"
                       checked={!unticked.has(i.id)}
                       onChange={() => toggle(i.id)}
-                      aria-label={t("drawer.select", { name: i.patientName })}
+                      aria-label={t("drawer.select", { name: i.masked ? t("drawer.restrictedPatient") : i.patientName })}
                     />
                     <label htmlFor={`${titleId}-${i.id}`} className="min-w-0 flex-1 text-sm">
-                      <span className="block font-semibold">{i.patientName}</span>
+                      <span className="block font-semibold">{i.masked ? t("drawer.restrictedPatient") : i.patientName}</span>
                       <span className="block text-slate-600">
                         {capitalizeFirst(
                           t("drawer.when", { date: fmtDay(zonedDate(i.start, i.timezone), "medium", locale), time: fmtTime(i.start, i.timezone) }),
@@ -145,7 +137,7 @@ export function RebookDrawer({ timeOffId, onClose }: { timeOffId: string; onClos
                           <Badge tone="amber">
                             <PhoneCall size={12} aria-hidden /> {t("drawer.callRequested")}
                           </Badge>
-                        ) : i.needsAttention ? (
+                        ) : i.offerSent && i.needsAttention ? (
                           <Badge tone="blue">{t("drawer.offerSent")}</Badge>
                         ) : null}
                         {!i.reachable ? <Badge tone="red">{t("drawer.unreachable")}</Badge> : null}
@@ -179,6 +171,6 @@ export function RebookDrawer({ timeOffId, onClose }: { timeOffId: string; onClos
           </Button>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }

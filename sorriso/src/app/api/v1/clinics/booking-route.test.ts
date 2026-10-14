@@ -1,7 +1,7 @@
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
-import { appointments, consents, organizations, patients, waitlist } from "@/db/schema";
+import { appointments, auditLog, consents, organizations, patients, waitlist } from "@/db/schema";
 import { createApiKey } from "@/lib/api";
 import { newId } from "@/lib/ids";
 import { signPracticeRef } from "@/lib/privacy/context";
@@ -244,6 +244,27 @@ describe("POST /api/v1/clinics/:slug/waitlist", () => {
       const [entry] = await db.select().from(waitlist).where(eq(waitlist.id, id));
       expect(entry.processingContext).toBe("practice");
     }
+  });
+
+  it("with an API key: needs appointments:write, and audits api.request", async () => {
+    const readOnly = await createApiKey(p.orgId, { name: "Read only", scopes: ["appointments:read"] });
+    const before = (await db.select().from(waitlist).where(eq(waitlist.orgId, p.orgId))).length;
+    const denied = await joinWaitlist(waitlistBody({ privacy: undefined }), { authorization: `Bearer ${readOnly.secret}` });
+    expect(denied.status).toBe(403);
+    expect(denied.json.error.code).toBe("insufficient_scope");
+    expect((await db.select().from(waitlist).where(eq(waitlist.orgId, p.orgId))).length).toBe(before);
+
+    const writer = await createApiKey(p.orgId, { name: "Writer", scopes: ["appointments:write"] });
+    const res = await joinWaitlist(waitlistBody({ privacy: undefined }), { authorization: `Bearer ${writer.secret}` });
+    expect(res.status).toBe(201);
+    const logged = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.orgId, p.orgId), eq(auditLog.action, "api.request"), inArray(auditLog.actorId, [readOnly.id, writer.id])));
+    expect(logged.map((r) => [r.actorType, r.actorId, r.metadata?.route, r.metadata?.status])).toEqual([
+      ["api_key", readOnly.id, "clinics.waitlist", 403],
+      ["api_key", writer.id, "clinics.waitlist", 201],
+    ]);
   });
 
   it("doesn't reveal a stored minor: their name and email join the waitlist like anyone's", async () => {

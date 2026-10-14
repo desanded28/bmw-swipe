@@ -2,7 +2,8 @@ import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import type { MembershipRole } from "@/db/enums";
-import { auditLog, legalAcceptances, messages, organizations, patients, privacyRequests, users, type StoredOrgSettings } from "@/db/schema";
+import { auditLog, authTokens, legalAcceptances, memberships, messages, organizations, patients, privacyRequests, users, type StoredOrgSettings } from "@/db/schema";
+import { erasePatient } from "@/lib/privacy/erasure";
 import type { StaffSession } from "@/lib/auth";
 import { newId } from "@/lib/ids";
 import { customRegisterEntries } from "@/lib/privacy/register";
@@ -130,6 +131,42 @@ describe("practice profile", () => {
   });
 });
 
+describe("practice email", () => {
+  it("changing it drops the verification that online booking needs, unless it is a verified owner's address", async () => {
+    const owner = await signIn("owner");
+    await db.insert(memberships).values({ userId: owner.user.id, orgId, role: "owner" }).onConflictDoNothing();
+    const ownerEmail = (await db.select().from(users).where(eq(users.id, owner.user.id)))[0].email;
+    const base = { name: "Studio Test", brandColor: "#0d9488" };
+    await db.update(organizations).set({ email: ownerEmail, emailVerifiedAt: new Date() }).where(eq(organizations.id, orgId));
+
+    // To an address nobody verified: unverified (bookings pause), and the owner is told.
+    await signIn("owner");
+    const res = await saveProfile(null, form({ ...base, email: "Info@Altro-Studio.it" }));
+    expect(res).toMatchObject({ ok: true });
+    expect(res.ok && res.message).toContain("isn't verified");
+    expect(await stored()).toMatchObject({ email: "info@altro-studio.it", emailVerifiedAt: null });
+
+    // An owner whose own address is verified gets a confirmation link at the new address.
+    const s = await signIn("owner");
+    state.session = { ...s, auth: { pending: false, mfaEnabled: true, mfaVerifiedAt: new Date(), createdAt: new Date(), expiresAt: new Date(Date.now() + 3_600_000), emailVerified: true } } as StaffSession;
+    const sent = await saveProfile(null, form({ ...base, email: "segreteria@altro-studio.it" }));
+    expect(sent.ok && sent.message).toContain("We sent a link");
+    const [token] = await db.select().from(authTokens).where(and(eq(authTokens.email, "segreteria@altro-studio.it"), eq(authTokens.kind, "email_verify")));
+    expect(token).toMatchObject({ orgId, userId: owner.user.id });
+    expect((await stored()).emailVerifiedAt).toBeNull();
+
+    // Back to the owner's own verified address: verified again at once.
+    await db.update(users).set({ emailVerifiedAt: new Date() }).where(eq(users.id, owner.user.id));
+    await signIn("owner");
+    expect((await saveProfile(null, form({ ...base, email: ownerEmail }))).ok).toBe(true);
+    expect((await stored()).emailVerifiedAt).not.toBeNull();
+    // Saving without changing it keeps the verification.
+    await signIn("owner");
+    expect(await saveProfile(null, form({ ...base, email: ownerEmail }))).toMatchObject({ ok: true, message: "Profile saved." });
+    expect((await stored()).emailVerifiedAt).not.toBeNull();
+  });
+});
+
 describe("legal acceptance", () => {
   it("lets every member accept the staff instructions, and only managers the DPA", async () => {
     const reception = await signIn("reception");
@@ -170,6 +207,24 @@ describe("privacy requests inbox", () => {
     const sent = await db.select().from(messages).where(eq(messages.patientId, patient.id));
     expect(sent.map((m) => m.to)).toEqual(["ada.n@example.org", "ada.n@example.org"]);
     expect(sent.at(-1)!.body).toContain("Copia inviata via email.");
+  });
+});
+
+describe("requests of an erased patient", () => {
+  it("can still be answered by hand: the request keeps the contact the record had", async () => {
+    await signIn("owner");
+    const [patient] = await db
+      .insert(patients)
+      .values({ id: newId(), orgId, firstName: "Bruno", lastName: "Sala", email: "bruno.s@example.org", phone: "+393351112233" })
+      .returning();
+    const id = newId();
+    await db.insert(privacyRequests).values({ id, orgId, patientId: patient.id, type: "access", channel: "phone", details: "Vuole una copia", receivedAt: new Date(), dueAt: new Date(Date.now() + 20 * 86_400_000) });
+    await erasePatient(orgId, patient.id, { mode: "anonymise", reason: "Richiesta", actor: { type: "user", id: userIds.owner! } });
+    const res = await completePrivacyRequestAction(id, null, form({ decision: "granted", reason: "Copia consegnata a mano." }));
+    expect(res.ok && res.message).toContain("contact kept on the request");
+    const [r] = await db.select().from(privacyRequests).where(eq(privacyRequests.id, id));
+    expect(r.details).toContain("bruno.s@example.org");
+    expect(r.status).toBe("completed");
   });
 });
 

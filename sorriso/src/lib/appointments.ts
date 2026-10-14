@@ -99,8 +99,16 @@ export async function getOrgAppointmentDetails(orgId: string, id: string, tx: Tx
   return details && details.org.id === orgId ? details : null;
 }
 
-export function appointmentLinks(d: Pick<AppointmentDetails, "appointment" | "org">) {
+/**
+ * The patient's links for an appointment. The privacy center (the preferences link's fallback when
+ * the appointment has no manage token) is a public page: in the patient's language when `patient`
+ * is given, else the practice's.
+ */
+export function appointmentLinks(
+  d: Pick<AppointmentDetails, "appointment"> & { org: Pick<Organization, "id" | "slug" | "defaultLocale">; patient?: Pick<Patient, "locale"> },
+) {
   const token = manageTokenOf(d.appointment);
+  const locale = d.patient?.locale ?? d.org.defaultLocale;
   const clinicUrl = absoluteUrl(`/c/${d.org.slug}`);
   // A practice booking's "book again" link stays with the practice as controller.
   const ref = d.appointment.processingContext === "practice" ? `&ref=${signPracticeRef(d.org.id)}` : "";
@@ -109,7 +117,7 @@ export function appointmentLinks(d: Pick<AppointmentDetails, "appointment" | "or
     icsUrl: token ? absoluteUrl(`/api/ics/appointment/${token}`) : clinicUrl,
     reviewUrl: token ? absoluteUrl(`/a/${token}/review`) : clinicUrl,
     /** The patient's privacy choices for this visit (WP4's page); the privacy center without a token. */
-    preferencesUrl: token ? absoluteUrl(`/a/${token}/privacy`) : absoluteUrl("/privacy"),
+    preferencesUrl: token ? absoluteUrl(`/a/${token}/privacy`) : absoluteUrl(lhref(locale, "/privacy")),
     rebookUrl: absoluteUrl(
       `/book/${d.org.slug}?service=${d.appointment.serviceId}&practitioner=${d.appointment.practitionerId}${ref}`,
     ),

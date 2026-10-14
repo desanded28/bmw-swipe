@@ -11,7 +11,7 @@ import { checkPasswordPolicy, hashPassword, verifyPassword } from "@/lib/passwor
 import { rateLimit } from "@/lib/rate-limit";
 import { emailWhen, sendAuthEmail, staffEmailLocale } from "@/lib/security/emails";
 import { beginMfaEnrolment, clearMfa, confirmMfaEnrolment, regenerateRecoveryCodes, verifyMfaCode } from "@/lib/security/mfa";
-import { issueAuthToken } from "@/lib/security/tokens";
+import { invalidateUserTokens, issueAuthToken } from "@/lib/security/tokens";
 import { formatSecret } from "@/lib/totp";
 import { securityTexts } from "@/lib/security/staff-locale";
 import { fail, guard, ok, type ActionResult } from "./_shared";
@@ -51,6 +51,8 @@ export async function changePassword(input: { current: string; next: string; con
     const now = new Date();
     const h = await requestHeaders();
     await db.update(users).set({ passwordHash: await hashPassword(next), passwordChangedAt: now }).where(eq(users.id, user.id));
+    // A reset link requested earlier (perhaps by whoever made them change it) must not set yet another password.
+    await invalidateUserTokens(user.id, "password_reset", now);
     // Every session ends, this one included; this device gets a fresh one (rotation) right after.
     await revokeUserSessions(user.id);
     await createSession(user.id, s.org.id, { headers: h, mfaVerifiedAt: now, now: new Date(now.getTime() + 1) });
@@ -95,10 +97,17 @@ export async function revokeOtherSessions(): Promise<ActionResult> {
 
 // ---------------------------------------------------------------- two-step verification
 
-/** Step 1: a new secret (encrypted at rest), returned once with its otpauth:// URI. */
+/**
+ * Step 1: a new secret (encrypted at rest), returned once with its otpauth:// URI.
+ * Both steps need a recent verification: someone holding only a stolen session cookie must not be
+ * able to put their own authenticator on the account (step 2 also signs every other session out).
+ * Right after signing in that is already the case (the password counts), so the enrolment the
+ * dashboard forces after login goes straight through.
+ */
 export async function startMfaEnrolment(): Promise<ActionResult> {
   return guard(async (s) => {
     const t = await securityTexts(s);
+    await requireStepUp(10, s);
     const user = await loadUser(s.user.id);
     if (!user) return fail(t("errors.notFound"), "not_found");
     const started = await beginMfaEnrolment(user);
@@ -111,6 +120,7 @@ export async function startMfaEnrolment(): Promise<ActionResult> {
 export async function confirmMfaEnrolmentAction(code: string): Promise<ActionResult> {
   return guard(async (s) => {
     const t = await securityTexts(s);
+    await requireStepUp(10, s);
     const limit = await rateLimit(`mfa-enrol:${s.user.id}`, 10, 15 * 60_000);
     if (!limit.ok) return fail(t("errors.rateLimited"), "rate_limited");
     const done = await confirmMfaEnrolment(s.user.id, String(code ?? ""));
@@ -201,7 +211,15 @@ export async function resendVerificationEmail(): Promise<ActionResult> {
     const user = await loadUser(s.user.id);
     if (!user || user.emailVerifiedAt) return ok(t("email.resent"));
     const owned = s.orgs.find((o) => o.role === "owner" && o.org.email?.toLowerCase() === user.email.toLowerCase());
-    const { token } = await issueAuthToken({ kind: "email_verify", userId: user.id, email: user.email, orgId: owned?.org.id ?? null });
+    const { token, id } = await issueAuthToken({ kind: "email_verify", userId: user.id, email: user.email, orgId: owned?.org.id ?? null });
+    // Logged as a change to the account (there is no auth.email.* action yet; lead CR).
+    await audit({
+      ...actor(s),
+      action: "settings.update",
+      entity: { type: "user", id: user.id },
+      metadata: { emailVerification: "resent", tokenId: id.slice(0, 16) },
+      headers: await requestHeaders(),
+    });
     const locale = staffEmailLocale(user, s.org);
     await sendAuthEmail({
       to: user.email,

@@ -18,7 +18,7 @@ import { markContactVerified, recipientFor } from "./contact";
 import { newId } from "./ids";
 import { logError } from "./log";
 import { deliver } from "./messaging";
-import { twilioProviderName } from "./messaging/providers";
+import { isMessagingServiceSid, platformSenders, practiceSender, senderKey, twilioProviderName } from "./messaging/providers";
 import { templates } from "./messaging/templates";
 import { normalizePhone } from "./phone";
 import { audit } from "./audit";
@@ -318,14 +318,65 @@ export type InboundResult = {
   orgId: string | null;
 };
 
-/** The practice whose own number (or Messaging Service) received the text. */
+/**
+ * The practice whose own number (or Messaging Service) received the text; null for the shared
+ * platform sender.
+ * - The platform's shared senders (platformSenders(): TWILIO_FROM, the shared Messaging Service,
+ *   the WhatsApp sender, TWILIO_SHARED_SENDERS) are no practice's, even if an inboundNumber holds one.
+ * - When Twilio names the Messaging Service of the receiving number, the service decides: the
+ *   shared one means the shared sender (whichever number of its pool got the text), a practice's
+ *   one means that practice, whatever another practice claims about the number.
+ * - Otherwise the receiving number itself.
+ */
 async function orgByInboundNumber(to: string | null | undefined, messagingServiceSid: string | null | undefined) {
-  const keys = [normalizePhone(to ?? null), to?.trim().replace(/^whatsapp:/i, ""), messagingServiceSid?.trim()].filter(
-    (k): k is string => Boolean(k),
-  );
-  if (!keys.length) return null;
-  const [org] = await db.select().from(organizations).where(inArray(organizations.inboundNumber, [...new Set(keys)]));
+  const shared = platformSenders();
+  const raw = messagingServiceSid?.trim() ?? "";
+  const service = isMessagingServiceSid(raw) ? senderKey(raw) : null;
+  if (service) {
+    if (shared.has(service)) return null;
+    const [org] = await db
+      .select()
+      .from(organizations)
+      .where(inArray(organizations.inboundNumber, [...new Set([service, raw])]));
+    if (org) return org;
+  }
+  const number = senderKey(to);
+  if (!number || shared.has(number)) return null;
+  const [org] = await db.select().from(organizations).where(eq(organizations.inboundNumber, number));
   return org ?? null;
+}
+
+/** The practices among `orgIds` that text from a sender of their own (orgId -> senderKey of it). */
+async function ownSenders(orgIds: string[]): Promise<Map<string, string>> {
+  if (!orgIds.length) return new Map();
+  const rows = await db
+    .select({ id: organizations.id, inboundNumber: organizations.inboundNumber })
+    .from(organizations)
+    .where(and(inArray(organizations.id, orgIds), isNotNull(organizations.inboundNumber)));
+  const out = new Map<string, string>();
+  for (const o of rows) {
+    const key = senderKey(practiceSender(o.inboundNumber));
+    if (key) out.set(o.id, key);
+  }
+  return out;
+}
+
+/**
+ * Did this outbound text leave from the shared sender? A WhatsApp message always did (there is one
+ * platform-wide WhatsApp sender). An SMS did, unless its practice has a sender of its own and the
+ * SMS left from it, or from a sender we don't know (deliver() records the number or Messaging
+ * Service each SMS left from in messages.from).
+ */
+function leftFromSharedSender(
+  m: { orgId: string | null; from: string | null },
+  channel: Exclude<Channel, "email">,
+  own: Map<string, string>,
+): boolean {
+  if (channel === "whatsapp") return true;
+  const ownKey = m.orgId ? own.get(m.orgId) : undefined;
+  if (!ownKey) return true;
+  const from = senderKey(m.from);
+  return from !== null && from !== ownKey;
 }
 
 /** Patients of `orgId` (every practice when null) whose texts go to `phone`. */
@@ -340,13 +391,15 @@ async function patientsTextedAt(phone: string, orgId: string | null, now: Date):
 /**
  * Which practice a reply is for, and whether it reached the shared platform sender:
  * 1. the dashboard simulator names it;
- * 2. the number (or Messaging Service) that received it is a practice's inboundNumber;
- * 3. on the shared sender: the practice that last texted this number;
- * 4. else the only practice with a patient texted at this number. Several and none texted:
- *    nobody, and nothing changes.
+ * 2. the number (or Messaging Service) that received it is a practice's inboundNumber
+ *    (orgByInboundNumber);
+ * 3. on the shared sender: the practice that last texted this number, on this channel, from the
+ *    shared sender. A practice that texts from its own number is answered there, never here;
+ * 4. else the only practice with a patient texted at this number, if it uses the shared sender.
+ *    Several, or none: nobody, and nothing changes.
  */
 async function replyScope(
-  input: { orgId?: string; to?: string | null; messagingServiceSid?: string | null },
+  input: { orgId?: string; channel: Exclude<Channel, "email">; to?: string | null; messagingServiceSid?: string | null },
   phone: string | null,
   now: Date,
 ) {
@@ -354,27 +407,26 @@ async function replyScope(
     const [org] = await db.select().from(organizations).where(eq(organizations.id, input.orgId));
     return { org: org ?? null, sharedSender: false };
   }
-  const own = await orgByInboundNumber(input.to, input.messagingServiceSid);
-  if (own) return { org: own, sharedSender: false };
+  const receiver = await orgByInboundNumber(input.to, input.messagingServiceSid);
+  if (receiver) return { org: receiver, sharedSender: false };
   if (!phone) return { org: null, sharedSender: true };
-  const [lastText] = await db
-    .select({ orgId: messages.orgId })
+  const recent = await db
+    .select({ orgId: messages.orgId, from: messages.from })
     .from(messages)
     .where(
       and(
         eq(messages.direction, "outbound"),
         eq(messages.to, phone),
-        inArray(messages.channel, ["sms", "whatsapp"]),
+        eq(messages.channel, input.channel),
         isNotNull(messages.orgId),
       ),
     )
     .orderBy(desc(messages.createdAt))
-    .limit(1);
-  let orgId = lastText?.orgId ?? null;
-  if (!orgId) {
-    const orgIds = [...new Set((await patientsTextedAt(phone, null, now)).map((p) => p.orgId))];
-    orgId = orgIds.length === 1 ? orgIds[0] : null;
-  }
+    .limit(50);
+  const textedHere = [...new Set((await patientsTextedAt(phone, null, now)).map((p) => p.orgId))];
+  const own = await ownSenders([...new Set([...recent.map((m) => m.orgId!), ...textedHere])]);
+  let orgId = recent.find((m) => leftFromSharedSender(m, input.channel, own))?.orgId ?? null;
+  if (!orgId && textedHere.length === 1 && (input.channel === "whatsapp" || !own.has(textedHere[0]))) orgId = textedHere[0];
   const [org] = orgId ? await db.select().from(organizations).where(eq(organizations.id, orgId)) : [];
   return { org: org ?? null, sharedSender: true };
 }
@@ -419,13 +471,21 @@ async function recordTextChoice(rows: Patient[], channel: Exclude<Channel, "emai
  * Practice boundaries: the reply is matched to one practice (replyScope) and only that
  * practice's patients and appointments are considered, so a reply can never change another
  * practice's appointment. The answer goes out in that practice's name and in the patient's
- * language. STOP and START change the channel for that practice's patients; when the shared
- * platform sender received them, for every practice's patients at that number (the carrier blocks
- * the sender for that number anyway, so every practice using it loses the channel).
+ * language. STOP withdraws the channel for that practice's patients; when the shared platform
+ * sender received it, for every practice's patients at that number (the carrier blocks the sender
+ * for that number anyway, so every practice using it loses the channel). START grants it again
+ * only at the matched practice: each practice is a separate controller, and a START sent in answer
+ * to one practice is no choice about another, where the patient may have withdrawn on purpose.
+ *
+ * The answer is sent through the provider's API (deliver()), from the number or Messaging Service
+ * the patient wrote to, never as an inline TwiML reply: Twilio's copy then has a message SID we
+ * store, and the reminders cron deletes it after privacy.retention.providerMessageDays like any
+ * other copy. It is also returned.
  *
  * replyMode:
- *   "return"  – return the reply text (e.g. to answer inline via TwiML); it is logged as sent.
- *   "deliver" – send the reply through the normal provider (used by the simulator).
+ *   "return"  – the Twilio webhook: the inbound text is logged under the Twilio provider with its
+ *               MessageSid (so its copy is deleted later too).
+ *   "deliver" – the dashboard simulator: the inbound text is logged as "simulator".
  */
 export async function handleInboundMessage(input: {
   channel: Exclude<Channel, "email">;
@@ -527,8 +587,10 @@ export async function handleInboundMessage(input: {
   let reply: string | null = null;
 
   if (intent === "stop" || intent === "start") {
-    // On the shared sender the choice covers every practice texting this number (see above).
-    const affected = phone ? (sharedSender && !input.orgId ? await patientsTextedAt(phone, null, now) : patientRows) : [];
+    // STOP on the shared sender covers every practice texting this number; START only the
+    // practice it was matched to (see above).
+    const everyPractice = intent === "stop" && sharedSender && !input.orgId && phone;
+    const affected = everyPractice ? await patientsTextedAt(phone, null, now) : patientRows;
     await recordTextChoice(affected, input.channel, intent === "start", now);
     reply = (intent === "stop" ? templates.reply.stop : templates.reply.start)(locale, clinic, { asciiFallback });
   } else if (!details) {
@@ -586,27 +648,22 @@ export async function handleInboundMessage(input: {
   }
 
   if (reply && phone) {
-    const replyRow = {
+    // A free-form answer (the patient just wrote, so WhatsApp accepts it without a template),
+    // through the API so that Twilio's copy gets a SID we store and later delete. An SMS goes out
+    // from the Messaging Service or number the patient wrote to (the simulator has none: the
+    // practice's usual sender).
+    const service = input.messagingServiceSid?.trim() ?? "";
+    const sender = input.channel === "sms" ? (isMessagingServiceSid(service) ? service : normalizePhone(input.to ?? null)) : null;
+    await deliver({
       orgId,
       appointmentId: details?.appointment.id ?? null,
       patientId: details?.patient.id ?? fallbackPatient?.id ?? null,
-    };
-    if (input.replyMode === "deliver") {
-      // A free-form reply: the patient just wrote, so WhatsApp accepts it without a template.
-      await deliver({ ...replyRow, channel: input.channel, to: phone, text: reply, locale });
-    } else {
-      await db.insert(messages).values({
-        id: newId(),
-        ...replyRow,
-        channel: input.channel,
-        direction: "outbound",
-        to: phone,
-        from: input.to ?? null,
-        body: reply,
-        status: "sent",
-        provider,
-      });
-    }
+      channel: input.channel,
+      to: phone,
+      text: reply,
+      locale,
+      sender,
+    });
   }
 
   return { intent, reply, appointmentId: details?.appointment.id ?? null, orgId };

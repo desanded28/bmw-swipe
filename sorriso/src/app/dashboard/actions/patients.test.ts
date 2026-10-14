@@ -2,11 +2,20 @@ import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import type { MembershipRole } from "@/db/enums";
-import { auditLog, consents, organizations, patients, users } from "@/db/schema";
+import { auditLog, consents, messages, organizations, patients, privacyRequests, users } from "@/db/schema";
 import type { StaffSession } from "@/lib/auth";
 import { newId } from "@/lib/ids";
 import { createPractice } from "@/test/fixtures";
-import { erasePatientAction, listPatientRows, openRestrictedRecord, recordConsentAction, restrictPatientAction, searchPatients, updatePatient } from "./patients";
+import {
+  erasePatientAction,
+  listPatientRows,
+  openRestrictedRecord,
+  recordConsentAction,
+  restrictPatientAction,
+  searchPatients,
+  unrestrictPatientAction,
+  updatePatient,
+} from "./patients";
 
 const state = vi.hoisted(() => ({ session: null as StaffSession | null, stepUp: "ok" as "ok" | "required" }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
@@ -55,7 +64,7 @@ beforeAll(async () => {
 });
 
 describe("patients list and search", () => {
-  it("audits a search without storing the term, and masks restricted records for the front desk", async () => {
+  it("audits a search without storing the term, and hides restricted records from the front desk", async () => {
     const owner = await signIn("owner");
     const visible = await addPatient();
     const hidden = await addPatient({ restrictedAt: new Date(), restrictionReason: "x" });
@@ -76,12 +85,20 @@ describe("patients list and search", () => {
     const all = await db.select().from(auditLog).where(and(eq(auditLog.action, "patient.search"), eq(auditLog.actorId, owner.user.id)));
     expect(all.map((a) => a.metadata?.search)).toEqual([true, false]);
 
+    // Without patient.restricted.read a search can't even reveal that a restricted record matches
+    // a name or a phone fragment: it is left out of the list and of every search.
     await signIn("reception");
-    const masked = (await listPatientRows("Quartararo")).rows.find((r) => r.id === hidden.id);
-    expect(masked).toMatchObject({ name: null, phone: null, restricted: true });
+    const byName = await listPatientRows("Quartararo");
+    expect(byName.rows.map((r) => r.id)).toContain(visible.id);
+    expect(byName.rows.map((r) => r.id)).not.toContain(hidden.id);
+    expect((await listPatientRows(hidden.phone!.slice(-6))).rows.map((r) => r.id)).not.toContain(hidden.id);
+    expect((await listPatientRows("")).rows.map((r) => r.id)).not.toContain(hidden.id);
     const hits = await searchPatients("Quartararo");
-    expect(hits.find((h) => h.id === hidden.id)).toMatchObject({ lastName: "", phone: null, restricted: true });
-    expect(hits.find((h) => h.id === hidden.id)?.firstName).not.toContain("Zelinda");
+    expect(hits.map((h) => h.id)).toContain(visible.id);
+    expect(hits.map((h) => h.id)).not.toContain(hidden.id);
+    // Those who may open restricted records find it, flagged, in the drawer.
+    await signIn("owner");
+    expect((await searchPatients("Quartararo")).find((h) => h.id === hidden.id)).toMatchObject({ restricted: true });
   });
 });
 
@@ -106,6 +123,29 @@ describe("updatePatient", () => {
     expect(audited.reason).toBe("Asked at the front desk on 12 October");
   });
 
+  it("records WhatsApp only when enabled and with the patient's confirmed agreement", async () => {
+    const s = await signIn("reception");
+    const p = await addPatient({ email: "wa@example.org" });
+    const base = { firstName: "Zelinda", lastName: "Quartararo", phone: p.phone!, email: "wa@example.org", locale: "it", preferredChannel: "whatsapp" };
+    // WhatsApp is off in this practice: a crafted form can't switch to it.
+    expect(await updatePatient(p.id, null, form(base))).toMatchObject({ ok: false, code: "whatsapp_disabled" });
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, orgId));
+    await db
+      .update(organizations)
+      .set({ settings: { ...org.settings, privacy: { ...org.settings.privacy, whatsappEnabled: true } } })
+      .where(eq(organizations.id, orgId));
+    await signIn("reception");
+    expect(await updatePatient(p.id, null, form(base))).toMatchObject({ ok: false, code: "whatsapp_consent_required" });
+    expect(await updatePatient(p.id, null, form({ ...base, whatsappAgreed: "on" }))).toMatchObject({ ok: false, code: "optin_reason_required" });
+    expect(await db.select().from(consents).where(and(eq(consents.patientId, p.id), eq(consents.purpose, "whatsapp_channel")))).toEqual([]);
+    const saved = await updatePatient(p.id, null, form({ ...base, whatsappAgreed: "on", optInReason: "Asked for WhatsApp at the desk today" }));
+    expect(saved.ok).toBe(true);
+    const [c] = await db.select().from(consents).where(and(eq(consents.patientId, p.id), eq(consents.purpose, "whatsapp_channel")));
+    expect(c).toMatchObject({ granted: true, method: "staff_recorded", actorUserId: s.user.id });
+    // Once on file, saving again needs nothing more.
+    expect((await updatePatient(p.id, null, form(base))).ok).toBe(true);
+  });
+
   it("accepts all 8 languages and refuses changes to a restricted record", async () => {
     await signIn("practitioner");
     const p = await addPatient();
@@ -128,6 +168,34 @@ describe("data protection actions", () => {
     expect(await consent()).toMatchObject({ ok: false, code: "restricted_reason_required" });
     expect((await openRestrictedRecord(p.id, null, form({ reason: "Il paziente ha chiamato" }))).ok).toBe(true);
     expect((await consent()).ok).toBe(true);
+  });
+
+  it("lifting a restriction needs a reason", async () => {
+    await signIn("owner");
+    const p = await addPatient({ email: "lift@example.org" });
+    expect((await restrictPatientAction(p.id, null, form({ reason: "Contesta i dati" }))).ok).toBe(true);
+    expect((await openRestrictedRecord(p.id, null, form({ reason: "Verifica conclusa" }))).ok).toBe(true);
+    expect(await unrestrictPatientAction(p.id, null, form({ reason: "" }))).toMatchObject({ ok: false, code: "reason_required" });
+    expect((await db.select().from(patients).where(eq(patients.id, p.id)))[0].restrictedAt).not.toBeNull();
+    expect((await unrestrictPatientAction(p.id, null, form({ reason: "Dati corretti" }))).ok).toBe(true);
+    expect((await db.select().from(patients).where(eq(patients.id, p.id)))[0].restrictedAt).toBeNull();
+  });
+
+  it("erasing from a privacy request answers it before the contact goes", async () => {
+    await signIn("owner");
+    const p = await addPatient({ email: "erase-me@example.org" });
+    const requestId = newId();
+    await db.insert(privacyRequests).values({ id: requestId, orgId, patientId: p.id, type: "erasure", channel: "email", receivedAt: new Date(), dueAt: new Date(Date.now() + 20 * 86_400_000) });
+    const fields = { confirm: "Zelinda Quartararo", reason: "Richiesta del paziente", mode: "anonymise", requestId };
+    expect(await erasePatientAction(p.id, null, form(fields))).toMatchObject({ ok: false, code: "answer_required" });
+    const res = await erasePatientAction(p.id, null, form({ ...fields, answer: "Abbiamo cancellato i suoi dati." }));
+    expect(res).toMatchObject({ ok: true, message: "The patient's data was pseudonymised, the request closed and the answer sent." });
+    const [r] = await db.select().from(privacyRequests).where(eq(privacyRequests.id, requestId));
+    expect(r).toMatchObject({ status: "completed", decision: "granted" });
+    const sent = await db.select().from(messages).where(eq(messages.patientId, p.id));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ channel: "email", body: "", status: "captured" });
+    expect(sent[0].to).not.toContain("erase-me");
   });
 
   it("erasure needs the patient's name typed and a fresh second factor; reception can't erase", async () => {

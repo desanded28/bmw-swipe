@@ -10,13 +10,13 @@ import { lhref } from "@/i18n/href";
 import { getT } from "@/i18n/server";
 import { audit } from "@/lib/audit";
 import { isPreviewBot, TOKEN_SHAPE } from "@/lib/forms";
-import { signPracticeRef } from "@/lib/privacy/context";
 import { rateLimitByIp } from "@/lib/rate-limit";
-import { rebookState } from "@/lib/rebooking";
+import { REBOOK_CHOICES, REBOOK_MORE_CHOICES, rebookState } from "@/lib/rebooking";
 
 export const dynamic = "force-dynamic";
 
 type Params = Promise<{ locale: string; token: string }>;
+type Search = Promise<{ more?: string | string[] }>;
 
 const LINK_LIMIT = 30;
 const LINK_WINDOW_MS = 10 * 60 * 1000;
@@ -63,11 +63,13 @@ function Message({
 }
 
 /**
- * The rebooking assistant's page: the practice closed during this visit; the patient picks one
- * of the offered times in one tap, or asks to be called. Reached from careMessages.practiceMoved.
+ * The rebooking assistant's page: the practice closed during this visit and offered new times;
+ * the patient picks one in one tap (?more=1 shows more of them, still moving this visit), or asks
+ * to be called. Reached from careMessages.practiceMoved.
  */
-export default async function RebookPage({ params }: { params: Params }) {
+export default async function RebookPage({ params, searchParams }: { params: Params; searchParams: Search }) {
   const { locale: raw, token } = await params;
+  const more = (await searchParams).more === "1";
   const locale = toLocale(raw);
   const t = getT(locale, "care");
   const h = await headers();
@@ -80,7 +82,7 @@ export default async function RebookPage({ params }: { params: Params }) {
     return <Message locale={locale} title={t("rebook.metaTitle")} text={t("form.errors.rate_limited")} icon={<Hourglass size={26} />} />;
   }
 
-  const state = TOKEN_SHAPE.test(token) ? await rebookState(token) : ({ kind: "invalid" } as const);
+  const state = TOKEN_SHAPE.test(token) ? await rebookState(token, new Date(), more ? REBOOK_MORE_CHOICES : REBOOK_CHOICES) : ({ kind: "invalid" } as const);
   if (state.kind === "invalid") {
     return <Message locale={locale} title={t("rebook.metaTitle")} text={t("rebook.invalid")} icon={<LinkIcon size={26} />} />;
   }
@@ -106,12 +108,9 @@ export default async function RebookPage({ params }: { params: Params }) {
   }
 
   const tz = d.location.timezone;
-  // A practice booking stays with the practice as controller (signed ref), like "book again".
-  const ref = d.appointment.processingContext === "practice" ? `&ref=${signPracticeRef(d.org.id)}` : "";
-  const moreTimesHref =
-    d.service.active && d.service.onlineBookable
-      ? lhref(locale, `/book/${d.org.slug}?service=${d.service.id}&practitioner=${d.practitioner.id}${ref}`)
-      : null;
+  // More times of the same assistant (each one moves this visit), never the public booking page:
+  // a booking there would be a second appointment next to the one that can't take place.
+  const moreTimesHref = !more && state.choices.length >= REBOOK_CHOICES ? lhref(locale, `/a/${token}/rebook?more=1`) : null;
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-10">

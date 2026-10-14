@@ -19,13 +19,18 @@
  *   data-include-id    with data-events, add { appointmentId } to the event's detail.
  *
  * The frame is told this page's origin (?parent=) and posts messages only to it, never to "*".
- * No cookies, no storage, no third-party requests.
+ * No cookies, no storage, no third-party requests. Without data-clinic (or with a data-target that
+ * matches nothing) the script does nothing; the developers page lists the attributes.
+ *
+ * Closing the dialog (the close button, Escape, a click outside) hides it and keeps the frame, so
+ * what the visitor typed is still there when they open it again. Escape pressed inside the frame
+ * (where focus is while the form is used) reaches this page as the frame's { type: "close" } message.
  */
 (function () {
   var script = document.currentScript;
   if (!script) return;
   var d = script.dataset;
-  if (!d.clinic) return console.warn("[sorriso] data-clinic is required");
+  if (!d.clinic) return;
 
   var LOCALES = ["it", "en", "de", "fr", "es", "pt", "ro", "pl"];
   var LABELS = {
@@ -81,6 +86,7 @@
     var data = e.data;
     if (!data || data.source !== "sorriso") return;
     if (data.type === "resize" && inline && typeof data.height === "number") frame.style.height = Math.ceil(data.height) + "px";
+    if (data.type === "close" && !inline) shut();
     if (data.type === "booked" && events) {
       var detail = { source: "sorriso", type: "booked" };
       if (includeId && typeof data.appointmentId === "string") detail.appointmentId = data.appointmentId;
@@ -91,7 +97,7 @@
   var inline = false;
   if (d.target) {
     var host = document.querySelector(d.target);
-    if (!host) return console.warn("[sorriso] target not found:", d.target);
+    if (!host) return;
     inline = true;
     frame = makeFrame("640px");
     host.appendChild(frame);
@@ -108,8 +114,10 @@
     "box-shadow:0 10px 30px rgba(15,23,42,.25);outline-offset:3px;background:" +
     color;
 
+  /** Built on the first open, then shown and hidden: the frame (and what was typed in it) stays. */
   var overlay = null;
   var closeBtn = null;
+  var isOpen = false;
   var bodyOverflow = "";
 
   /** Focus sentinels around the dialog keep Tab inside it (the frame's own content in between). */
@@ -121,8 +129,7 @@
     return s;
   }
 
-  function open() {
-    if (overlay) return;
+  function build() {
     overlay = document.createElement("div");
     overlay.setAttribute("role", "dialog");
     overlay.setAttribute("aria-modal", "true");
@@ -157,24 +164,29 @@
         closeBtn.focus();
       }),
     );
+    // Into the form: the frame takes focus once loaded (its first control follows with Tab).
+    frame.addEventListener("load", function () {
+      if (isOpen) frame.focus();
+    });
     document.body.appendChild(overlay);
+  }
+
+  function open() {
+    if (isOpen) return;
+    if (!overlay) build();
+    isOpen = true;
+    overlay.style.display = "flex";
     bodyOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     document.addEventListener("keydown", esc);
     btn.setAttribute("aria-expanded", "true");
-    // Into the form: the frame takes focus (its first control follows with Tab).
-    frame.addEventListener("load", function () {
-      if (overlay) frame.focus();
-    });
     frame.focus();
   }
 
   function shut() {
-    if (!overlay) return;
-    overlay.remove();
-    overlay = null;
-    frame = null;
-    closeBtn = null;
+    if (!isOpen) return;
+    isOpen = false;
+    overlay.style.display = "none";
     document.body.style.overflow = bodyOverflow;
     document.removeEventListener("keydown", esc);
     btn.setAttribute("aria-expanded", "false");

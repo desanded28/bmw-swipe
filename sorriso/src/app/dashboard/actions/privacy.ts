@@ -25,6 +25,7 @@ import {
   getPrivacyRequest,
   notifyRequester,
   PrivacyRequestError,
+  splitContactSnapshot,
   startPrivacyRequest,
 } from "@/lib/privacy/requests";
 import { RETENTION_LIMITS, resolvePrivacySettings } from "@/lib/privacy/settings";
@@ -152,7 +153,9 @@ async function complete(scope: Scope, id: string, fd: FormData, t: T): Promise<A
   try {
     const row = await db.transaction((tx) => completePrivacyRequest(tx, { orgId: scope.orgId, id, decision: d, reason: str(fd, "reason"), actor: scope.actor }));
     const told = await notifyRequester(row, DECISION_KIND[d]);
-    return ok(told ? t("requests.detail.complete.done") : t("requests.detail.complete.doneNoNotice"));
+    if (told) return ok(t("requests.detail.complete.done"));
+    // The patient was erased meanwhile: the request kept the contact the record had.
+    return ok(splitContactSnapshot(row.details).contact ? t("requests.detail.complete.doneKeptContact") : t("requests.detail.complete.doneNoNotice"));
   } catch (err) {
     return requestFail(err, t);
   }

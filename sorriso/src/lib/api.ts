@@ -95,6 +95,20 @@ export function addMonths(d: Date, months: number): Date {
   return out;
 }
 
+/**
+ * When a key stops working. Keys always expire: one issued before expiries existed (expires_at
+ * NULL) expires 12 months after it was created.
+ */
+export function apiKeyExpiry(key: Pick<ApiKey, "expiresAt" | "createdAt">): Date {
+  return key.expiresAt ?? addMonths(key.createdAt, API_KEY_DEFAULT_MONTHS);
+}
+
+/**
+ * Secrets that were published (the old hard-coded demo key, printed on the developers page):
+ * refused whatever the database says.
+ */
+const PUBLISHED_KEY_HASHES = new Set(["sk_demo_studio_bianchi_local_only"].map((k) => sha256(k)));
+
 /** Create a key; the secret is returned once (only its sha256 is stored). */
 export async function createApiKey(orgId: string, input: string | CreateApiKeyInput) {
   const i: CreateApiKeyInput = typeof input === "string" ? { name: input } : input;
@@ -126,21 +140,24 @@ export type ApiKeyCheck =
   | { ok: false; status: 401 | 403; code: "none" | "unauthorized" | "ip_not_allowed" };
 
 /**
- * Check `Authorization: Bearer sk_…`: unknown, revoked and expired keys are 401; a key with an
- * IP allow-list called from another address is 403. Updates lastUsedAt on success.
+ * Check `Authorization: Bearer sk_…`: unknown, revoked, expired (apiKeyExpiry) and published
+ * keys are 401; a key with an IP allow-list called from another address is 403. Updates
+ * lastUsedAt on success.
  */
 export async function checkApiKey(req: Request, now: Date = new Date()): Promise<ApiKeyCheck> {
   const header = req.headers.get("authorization");
   if (!header) return { ok: false, status: 401, code: "none" };
   const m = header.match(/^Bearer\s+(sk_[A-Za-z0-9_-]{10,100})$/);
   if (!m) return { ok: false, status: 401, code: "unauthorized" };
+  const hash = sha256(m[1]);
+  if (PUBLISHED_KEY_HASHES.has(hash)) return { ok: false, status: 401, code: "unauthorized" };
   const [row] = await db
     .select({ key: apiKeys, org: organizations })
     .from(apiKeys)
     .innerJoin(organizations, eq(organizations.id, apiKeys.orgId))
-    .where(and(eq(apiKeys.keyHash, sha256(m[1])), isNull(apiKeys.revokedAt)));
+    .where(and(eq(apiKeys.keyHash, hash), isNull(apiKeys.revokedAt)));
   if (!row) return { ok: false, status: 401, code: "unauthorized" };
-  if (row.key.expiresAt && row.key.expiresAt.getTime() <= now.getTime()) return { ok: false, status: 401, code: "unauthorized" };
+  if (apiKeyExpiry(row.key).getTime() <= now.getTime()) return { ok: false, status: 401, code: "unauthorized" };
   if (!ipAllowed(clientIp(req.headers), row.key.allowedIps)) return { ok: false, status: 403, code: "ip_not_allowed" };
   // At most once a minute: a busy integration shouldn't turn every call into a write.
   if (!row.key.lastUsedAt || now.getTime() - row.key.lastUsedAt.getTime() > 60_000) {
@@ -178,6 +195,27 @@ export function requireScope(auth: ApiAuth, scope: ApiScope): NextResponse | nul
 /** Calls per key per minute. */
 const PARTNER_RATE = { limit: 600, windowMs: 60_000 };
 
+/**
+ * The per-key rate limit every key-authenticated call shares (partner routes, and the public
+ * booking and waitlist routes called with a key): null when the call may proceed, else a 429.
+ */
+export async function limitByKey(auth: ApiAuth): Promise<NextResponse | null> {
+  const res = await rateLimit(`partner:${auth.key.id}`, PARTNER_RATE.limit, PARTNER_RATE.windowMs);
+  return res.ok ? null : rateLimited(res.retryAfterSec);
+}
+
+/** Audit one key-authenticated call (api.request, actor = the key). */
+export async function auditApiRequest(req: Request, auth: ApiAuth, route: string, status: number, extra: Record<string, string> = {}): Promise<void> {
+  await audit({
+    orgId: auth.org.id,
+    actor: { type: "api_key", id: auth.key.id },
+    action: "api.request",
+    entity: { type: "api_key", id: auth.key.id },
+    metadata: { method: req.method, route, status, ...extra },
+    headers: req.headers,
+  });
+}
+
 function withoutCors(res: Response): Response {
   for (const name of [...res.headers.keys()]) if (name.toLowerCase().startsWith("access-control-")) res.headers.delete(name);
   res.headers.set("Cache-Control", "no-store");
@@ -201,8 +239,8 @@ export async function partnerRoute(
   if (!check.ok) return withoutCors(apiKeyError(check));
   const { auth } = check;
   let res: Response;
-  const limit = await rateLimit(`partner:${auth.key.id}`, PARTNER_RATE.limit, PARTNER_RATE.windowMs);
-  if (!limit.ok) res = rateLimited(limit.retryAfterSec);
+  const limited = await limitByKey(auth);
+  if (limited) res = limited;
   else if (!hasScope(auth, scope)) res = requireScope(auth, scope)!;
   else {
     try {
@@ -211,13 +249,6 @@ export async function partnerRoute(
       res = handleApiError(err);
     }
   }
-  await audit({
-    orgId: auth.org.id,
-    actor: { type: "api_key", id: auth.key.id },
-    action: "api.request",
-    entity: { type: "api_key", id: auth.key.id },
-    metadata: { method: req.method, route, status: res.status },
-    headers: req.headers,
-  });
+  await auditApiRequest(req, auth, route, res.status);
   return withoutCors(res);
 }

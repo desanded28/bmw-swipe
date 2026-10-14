@@ -15,9 +15,8 @@ import { alternatesFor } from "@/i18n/seo";
 import { getT } from "@/i18n/server";
 import { getAppointmentDetails } from "@/lib/appointments";
 import { audit } from "@/lib/audit";
-import { recipientFor } from "@/lib/contact";
 import { currentConsents } from "@/lib/privacy/consent";
-import { channelOptions, consentOptions, linkRecord, maskContact } from "@/lib/privacy/privacy-center";
+import { channelOptions, consentOptions, linkRecord, linkStepUpContacts, maskContact } from "@/lib/privacy/privacy-center";
 import { rateLimitByIp } from "@/lib/rate-limit";
 import { linkPreferencesAction, linkStepUpAction, linkWithdrawAction } from "./actions";
 
@@ -63,6 +62,10 @@ function Blank({ locale, icon, children }: { locale: Locale; icon: ReactNode; ch
  * of messages, withdrawing optional consents and objections, unsubscribing from SMS or email. To
  * see everything, download it or make a request, a one-time code goes to the contact on file and
  * opens the privacy center. Opening the page changes nothing (mail scanners open links too).
+ *
+ * When someone else booked for the patient (another adult, or a guardian for someone now 18), the
+ * link may be in the booker's hands: the page then shows none of the patient's choices and offers
+ * only the code to the patient's own contact (linkRecord gives no `acting`).
  */
 export default async function LinkPrivacyPage({ params }: { params: Params }) {
   const { locale: raw, token } = await params;
@@ -86,37 +89,96 @@ export default async function LinkPrivacyPage({ params }: { params: Params }) {
     return <Blank locale={locale} icon={limit.ok ? <LinkIcon size={26} /> : <ShieldAlert size={26} />}>{rich(t("linkPage.invalid"), { link: centerLink })}</Blank>;
   }
 
-  const { rec } = linkRecord(d);
+  const { rec, acting } = linkRecord(d);
+  const contacts = linkStepUpContacts(d).map((c) => ({ kind: c.kind, label: maskContact(c) }));
+  const hidden = { locale, token };
+  const stepUp = (
+    <Card className="mt-4 p-5">
+      <h2 className="flex items-center gap-2 font-semibold">
+        <KeyRound size={18} className="text-brand-700" aria-hidden /> {acting ? t("linkPage.full.heading") : t("linkPage.locked.heading")}
+      </h2>
+      <p className="mt-1 text-sm text-slate-600">{acting ? t("linkPage.full.body") : t("linkPage.locked.stepUp")}</p>
+      {contacts.length ? (
+        <ActionForm
+          action={linkStepUpAction}
+          hidden={hidden}
+          submit={{ label: t("linkPage.full.send"), pending: t("center.signIn.sending"), size: "sm" }}
+          className="mt-3"
+        >
+          <fieldset>
+            <legend className="mb-2 text-[13px] font-semibold text-slate-700">{t("linkPage.full.choose")}</legend>
+            <div className="flex flex-wrap gap-2">
+              {contacts.map((c, i) => (
+                <label
+                  key={c.kind}
+                  className="flex min-h-10 cursor-pointer items-center gap-2 rounded-xl bg-white px-3 text-sm font-semibold ring-1 ring-line-strong has-[input:checked]:bg-brand-50 has-[input:checked]:ring-2 has-[input:checked]:ring-brand-600 has-[input:focus-visible]:outline-2 has-[input:focus-visible]:outline-offset-2 has-[input:focus-visible]:outline-brand-600"
+                >
+                  <input type="radio" name="kind" value={c.kind} defaultChecked={i === 0} className="h-4 w-4 accent-brand-700" />
+                  {c.label}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        </ActionForm>
+      ) : (
+        <p className="mt-3 text-sm text-slate-600">{t("linkPage.full.noContact")}</p>
+      )}
+    </Card>
+  );
+  const footer = (
+    <div className="mt-6 flex flex-wrap gap-3">
+      <LinkButton href={lhref(locale, `/c/${d.org.slug}/privacy`)} variant="ghost" size="sm">
+        <FileText size={14} aria-hidden /> {t("linkPage.notice", { practice: d.org.name })}
+      </LinkButton>
+      <LinkButton href={lhref(locale, "/privacy")} variant="ghost" size="sm">
+        <ShieldCheck size={14} aria-hidden /> {t("manageCard.privacyCenter")}
+      </LinkButton>
+    </div>
+  );
+  const back = (
+    <Link href={lhref(locale, `/a/${token}`)} className="text-sm font-semibold text-slate-600 hover:text-slate-900">
+      ← {getT(locale, "manage")("meta.title")}
+    </Link>
+  );
+
+  if (!acting) {
+    // Possibly the booker: nothing about the patient's choices is shown or changeable without the code.
+    return (
+      <div className="mx-auto max-w-2xl px-4 py-10">
+        {back}
+        <h1 className="mt-2 text-2xl font-extrabold tracking-tight">{t("linkPage.title")}</h1>
+        <p className="mt-1 text-slate-600">{t("linkPage.locked.intro", { practice: d.org.name })}</p>
+        <ClientMessages locale={locale} ns={["privacy", "consents"]}>
+          {stepUp}
+        </ClientMessages>
+        {footer}
+      </div>
+    );
+  }
+
   const consents = await currentConsents(rec.patient.id);
   const options = consentOptions(rec, consents);
   const withdrawable = options.filter((o) => o.canTurnOff && o.purpose !== "sms_channel" && o.purpose !== "email_channel");
   const sms = options.find((o) => o.purpose === "sms_channel" && o.canTurnOff);
   const email = options.find((o) => o.purpose === "email_channel" && o.canTurnOff);
-  const to = recipientFor({ ...rec.patient, restrictedAt: null, erasedAt: null });
-  const contacts = [
-    to.phone ? { kind: "phone" as const, label: maskContact({ kind: "phone", value: to.phone }) } : null,
-    to.email ? { kind: "email" as const, label: maskContact({ kind: "email", value: to.email }) } : null,
-  ].filter((c): c is { kind: "phone" | "email"; label: string } => c !== null);
   const tz = d.location.timezone;
-  const hidden = { locale, token };
 
-  // The patient (or their guardian) opened their own privacy choices through the link only they received.
+  // The patient (or their guardian) opened their own privacy choices through the link they received.
   await audit({
     orgId: d.org.id,
     actor: { type: "patient_link", id: null },
     action: "privacy_center.view",
     entity: { type: "patient", id: rec.patient.id },
-    metadata: { via: "manage_link", appointmentId: d.appointment.id },
+    metadata: { via: "manage_link", appointmentId: d.appointment.id, actorRelation: acting.actorRelation },
     headers: h,
   });
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-10">
-      <Link href={lhref(locale, `/a/${token}`)} className="text-sm font-semibold text-slate-600 hover:text-slate-900">
-        ← {getT(locale, "manage")("meta.title")}
-      </Link>
+      {back}
       <h1 className="mt-2 text-2xl font-extrabold tracking-tight">{t("linkPage.title")}</h1>
       <p className="mt-1 text-slate-600">{t("linkPage.intro", { practice: d.org.name })}</p>
+      {acting.actorRelation !== "self" ? <p className="mt-1 text-sm text-slate-600">{t("linkPage.asGuardian", { name: rec.patient.firstName })}</p> : null}
 
       <ClientMessages locale={locale} ns={["privacy", "consents"]}>
         <Card className="mt-6 p-5">
@@ -188,47 +250,10 @@ export default async function LinkPrivacyPage({ params }: { params: Params }) {
           </Card>
         ) : null}
 
-        <Card className="mt-4 p-5">
-          <h2 className="flex items-center gap-2 font-semibold">
-            <KeyRound size={18} className="text-brand-700" aria-hidden /> {t("linkPage.full.heading")}
-          </h2>
-          <p className="mt-1 text-sm text-slate-600">{t("linkPage.full.body")}</p>
-          {contacts.length ? (
-            <ActionForm
-              action={linkStepUpAction}
-              hidden={hidden}
-              submit={{ label: t("linkPage.full.send"), pending: t("center.signIn.sending"), size: "sm" }}
-              className="mt-3"
-            >
-              <fieldset>
-                <legend className="mb-2 text-[13px] font-semibold text-slate-700">{t("linkPage.full.choose")}</legend>
-                <div className="flex flex-wrap gap-2">
-                  {contacts.map((c, i) => (
-                    <label
-                      key={c.kind}
-                      className="flex min-h-10 cursor-pointer items-center gap-2 rounded-xl bg-white px-3 text-sm font-semibold ring-1 ring-line-strong has-[input:checked]:bg-brand-50 has-[input:checked]:ring-2 has-[input:checked]:ring-brand-600 has-[input:focus-visible]:outline-2 has-[input:focus-visible]:outline-offset-2 has-[input:focus-visible]:outline-brand-600"
-                    >
-                      <input type="radio" name="kind" value={c.kind} defaultChecked={i === 0} className="h-4 w-4 accent-brand-700" />
-                      {c.label}
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
-            </ActionForm>
-          ) : (
-            <p className="mt-3 text-sm text-slate-600">{t("linkPage.full.noContact")}</p>
-          )}
-        </Card>
+        {stepUp}
       </ClientMessages>
 
-      <div className="mt-6 flex flex-wrap gap-3">
-        <LinkButton href={lhref(locale, `/c/${d.org.slug}/privacy`)} variant="ghost" size="sm">
-          <FileText size={14} aria-hidden /> {t("linkPage.notice", { practice: d.org.name })}
-        </LinkButton>
-        <LinkButton href={lhref(locale, "/privacy")} variant="ghost" size="sm">
-          <ShieldCheck size={14} aria-hidden /> {t("manageCard.privacyCenter")}
-        </LinkButton>
-      </div>
+      {footer}
     </div>
   );
 }

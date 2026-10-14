@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { locations, organizations, practitioners, services } from "@/db/schema";
-import { apiError, apiKeyError, checkApiKey, handleApiError, json, limitByIp, preflight } from "@/lib/api";
+import { apiError, apiKeyError, auditApiRequest, checkApiKey, handleApiError, json, limitByIp, limitByKey, preflight, requireScope } from "@/lib/api";
 import { bookingRuleMessage } from "@/lib/booking";
 import { processingContextFor } from "@/lib/privacy/context";
 import { canAcceptOnlineBookings } from "@/lib/privacy/gates";
@@ -14,6 +14,8 @@ export const OPTIONS = preflight;
  * POST /api/v1/clinics/:slug/waitlist — get notified when a matching slot frees up.
  * Like booking: calls without an API key must send `privacy` (422 privacy_required), and the
  * processing context is decided here (API key or valid practice ref: 'practice'; else 'marketplace').
+ * With an API key, like the booking route: the key needs appointments:write, counts against its
+ * per-key rate limit, and the call is audited as api.request.
  */
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   try {
@@ -25,7 +27,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
     if (!key.ok && key.code !== "none") return apiKeyError(key);
     const partner = key.ok ? key.auth.org : null;
     if (partner && partner.id !== org.id) return apiError(403, "forbidden", "This API key belongs to another practice.");
-    if (!partner) {
+    if (key.ok) {
+      const refused = (await limitByKey(key.auth)) ?? requireScope(key.auth, "appointments:write");
+      if (refused) {
+        await auditApiRequest(req, key.auth, "clinics.waitlist", refused.status);
+        return refused;
+      }
+    } else {
       const limited = await limitByIp(req, "waitlist", 5, 10 * 60_000);
       if (limited) return limited;
     }
@@ -95,6 +103,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
           }
         : undefined,
     });
+    if (key.ok) await auditApiRequest(req, key.auth, "clinics.waitlist", 201, { waitlistEntryId: id });
     return json({ waitlistEntry: { id } }, { status: 201 });
   } catch (err) {
     return handleApiError(err);

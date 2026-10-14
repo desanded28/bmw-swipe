@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, ne } from "drizzle-orm";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { PractitionerForm } from "@/components/dashboard/PractitionerForm";
@@ -51,6 +51,7 @@ export default async function TeamPage() {
         email: users.email,
         role: memberships.role,
         totp: users.totpEnabledAt,
+        isPlatformAdmin: users.isPlatformAdmin,
         instructionsVersion: memberships.instructionsVersion,
       })
       .from(memberships)
@@ -64,6 +65,19 @@ export default async function TeamPage() {
           .where(and(eq(authTokens.kind, "invite"), eq(authTokens.orgId, s.org.id), isNull(authTokens.usedAt), gt(authTokens.expiresAt, new Date())))
       : [],
   ]);
+  // Accounts shared with other practices: their two-step reset is Sorriso support's (actions/team.ts).
+  const memberIds = members.map((m) => m.userId);
+  const elsewhere =
+    canManage && memberIds.length
+      ? new Set(
+          (
+            await db
+              .select({ userId: memberships.userId })
+              .from(memberships)
+              .where(and(inArray(memberships.userId, memberIds), ne(memberships.orgId, s.org.id)))
+          ).map((r) => r.userId),
+        )
+      : new Set<string>();
   const ids = team.map((p) => p.id);
   const locIds = locs.map((l) => l.id);
   const [sched, links, roomRows, closures] = await Promise.all([
@@ -173,6 +187,7 @@ export default async function TeamPage() {
               mfa: Boolean(m.totp),
               instructionsAccepted: m.instructionsVersion === LEGAL_VERSIONS.staff_instructions,
               you: m.userId === s.user.id,
+              sharedAccount: canManage ? m.isPlatformAdmin || elsewhere.has(m.userId) : undefined,
             }))}
             invites={invites
               .filter((i) => i.email && i.role)

@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import type { MembershipRole } from "@/db/enums";
-import { appointments, auditLog, messages, organizations, patients, users } from "@/db/schema";
+import { appointments, auditLog, messages, organizations, patients, reminders, users, waitlist } from "@/db/schema";
 import { getT } from "@/i18n/t";
 import { createPractice, TZ } from "@/test/fixtures";
 import type { StaffSession } from "./auth";
@@ -51,10 +51,9 @@ vi.mock("@/lib/permissions", async (importOriginal) => {
 vi.mock("@/lib/privacy/gates", () => ({ enforceDashboardGates: async () => {}, canAcceptOnlineBookings: async () => true }));
 vi.mock("@/app/fonts", () => ({ jakarta: { variable: "font-jakarta" } }));
 
-const { listAppointments, listViewer } = await import("./dashboard");
-const { getAppointmentDetail, openRestrictedAppointment, createStaffAppointment, moveAppointment, cancelByStaff } = await import(
-  "@/app/dashboard/actions/appointments"
-);
+const { listAppointments, listViewer, redactPatientLinks } = await import("./dashboard");
+const { getAppointmentDetail, getAppointmentPhone, openRestrictedAppointment, createStaffAppointment, moveAppointment, cancelByStaff, remindNow } =
+  await import("@/app/dashboard/actions/appointments");
 const { updateMyLocale } = await import("@/app/dashboard/actions/session");
 
 /** A string that must never leave the server in a list. */
@@ -309,6 +308,90 @@ describe("getAppointmentDetail (the drawer)", () => {
   });
 });
 
+describe("the drawer's message thread", () => {
+  const TOKEN = "Zk3_fAKEtokenFAKEtoken-0123456789abcdefghijk";
+
+  it("replaces the patient's personal links with a placeholder and keeps other links", async () => {
+    const { id } = await addAppointment(practice);
+    const texts = [
+      `Studio: appointment reminder Tue 4 Mar 10:00. Details: https://sorriso.test/a/${TOKEN} Reply STOP to opt out`,
+      `Please review your visit: https://sorriso.test/it/a/${TOKEN}/review.`,
+      `Calendar: https://sorriso.test/api/ics/appointment/${TOKEN}, see you soon`,
+      `Book again: https://sorriso.test/book/studio?service=x and our page https://sorriso.test/c/studio`,
+    ];
+    await db.insert(messages).values(
+      texts.map((body, i) => ({
+        id: newId(),
+        orgId: practice.orgId,
+        appointmentId: id,
+        channel: "sms" as const,
+        direction: "outbound" as const,
+        to: "+393330000000",
+        body,
+        status: "captured" as const,
+        provider: "test",
+        createdAt: new Date(Date.UTC(2030, 0, 1, 9, i)),
+      })),
+    );
+    await signIn("reception");
+    const res = await getAppointmentDetail(id);
+    if (!res.ok) throw new Error(res.error);
+    const bodies = res.data.messages!.map((m) => m.body);
+    expect(JSON.stringify(res.data)).not.toContain(TOKEN);
+    const label = getT("it", "calendar")("drawer.linkRedacted");
+    expect(bodies[0]).toBe(`Studio: appointment reminder Tue 4 Mar 10:00. Details: ${label} Reply STOP to opt out`);
+    expect(bodies[1]).toBe(`Please review your visit: ${label}.`);
+    expect(bodies[2]).toBe(`Calendar: ${label}, see you soon`);
+    expect(bodies[3]).toBe(texts[3]);
+  });
+
+  it("redactPatientLinks leaves text without personal links unchanged", () => {
+    expect(redactPatientLinks("Reply YES to confirm (https://x.test/c/a-clinic).", "[link]")).toBe("Reply YES to confirm (https://x.test/c/a-clinic).");
+    expect(redactPatientLinks(`Manage: http://localhost:3000/a/${TOKEN}/rebook`, "[link]")).toBe("Manage: [link]");
+    expect(redactPatientLinks(`(https://x.test/en/a/${TOKEN}/forms/anamnesis)`, "[link]")).toBe("([link])");
+  });
+});
+
+describe("getAppointmentPhone (a list row's Call button)", () => {
+  it("returns only the mobile number, audited, and needs patient.contact.read", async () => {
+    const { id } = await addAppointment(practice);
+    const s = await signIn("reception");
+    const res = await getAppointmentPhone(id);
+    expect(res).toEqual({ ok: true, phone: expect.stringMatching(/^\+39333/) });
+    const rows = await viewRows(id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ actorId: s.user.id, entityId: id, metadata: { view: "call", contacts: true } });
+
+    state.withhold.add("patient.contact.read");
+    expect(await getAppointmentPhone(id)).toMatchObject({ ok: false, code: "forbidden" });
+    expect(await viewRows(id)).toHaveLength(1);
+  });
+
+  it("asks for a reason first for a restricted patient, and is not_found for another practice", async () => {
+    const { id } = await addAppointment(practice, {}, { restrictedAt: new Date(), restrictionReason: "Art. 18 request" });
+    await signIn("owner");
+    expect(await getAppointmentPhone(id)).toMatchObject({ ok: false, code: "restricted" });
+    expect(await viewRows(id)).toHaveLength(0);
+    await openRestrictedAppointment(id, "Patient on the phone asking to move the visit");
+    expect(await getAppointmentPhone(id)).toMatchObject({ ok: true, phone: expect.stringMatching(/^\+39333/) });
+
+    const foreign = await addAppointment(other);
+    expect(await getAppointmentPhone(foreign.id)).toMatchObject({ ok: false, code: "not_found" });
+    expect(await viewRows(foreign.id)).toHaveLength(0);
+  });
+});
+
+describe("remindNow", () => {
+  it("tells the staff a restricted patient gets no messages, and queues no reminder", async () => {
+    const { id } = await addAppointment(practice, { status: "scheduled" }, { restrictedAt: new Date(), restrictionReason: "Art. 18 request" });
+    await signIn("owner");
+    const res = await remindNow(id, "sms");
+    // No users.locale: the request's Accept-Language (it-IT) picks the language.
+    expect(res).toEqual({ ok: false, error: getT("it", "calendar")("errors.restrictedNoMessages"), code: "restricted" });
+    expect(await db.select().from(reminders).where(eq(reminders.appointmentId, id))).toHaveLength(0);
+  });
+});
+
 describe("actions answer in the staff member's language", () => {
   it("returns Zod and BookingError messages through the German translator", async () => {
     await signIn("reception");
@@ -387,5 +470,58 @@ describe("pages send no free text to the browser", () => {
       expect(json).toContain("Ottavia");
       for (const secret of [SECRET_NOTE, SECRET_INTERNAL, "@example.org"]) expect(json).not.toContain(secret);
     }
+  });
+
+  it("/dashboard shows no reply text of a restricted patient, even to a role with patient.restricted.read", async () => {
+    const soon = { startsAt: new Date(Date.now() + 2 * 3600_000), endsAt: new Date(Date.now() + 3 * 3600_000), blockedUntil: new Date(Date.now() + 3 * 3600_000) };
+    const locked = await addAppointment(practice, { ...soon, status: "scheduled", needsAttention: true }, { restrictedAt: new Date(), restrictionReason: "Art. 18 request" });
+    const open = await addAppointment(practice, { ...soon, status: "scheduled", needsAttention: true });
+    const reply = (appointmentId: string, body: string) => ({
+      id: newId(),
+      orgId: practice.orgId,
+      appointmentId,
+      channel: "sms" as const,
+      direction: "inbound" as const,
+      to: "+390000000000",
+      body,
+      status: "received" as const,
+      provider: "test",
+    });
+    await db.insert(messages).values([reply(locked.id, "IBIS-REPLY-3318 my gums hurt"), reply(open.id, "HERON-REPLY-2207 maybe later")]);
+    await signIn("owner");
+    const { default: Overview } = await import("@/app/dashboard/page");
+    const json = propsJson(await Overview({ searchParams: Promise.resolve({}) }));
+    expect(json).toContain("HERON-REPLY-2207");
+    expect(json).not.toContain("IBIS-REPLY-3318");
+  });
+
+  it("/dashboard/waitlist shows no contacts or note of a restricted patient, even to a role with patient.restricted.read", async () => {
+    const entry = async (patient: Partial<typeof patients.$inferInsert>, note: string) => {
+      const patientId = newId();
+      await db.insert(patients).values({ id: patientId, orgId: practice.orgId, firstName: "Ornella", lastName: "Vanoni", ...patient });
+      await db.insert(waitlist).values({
+        id: newId(),
+        orgId: practice.orgId,
+        patientId,
+        serviceId: practice.visit,
+        earliestDate: "2030-03-01",
+        latestDate: "2030-03-31",
+        note,
+      });
+      return patientId;
+    };
+    const lockedId = await entry({ phone: "+393339990001", email: "hidden-wl@example.org", restrictedAt: new Date(), restrictionReason: "Art. 18 request" }, "KIWI-WL-NOTE-6620");
+    await entry({ phone: "+393339990002", email: "open-wl@example.org" }, "MOA-WL-NOTE-1187");
+    await signIn("owner");
+    const { default: WaitlistPage } = await import("@/app/dashboard/waitlist/page");
+    const json = propsJson(await WaitlistPage());
+    expect(json).toContain("open-wl@example.org");
+    expect(json).toContain("MOA-WL-NOTE-1187");
+    expect(json).not.toContain("hidden-wl@example.org");
+    expect(json).not.toContain("KIWI-WL-NOTE-6620");
+    expect(json.replace(/\s/g, "")).not.toContain("3339990001");
+    // The way to the data: the patient record, which asks for a reason.
+    expect(json).toContain(getT("it", "dashboard")("waitlist.restricted"));
+    expect(json).toContain(`/dashboard/patients/${lockedId}`);
   });
 });

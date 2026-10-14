@@ -45,6 +45,8 @@ export default {
     reminderNotScheduled: "Only scheduled appointments get reminders.",
     noEmail: "The patient has no email address, or has opted out of email.",
     noPhone: "The patient has no mobile number, or has opted out of text messages.",
+    restrictedNoMessages: "This patient's data is restricted (GDPR Art. 18 or erased): no messages are sent to them.",
+    restrictedOpenRecord: "This patient's data is restricted. Open the appointment and give a reason to see their contact details.",
     reasonRequired: "Give a reason of at least 3 characters.",
     unknownOffice: "One of the offices no longer exists. Reload the page and try again.",
     loadFailed: "The details couldn't be loaded. Please try again.",
@@ -176,6 +178,17 @@ export default {
     label: "{time}, {patient}, {service}, {status}",
     labelWithPractitioner: "{time}, {patient}, {service}, {practitioner}, {status}",
     hasNotes: "Has notes",
+    /** Status words for short events, after the time (the full status is in the accessible name). */
+    statusShort: {
+      cancelled: "Cancelled",
+      requested: "Request",
+      completed: "Done",
+      no_show: "No-show",
+      attention: "Attention",
+      confirmed: "Confirmed",
+      declined: "Declined",
+      pending: "Unconfirmed",
+    },
   },
 
   legend: {
@@ -295,6 +308,8 @@ export default {
     copyLink: "Copy patient link",
     linkCopied: "Link copied.",
     linkNotCopied: "The link couldn't be copied. Open the page instead.",
+    /** Replaces a patient's personal link (manage, review, calendar file) in the message thread. */
+    linkRedacted: "[patient link]",
     restricted: {
       title: "Restricted record",
       body: "This patient's data is restricted (GDPR Art. 18): only the time and the treatment are shown.",
@@ -355,6 +370,8 @@ export default {
     noPhone: "No mobile number on file.",
     hasNotes: "Has notes",
     lastReply: "Last reply: {text}",
+    restricted: "Restricted record",
+    restrictedHint: "Contacts, notes and replies are hidden. Open the appointment and give a reason to see them.",
   },
 
   schedule: {

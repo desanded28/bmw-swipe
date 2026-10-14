@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, min, ne, notInArray, or, sql } from "drizzle-orm";
 import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import { db } from "@/db";
 import {
@@ -10,6 +10,7 @@ import {
   legalAcceptances,
   loginAttempts,
   messages,
+  noticeVersions,
   organizations,
   patients,
   patientSessions,
@@ -17,6 +18,7 @@ import {
   rateLimits,
   recalls,
   reminders,
+  reviewReports,
   sessions,
   verificationCodes,
   waitlist,
@@ -28,10 +30,10 @@ import { logError, logInfo } from "../log";
 import { resolveSettings } from "../settings";
 import { addDays, todayIn } from "../time";
 import { withdrawConsent } from "./consent";
-import { erasePatient, restrictPatient } from "./erasure";
+import { erasePatient, isDeferredErasure, restrictPatient, RETENTION_REASONS } from "./erasure";
 import { notifySubprocessorChanges } from "./gates";
-import { purgeDueOrgs } from "./org-closure";
-import { sendDeadlineReminders } from "./requests";
+import { CERTIFICATE_STAGE, purgeDueOrgs } from "./org-closure";
+import { ERASED_REQUEST_TEXT_DAYS, sendDeadlineReminders } from "./requests";
 import { DEFAULT_RETENTION } from "./settings";
 import { LEGAL_VERSIONS } from "./versions";
 
@@ -75,6 +77,15 @@ export const PLATFORM_RETENTION = {
   legalAcceptanceYears: 10,
   /** Closed (booked or dismissed) recalls. */
   closedRecallMonths: 24,
+  /**
+   * Decided review reports (DSA notices): the appeal window (6 months, DSA Art. 20) plus the
+   * time to defend the decision; their free text is about patients.
+   */
+  decidedReviewReportMonths: 24,
+  /** A privacy-notice version superseded this long ago (limitation period, art. 2946 c.c.). */
+  supersededNoticeYears: 10,
+  /** Certificates of deletion of closed practices are kept for the limitation period. */
+  certificateYears: 10,
 } as const;
 
 /** The same instant `n` calendar months earlier (UTC calendar, clamped to the month's end). */
@@ -179,6 +190,23 @@ async function retainLedgers(orgId: string | null, r: RetentionSettings, now: Da
       ).rowsAffected,
     );
   }
+  // Privacy-notice versions (content hashes, no personal data) once superseded for the
+  // limitation period: the proof of which notice a booking saw is no longer needed.
+  const noticeCutoff = monthsAgo(now, PLATFORM_RETENTION.supersededNoticeYears * 12).getTime();
+  bump(
+    c,
+    "noticeVersionsDeleted",
+    (
+      await db
+        .delete(noticeVersions)
+        .where(
+          and(
+            orgScope(noticeVersions.orgId, orgId),
+            sql`exists (select 1 from notice_versions n2 where n2.kind = "notice_versions"."kind" and n2.locale = "notice_versions"."locale" and n2.org_id is "notice_versions"."org_id" and n2.published_at > "notice_versions"."published_at" and n2.published_at < ${noticeCutoff})`,
+          ),
+        )
+    ).rowsAffected,
+  );
   bump(c, "auditRowsDeleted", (await pruneAuditLog(orgId, monthsAgo(now, r.auditMonths))).deleted);
 }
 
@@ -197,6 +225,7 @@ async function patientActivity(orgId: string) {
       id: patients.id,
       createdAt: patients.createdAt,
       restrictedAt: patients.restrictedAt,
+      restrictionReason: patients.restrictionReason,
       retainUntil: patients.retainUntil,
       locale: patients.locale,
       lastStart: sql<number | null>`(select max(a.starts_at) from appointments a where a.patient_id = ${PATIENT_ID} and a.org_id = ${orgId})`,
@@ -218,22 +247,26 @@ async function retainPatients(orgId: string, tz: string, settings: ReturnType<ty
 
   for (const p of await patientActivity(orgId)) {
     try {
+      if (held(p)) continue;
+      // An erasure deferred to retainUntil (erasePatient 'restrict') is carried out the day after,
+      // whatever the practice's erasureDefault and however recent the last visit: the legal
+      // ground for keeping the record (and its forms) has ended.
+      if (isDeferredErasure(p) && p.retainUntil) {
+        await erasePatient(orgId, p.id, { mode: "anonymise", reason: "retention:deferred_erasure", actor: SYSTEM, now, unexportedForms: "delete" });
+        bump(c, "deferredErasuresCompleted", 1);
+        continue;
+      }
       const neverSeen = p.lastStart === null && p.activeWaitlist === 0 && p.createdAt.getTime() < neverSeenCutoff;
       const inactive = p.lastStart !== null && p.lastStart < inactiveCutoff;
-      if ((!neverSeen && !inactive) || held(p)) continue;
+      if (!neverSeen && !inactive) continue;
+      const code = neverSeen ? RETENTION_REASONS.never_seen : RETENTION_REASONS.inactive;
       const anonymise = neverSeen || settings.privacy.erasureDefault === "anonymise";
       if (anonymise && p.unexportedForms === 0) {
-        await erasePatient(orgId, p.id, {
-          mode: "anonymise",
-          reason: neverSeen ? "retention:never_seen" : "retention:inactive",
-          actor: SYSTEM,
-          now,
-          unexportedForms: "restrict",
-        });
+        await erasePatient(orgId, p.id, { mode: "anonymise", reason: code, actor: SYSTEM, now, unexportedForms: "restrict" });
         bump(c, neverSeen ? "neverSeenPseudonymised" : "inactivePseudonymised", 1);
       } else if (!p.restrictedAt) {
         // Restrict instead: the practice's default, or forms that belong in the clinical record.
-        await restrictPatient(orgId, p.id, { reason: neverSeen ? "retention:never_seen" : "retention:inactive", actor: SYSTEM, now });
+        await restrictPatient(orgId, p.id, { reason: code, actor: SYSTEM, now });
         bump(c, "inactiveRestricted", 1);
       }
     } catch (err) {
@@ -309,7 +342,11 @@ async function lapseMarketing(orgId: string, now: Date, c: Counts) {
   }
 }
 
-/** noShowCount = no-shows in the last 24 months; 0 for patients who objected to no-show tracking. */
+/**
+ * noShowCount = no-shows in the last 24 months; 0 for patients who objected to no-show tracking.
+ * Erased, restricted and merged-away records are left alone: the erasure removed that history, and
+ * a restricted record is only stored (Art. 18(2)).
+ */
 async function recomputeNoShows(orgId: string, now: Date, c: Counts) {
   const since = monthsAgo(now, PLATFORM_RETENTION.noShowWindowMonths);
   const objections = await db
@@ -326,7 +363,7 @@ async function recomputeNoShows(orgId: string, now: Date, c: Counts) {
       counted: sql<number>`(select count(*) from appointments a where a.patient_id = ${PATIENT_ID} and a.org_id = ${orgId} and a.status = 'no_show' and a.starts_at >= ${since.getTime()} and a.starts_at <= ${now.getTime()})`,
     })
     .from(patients)
-    .where(eq(patients.orgId, orgId));
+    .where(and(eq(patients.orgId, orgId), isNull(patients.erasedAt), isNull(patients.restrictedAt), isNull(patients.mergedIntoId)));
   for (const r of rows) {
     const want = latest.get(r.id) === false ? 0 : r.counted;
     if (want === r.current) continue;
@@ -417,9 +454,98 @@ async function retainOrg(org: { id: string; timezone: string; settings: unknown 
     ).rowsAffected,
   );
 
+  // Review reports once decided (or closed) for decidedReviewReportMonths.
+  bump(
+    c,
+    "reviewReportsDeleted",
+    (
+      await db
+        .delete(reviewReports)
+        .where(
+          and(
+            eq(reviewReports.orgId, orgId),
+            inArray(reviewReports.status, ["decided", "closed"]),
+            lt(sql`coalesce(${reviewReports.decidedAt}, ${reviewReports.createdAt})`, monthsAgo(now, PLATFORM_RETENTION.decidedReviewReportMonths).getTime()),
+          ),
+        )
+    ).rowsAffected,
+  );
+
+  // Requests of erased patients keep their text (and the contact kept to answer them) only until
+  // ERASED_REQUEST_TEXT_DAYS after they were closed.
+  const erased = db
+    .select({ id: patients.id })
+    .from(patients)
+    .where(and(eq(patients.orgId, orgId), isNotNull(patients.erasedAt)));
+  bump(
+    c,
+    "erasedRequestTextsCleared",
+    (
+      await db
+        .update(privacyRequests)
+        .set({ details: null, decisionReason: null, extensionReason: null })
+        .where(
+          and(
+            eq(privacyRequests.orgId, orgId),
+            isNotNull(privacyRequests.closedAt),
+            lt(privacyRequests.closedAt, daysAgo(now, ERASED_REQUEST_TEXT_DAYS)),
+            inArray(privacyRequests.patientId, erased),
+            or(isNotNull(privacyRequests.details), isNotNull(privacyRequests.decisionReason), isNotNull(privacyRequests.extensionReason)),
+          ),
+        )
+    ).rowsAffected,
+  );
+
   // Ledgers and the audit log last, so this run's own audit rows are never candidates.
   await retainLedgers(orgId, r, now, c);
   return c;
+}
+
+/**
+ * Certificates of deletion (org.close rows of stage "purged" in Sorriso's own chain) must outlive
+ * the audit retention: before the chain is pruned past one, it is re-recorded at the head of the
+ * chain with the original date, reference and hash, for certificateYears after the purge.
+ * loadCertificate() finds it by the original reference, so the emailed link keeps working.
+ */
+async function carryCertificates(now: Date, cutoff: Date, c: Counts) {
+  // Exactly the rows pruneAuditLog(null, cutoff) will delete: the prefix before the first row
+  // at or after the cutoff.
+  const [keep] = await db
+    .select({ seq: min(auditLog.seq) })
+    .from(auditLog)
+    .where(and(isNull(auditLog.orgId), gte(auditLog.at, cutoff)));
+  const rows = await db
+    .select()
+    .from(auditLog)
+    .where(
+      and(
+        isNull(auditLog.orgId),
+        eq(auditLog.action, "org.close"),
+        keep?.seq == null ? undefined : lt(auditLog.seq, keep.seq),
+        sql`json_extract(${auditLog.metadata}, '$.stage') = ${CERTIFICATE_STAGE}`,
+      ),
+    )
+    .orderBy(auditLog.seq);
+  const keepSince = monthsAgo(now, PLATFORM_RETENTION.certificateYears * 12).getTime();
+  for (const row of rows) {
+    const m = row.metadata ?? {};
+    const purgedAt = typeof m.purgedAt === "number" ? m.purgedAt : row.at.getTime();
+    if (purgedAt < keepSince) continue; // past the limitation period: pruned with the rest
+    await audit({
+      orgId: null,
+      actor: SYSTEM,
+      action: "org.close",
+      entity: { type: "org", id: row.entityId ?? "" },
+      metadata: {
+        ...m,
+        purgedAt,
+        certificateOf: typeof m.certificateOf === "string" ? m.certificateOf : row.id,
+        originalHash: typeof m.originalHash === "string" ? m.originalHash : row.hash,
+      },
+      at: now,
+    });
+    bump(c, "certificatesCarried", 1);
+  }
 }
 
 /** Audit chains of practices that no longer exist: pruned with the default audit retention. */
@@ -474,7 +600,10 @@ export async function runRetention(now: Date = new Date()): Promise<RetentionSum
 
   // Sorriso's own rows (org_id NULL) with the default periods.
   await step("platform-messages", () => retainMessages(null, DEFAULT_RETENTION, now, platform));
-  await step("platform-ledgers", () => retainLedgers(null, DEFAULT_RETENTION, now, platform));
+  await step("platform-ledgers", async () => {
+    await carryCertificates(now, monthsAgo(now, DEFAULT_RETENTION.auditMonths), platform);
+    await retainLedgers(null, DEFAULT_RETENTION, now, platform);
+  });
   await step("orphan-chains", () => retainOrphanChains(now, platform));
   await step("deadlines", async () => bump(platform, "deadlineRemindersSent", (await sendDeadlineReminders(now)).sent));
   await step("subprocessors", async () => bump(platform, "subprocessorNotices", await notifySubprocessorChanges(now)));

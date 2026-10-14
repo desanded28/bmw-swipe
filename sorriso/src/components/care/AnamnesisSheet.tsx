@@ -1,7 +1,7 @@
 "use client";
 
 import { ClipboardCheck, Printer, TriangleAlert, X } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { createPortal } from "react-dom";
 import { markFormExportedAction } from "@/app/dashboard/actions/care";
 import { fmtDay, fmtWhen } from "@/i18n/datefmt";
@@ -9,6 +9,7 @@ import { useLocale, useT } from "@/i18n/provider";
 import { DEFAULT_TIMEZONE } from "@/lib/config";
 import { Badge, Button } from "../ui";
 import { useRunAction } from "../dashboard/useRunAction";
+import { useNativeModal } from "./modal";
 import type { AnamnesisSheetData } from "./types";
 
 /**
@@ -18,32 +19,31 @@ import type { AnamnesisSheetData } from "./types";
  * loaded `data` (patient.clinical.view).
  */
 export function AnamnesisSheet({ data, onClose }: { data: AnamnesisSheetData; onClose(): void }) {
+  return createPortal(<AnamnesisSheetDialog data={data} onClose={onClose} />, document.body);
+}
+
+/**
+ * The sheet itself: a native <dialog> opened with showModal() (src/components/care/modal.ts), so
+ * it stacks above the appointment drawer's own modal dialog (the drawer goes inert behind it, not
+ * the other way round), keeps focus inside, and Escape closes the sheet only. Exported for tests.
+ */
+export function AnamnesisSheetDialog({ data, onClose }: { data: AnamnesisSheetData; onClose(): void }) {
   const t = useT("care");
   const tc = useT("common");
   const locale = useLocale();
   const titleId = useId();
-  const closeRef = useRef<HTMLButtonElement>(null);
+  const { ref, props: dialogProps } = useNativeModal(onClose, { printable: true });
   const [exportedAt, setExportedAt] = useState(data.exportedAt);
   const { run, pending } = useRunAction();
   const tz = data.visit?.timezone ?? DEFAULT_TIMEZONE;
 
-  // Focus moves into the sheet and back where it was; print styles apply while it is open.
+  // Print styles apply while it is open.
   useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    closeRef.current?.focus();
     document.body.dataset.printAnamnesis = "1";
     return () => {
       delete document.body.dataset.printAnamnesis;
-      previous?.focus?.();
     };
   }, []);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   /** Labels come from the form schema: keys under care.anamnesis.* */
   const label = (key: string) => {
@@ -74,14 +74,15 @@ export function AnamnesisSheet({ data, onClose }: { data: AnamnesisSheetData; on
   const languageKey = `languages.${data.locale}` as const;
   const language = tc.has(languageKey) ? tc(languageKey) : data.locale;
 
-  const sheet = (
-    <div data-anamnesis-print className="fixed inset-0 z-[70] flex justify-center overflow-y-auto bg-slate-900/40 p-4 print:static print:block print:bg-white print:p-0">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        className="my-auto w-full max-w-2xl rounded-2xl bg-white shadow-pop ring-1 ring-slate-200 print:max-w-none print:rounded-none print:shadow-none print:ring-0"
-      >
+  return (
+    <dialog
+      ref={ref}
+      data-anamnesis-print
+      aria-labelledby={titleId}
+      className="m-auto w-[calc(100%-2rem)] max-w-2xl rounded-2xl bg-white p-0 text-ink shadow-pop ring-1 ring-slate-200 backdrop:bg-slate-900/40 print:rounded-none print:shadow-none print:ring-0"
+      {...dialogProps}
+    >
+      <div>
         <div className="flex items-start justify-between gap-3 border-b border-slate-100 p-5">
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{data.clinic}</p>
@@ -101,7 +102,7 @@ export function AnamnesisSheet({ data, onClose }: { data: AnamnesisSheetData; on
             ) : null}
           </div>
           <button
-            ref={closeRef}
+            data-autofocus
             type="button"
             onClick={onClose}
             className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-ink focus-visible:outline-2 focus-visible:outline-brand-600 print:hidden"
@@ -180,13 +181,22 @@ export function AnamnesisSheet({ data, onClose }: { data: AnamnesisSheetData; on
         </div>
       </div>
       <style>{PRINT_CSS}</style>
-    </div>
+    </dialog>
   );
-  return createPortal(sheet, document.body);
 }
 
-/** While the sheet is open, print only the sheet. */
+/**
+ * While the sheet is open, print only the sheet (the drawer it was opened from included: it is a
+ * dialog of its own). For the print the sheet is a plain dialog (modalForPrint) laid out in the
+ * page flow, so a long history runs over several pages.
+ */
 const PRINT_CSS = `@media print {
   body[data-print-anamnesis] > *:not([data-anamnesis-print]) { display: none !important; }
+  body[data-print-anamnesis] dialog:not([data-anamnesis-print]) { display: none !important; }
   body[data-print-anamnesis] { background: #fff !important; }
+  dialog[data-anamnesis-print] {
+    position: static !important; inset: auto !important; margin: 0 !important; width: auto !important;
+    max-width: none !important; height: auto !important; max-height: none !important; overflow: visible !important;
+  }
+  dialog[data-anamnesis-print]::backdrop { display: none !important; }
 }`;

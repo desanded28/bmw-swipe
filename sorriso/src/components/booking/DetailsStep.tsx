@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, BellRing, CalendarCheck, LoaderCircle, Mail, MessageCircle } from "lucide-react";
+import { ArrowLeft, BellRing, CalendarCheck, LoaderCircle, Mail, MessageCircle, RotateCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Channel, ProcessingContext } from "@/db/enums";
 import { DIAL_CODE, ENDONYM, LOCALES, type Locale } from "@/i18n/config";
@@ -118,7 +118,7 @@ export const NOTE_MAX = 500;
 /** API codes meaning the chosen time is gone: back to the times, details kept. */
 export const SLOT_GONE_CODES = new Set(["practitioner_busy", "no_room", "too_soon", "time_off", "outside_hours", "in_past", "too_far"]);
 
-type ApiError = { code?: string; message?: string; field?: string; issues?: { path: string; message: string }[] };
+export type ApiError = { code?: string; message?: string; field?: string; issues?: { path: string; message: string }[] };
 
 /** The localised text for an API error code (errors.api.*), or the generic one. */
 export function apiErrorText(te: Translator<"errors">, code: string | undefined): string {
@@ -146,6 +146,24 @@ export function apiFieldErrors(te: Translator<"errors">, error: ApiError | undef
   for (const issue of error?.issues ?? []) out[issue.path.replace(/^(patient|privacy|relation)\./, "")] = byField(issue.path);
   if (error?.field && error.code) out[error.field.replace(/^(patient|relation)\./, "")] = apiErrorText(te, error.code);
   return out;
+}
+
+/**
+ * Shown in the error summary after notice_outdated: the privacy notice changed since this page was
+ * loaded, and only a reload shows (and posts) the current version. What was typed is lost, so the
+ * patient chooses when to reload.
+ */
+export function NoticeOutdatedReload() {
+  const te = useT("errors");
+  return (
+    <button
+      type="button"
+      onClick={() => window.location.reload()}
+      className="mt-2 flex min-h-10 w-fit items-center gap-1.5 rounded-lg bg-white px-3 text-sm font-semibold text-red-800 ring-1 ring-red-300 hover:bg-red-100"
+    >
+      <RotateCw size={15} aria-hidden /> {te("reload")}
+    </button>
+  );
 }
 
 /** Move focus to the first field marked invalid in `root`, else to `fallback` (the error summary). */
@@ -197,8 +215,11 @@ export function DetailsStep({
   const alertRef = useRef<HTMLDivElement>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
-  /** The error summary and how many times it was shown (a new key re-announces the same text). */
-  const [alert, setAlert] = useState<{ text: string; n: number } | null>(null);
+  /**
+   * The error summary and how many times it was shown (a new key re-announces the same text);
+   * `reload` when the privacy notice changed since the page was loaded.
+   */
+  const [alert, setAlert] = useState<{ text: string; n: number; reload?: boolean } | null>(null);
   /** Bumped after a failed submit: focus moves to the first invalid field once it is rendered. */
   const [focusRequest, setFocusRequest] = useState(0);
   const d = form.details;
@@ -208,8 +229,8 @@ export function DetailsStep({
     if (focusRequest) focusFirstInvalid(formRef.current, alertRef.current);
   }, [focusRequest]);
 
-  const fail = (text: string) => {
-    setAlert((a) => ({ text, n: (a?.n ?? 0) + 1 }));
+  const fail = (text: string, reload = false) => {
+    setAlert((a) => ({ text, n: (a?.n ?? 0) + 1, reload }));
     setFocusRequest((n) => n + 1);
   };
 
@@ -288,7 +309,7 @@ export function DetailsStep({
         const fields = apiFieldErrors(te, json?.error);
         const n = Object.keys(fields).length;
         setErrors(fields);
-        return fail(n ? te("checkFields", { count: n }) : apiErrorText(te, code));
+        return fail(n ? te("checkFields", { count: n }) : apiErrorText(te, code), code === "notice_outdated");
       }
       onBooked(json.appointment);
     } catch {
@@ -457,6 +478,7 @@ export function DetailsStep({
           className="rounded-xl bg-red-50 p-3 text-sm font-medium text-red-700 ring-1 ring-red-200"
         >
           {alert.text}
+          {alert.reload ? <NoticeOutdatedReload /> : null}
         </div>
       ) : null}
 

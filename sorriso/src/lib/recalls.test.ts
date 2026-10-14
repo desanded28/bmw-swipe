@@ -1,12 +1,15 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
-import { messages, organizations, patients, recalls, services, users } from "@/db/schema";
+import { formSubmissions, messages, organizations, patients, recalls, services, users } from "@/db/schema";
 import { createPractice, MONDAY, NOW, TZ } from "@/test/fixtures";
 import { cancelAppointment, createAppointment, setOutcome } from "./booking";
+import { ensureDefaultTemplate } from "./forms";
 import { newId } from "./ids";
+import { permissionsFor } from "./permissions";
 import { withdrawConsent } from "./privacy/consent";
-import { addMonthsToDate, processDueRecalls, recallDashboard, setRecallInterval, upsertRecall } from "./recalls";
+import { grantRestrictedAccess } from "./privacy/erasure";
+import { addMonthsToDate, appointmentRecall, loadPatientCare, processDueRecalls, recallDashboard, setRecallInterval, upsertRecall } from "./recalls";
 import { zonedToUtc } from "./time";
 
 let p: Awaited<ReturnType<typeof createPractice>>;
@@ -105,6 +108,50 @@ describe("recall on completion", () => {
     r = await recallOf(d.appointment.id);
     expect(r.status).toBe("due");
     expect(r.bookedAppointmentId).toBeNull();
+  });
+
+  it("a recall booked through a visit that ends as a no-show is open again (also when corrected from completed)", async () => {
+    const d = await completedCleaning("Assente", 13);
+    const book = (date: string) =>
+      createAppointment({
+        orgId: p.orgId,
+        serviceId: p.cleaning,
+        practitionerId: p.drA,
+        locationId: p.milano,
+        startsAt: at(date, 9),
+        patient: { id: d.patient.id },
+        source: "staff",
+        online: false,
+        force: true,
+        now: AFTER_VISIT,
+      });
+    const next = await book("2030-09-02");
+    expect(await recallOf(d.appointment.id)).toMatchObject({ status: "booked", bookedAppointmentId: next.appointment.id });
+    await setOutcome(next.appointment.id, "no_show", new Date("2030-09-02T12:00:00Z"));
+    expect(await recallOf(d.appointment.id)).toMatchObject({ status: "due", bookedAppointmentId: null });
+
+    // Booked again, marked completed by mistake, then corrected to a no-show.
+    const again = await book("2030-09-09");
+    expect((await recallOf(d.appointment.id)).status).toBe("booked");
+    await setOutcome(again.appointment.id, "completed", new Date("2030-09-09T12:00:00Z"));
+    expect((await recallOf(d.appointment.id)).status).toBe("booked");
+    await setOutcome(again.appointment.id, "no_show", new Date("2030-09-09T13:00:00Z"));
+    expect(await recallOf(d.appointment.id)).toMatchObject({ status: "due", bookedAppointmentId: null });
+    expect(await recallOf(again.appointment.id)).toBeUndefined();
+  });
+
+  it("the picker's suggestion stays within 3–24 months whatever the treatment suggests", async () => {
+    const q = await createPractice();
+    await db.update(services).set({ recallMonths: 36 }).where(eq(services.id, q.cleaning));
+    const long = await completedCleaning("Lunga", 9, {}, q);
+    expect(await appointmentRecall(q.orgId, long.appointment.id)).toMatchObject({ suggestedMonths: 24, recall: { intervalMonths: 24 } });
+    await db.update(services).set({ recallMonths: 1 }).where(eq(services.id, q.cleaning));
+    const short = await completedCleaning("Breve", 10, {}, q);
+    expect((await appointmentRecall(q.orgId, short.appointment.id))?.suggestedMonths).toBe(3);
+    // An interval between the picker's steps is kept as it is (the picker offers it too).
+    await db.update(services).set({ recallMonths: 5 }).where(eq(services.id, q.cleaning));
+    const odd = await completedCleaning("Cinque", 11, {}, q);
+    expect(await appointmentRecall(q.orgId, odd.appointment.id)).toMatchObject({ suggestedMonths: 5, recall: { intervalMonths: 5 } });
   });
 
   it("a visit set back from completed takes its unsent recall back", async () => {
@@ -297,5 +344,41 @@ describe("recallDashboard", () => {
     expect(later.overdue.map((r) => r.patientName)).toEqual(["Uno Recall"]);
     expect(later.overdue[0].phone).toMatch(/^\+39/);
     expect(later.stats.due).toBe(1);
+  });
+});
+
+describe("loadPatientCare", () => {
+  it("shows how many alerts a form raised (never which), and a restricted patient's care data only after a reason", async () => {
+    const d = await completedCleaning("Velata", 9);
+    const template = await ensureDefaultTemplate();
+    await db.insert(formSubmissions).values({
+      id: newId(),
+      orgId: p.orgId,
+      patientId: d.patient.id,
+      appointmentId: d.appointment.id,
+      templateId: template.id,
+      version: template.version,
+      locale: "it",
+      answers: JSON.stringify({ anticoagulants: "yes", diabetes: "yes" }),
+      redFlags: ["anticoagulants", "diabetes"],
+      signerName: "Velata Recall",
+      signedAt: NOW,
+      signedVia: "otp_sms",
+    });
+    const owner = permissionsFor("owner");
+    const viewer = { userId: clinician };
+    const care = await loadPatientCare(p.orgId, d.patient.id, owner, { viewer });
+    expect(care!.submissions).toHaveLength(1);
+    expect(care!.submissions[0].alerts).toBe(2);
+    expect(JSON.stringify(care)).not.toContain("anticoagulants");
+    expect((await loadPatientCare(p.orgId, d.patient.id, permissionsFor("reception"), { viewer }))!.submissions[0].alerts).toBeNull();
+
+    await db.update(patients).set({ restrictedAt: NOW, restrictionReason: "Art. 18 request" }).where(eq(patients.id, d.patient.id));
+    expect(await loadPatientCare(p.orgId, d.patient.id, owner, { viewer })).toBeNull();
+    await grantRestrictedAccess({ user: { id: clinician }, org: { id: p.orgId } }, d.patient.id, "Patient in the chair now");
+    expect(await loadPatientCare(p.orgId, d.patient.id, owner, { viewer })).not.toBeNull();
+    // Someone else's reason doesn't count, and a role without patient.restricted.read never gets in.
+    expect(await loadPatientCare(p.orgId, d.patient.id, owner, { viewer: { userId: "someone-else" } })).toBeNull();
+    expect(await loadPatientCare(p.orgId, d.patient.id, permissionsFor("practitioner"), { viewer })).toBeNull();
   });
 });

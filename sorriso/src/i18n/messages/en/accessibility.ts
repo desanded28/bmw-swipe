@@ -27,13 +27,14 @@ export default {
   },
   features: {
     title: "What we do",
-    keyboard: "Everything can be used with a keyboard, with a visible focus indicator and a link to skip to the main content.",
+    keyboard:
+      "The site is built to be used with a keyboard alone, with a visible focus indicator and a link to skip to the main content.",
     screenReader:
       "Pages are structured with headings and landmarks. Form fields have labels, and errors and status messages are announced by screen readers.",
     steps: "The booking form moves focus to each new step, keeps what you typed when you go back, and explains each error next to its field.",
     contrast: "Text and form controls meet the WCAG AA contrast ratios, and no information is given by colour alone.",
     motion: "Animations are turned off when your device asks for reduced motion.",
-    zoom: "Pages work at 200% zoom and on small screens without scrolling sideways.",
+    zoom: "Pages are built to work at 200% zoom and on small screens without scrolling sideways.",
     languages:
       "The site is available in eight languages, and every page declares its language so that screen readers pronounce it correctly.",
     help: "The practice's contact details are shown in the same place in the booking form and on your appointment page.",
@@ -51,9 +52,14 @@ export default {
     exports: "Data downloads from the privacy center (JSON, CSV) are machine-readable files, not documents meant for reading.",
     workaround: "If any of these stops you from booking, call the practice: its phone number is on its page and in the booking form.",
   },
+  /**
+   * Say only what was actually done. While docs/accessibility.md records the manual keyboard and
+   * screen-reader review as "not run", the body must not claim it; when a release has passed it,
+   * the body can say so (and REVIEWED_ON moves).
+   */
   preparation: {
     title: "How this statement was prepared",
-    body: "This statement was prepared on {date} by self-assessment: automated checks during development and a manual review with the keyboard and with screen readers (NVDA with Firefox on Windows, VoiceOver with Safari on iOS) before each release. It was last reviewed on {reviewed}.",
+    body: "This statement was prepared on {date} by self-assessment, based on automated checks of the website's code that run on every change (labels, error messages, focus handling, contrast ratios). A manual review with the keyboard alone and with screen readers (NVDA with Firefox on Windows, VoiceOver with Safari on iOS) has not been completed yet; we will update this statement when it has. It was last reviewed on {reviewed}.",
   },
   feedback: {
     title: "Feedback and contact",

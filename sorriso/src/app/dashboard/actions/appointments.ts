@@ -3,7 +3,7 @@
 import { and, eq } from "drizzle-orm";
 import { headers } from "next/headers";
 import { z } from "zod";
-import type { DetailResult } from "@/components/dashboard/types";
+import type { DetailResult, PhoneResult } from "@/components/dashboard/types";
 import { db } from "@/db";
 import { appointments, CHANNELS, locations, practitioners, type Channel } from "@/db/schema";
 import { getT } from "@/i18n/server";
@@ -18,7 +18,8 @@ import {
   sendReminderNow,
   setOutcome,
 } from "@/lib/booking";
-import { calendarTexts, dashboardAction, loadAppointmentDetail, type CalendarT } from "@/lib/dashboard";
+import { isRestricted } from "@/lib/contact";
+import { calendarTexts, dashboardAction, loadAppointmentDetail, loadAppointmentPhone, type CalendarT } from "@/lib/dashboard";
 import { logError } from "@/lib/log";
 import { can, PermissionError } from "@/lib/permissions";
 import { ErasureError, grantRestrictedAccess } from "@/lib/privacy/erasure";
@@ -222,6 +223,8 @@ export async function remindNow(id: string, channel: Channel): Promise<ActionRes
       const c = z.enum(CHANNELS).parse(channel, { error: zodErrorMap(locale) });
       const d = await ownAppointment(s.org.id, id);
       if (d.appointment.status !== "scheduled") return fail(t("errors.reminderNotScheduled"), "not_allowed");
+      // The reminder engine sends nothing to a restricted or erased patient: say so, and queue nothing.
+      if (isRestricted(d.patient)) return fail(t("errors.restrictedNoMessages"), "restricted");
       const summary = await sendReminderNow(id, c, d.appointment.confirmation === "pending");
       if (!summary.sent) return fail(c === "email" ? t("errors.noEmail") : t("errors.noPhone"), "unreachable");
       await auditStaff(s, "appointment.update", { type: "appointment", id }, { metadata: { change: "reminder", channel: c } });
@@ -265,13 +268,13 @@ export async function clearAttention(id: string): Promise<ActionResult> {
   );
 }
 
+type ReadFailure = { ok: false; error: string; code?: string };
+
 /**
  * Read-only actions don't go through guard(): it revalidates the whole dashboard after every
  * success, which would re-render (and re-audit) the calendar each time a drawer opens.
  */
-async function readAction(
-  fn: (s: Awaited<ReturnType<typeof staff>>, t: CalendarT, locale: Locale) => Promise<DetailResult>,
-): Promise<DetailResult> {
+async function readAction<R>(fn: (s: Awaited<ReturnType<typeof staff>>, t: CalendarT, locale: Locale) => Promise<R>): Promise<R | ReadFailure> {
   const s = await staff();
   const { t, locale } = await calendarTexts(s);
   try {
@@ -292,10 +295,26 @@ async function readAction(
  * another org's id is not_found (and not audited).
  */
 export async function getAppointmentDetail(id: string): Promise<DetailResult> {
-  return readAction(async (s, t, locale) => {
+  return readAction<DetailResult>(async (s, t, locale) => {
     if (typeof id !== "string" || !id || id.length > 40) return { ok: false, error: t("errors.not_found"), code: "not_found" };
     const detail = await loadAppointmentDetail(s, id, locale);
     return detail ? { ok: true, data: detail } : { ok: false, error: t("errors.not_found"), code: "not_found" };
+  });
+}
+
+/**
+ * Only the patient's mobile number, for a list row's "Call" button (no notes, no thread): needs
+ * calendar.read and patient.contact.read; a restricted patient's number only after a reason was
+ * given in the drawer. Audited as appointment.view (view "call").
+ */
+export async function getAppointmentPhone(id: string): Promise<PhoneResult> {
+  return readAction<PhoneResult>(async (s, t) => {
+    if (typeof id !== "string" || !id || id.length > 40) return { ok: false, error: t("errors.not_found"), code: "not_found" };
+    const res = await loadAppointmentPhone(s, id);
+    if (res.ok) return { ok: true, phone: res.phone };
+    const error =
+      res.code === "forbidden" ? t("drawer.contactsHidden") : res.code === "restricted" ? t("errors.restrictedOpenRecord") : t("errors.not_found");
+    return { ok: false, error, code: res.code };
   });
 }
 
@@ -304,7 +323,7 @@ export async function getAppointmentDetail(id: string): Promise<DetailResult> {
  * grantRestrictedAccess) and returns the detail. Needs patient.restricted.read.
  */
 export async function openRestrictedAppointment(id: string, reason: string): Promise<DetailResult> {
-  return readAction(async (s, t, locale) => {
+  return readAction<DetailResult>(async (s, t, locale) => {
     if (!can(s.role, "patient.restricted.read")) {
       return { ok: false, error: t("errors.forbidden"), code: "forbidden" };
     }

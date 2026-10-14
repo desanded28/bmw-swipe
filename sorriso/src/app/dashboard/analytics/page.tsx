@@ -46,6 +46,8 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
   const a = await loadAnalytics(s.org, { months });
 
   const pct = (r: Rate) => (r.pct == null ? t("none") : formatPercent(r.pct / 100, locale, 1));
+  /** Every count shown as text, with the staff locale's separators ("1.234", "1 234"). */
+  const num = (n: number) => formatDecimal(n, locale);
   const ratio = (r: Rate) => (r.pct == null ? null : r.pct / 100);
   const weekdays = CALENDAR_NAMES[locale].weekdays;
   const outcomeLabel = (r: OutcomeRow) =>
@@ -68,7 +70,7 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
       label: label(r.key),
       value: r.rate.pct,
       display: pct(r.rate),
-      detail: t("kpi.confirmationHint", { confirmed: r.confirmed, sent: r.sent }),
+      detail: t("kpi.confirmationHint", { confirmed: num(r.confirmed), sent: num(r.sent) }),
     }));
   const href = (patch: { months?: number; by?: Dimension }) => `/dashboard/analytics?months=${patch.months ?? months}&by=${patch.by ?? by}`;
   const today = todayIn(tz);
@@ -112,29 +114,30 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
           label={t("kpi.noShow")}
           value={pct(total.noShowRate)}
           ratio={ratio(total.noShowRate)}
-          hint={t("kpi.noShowHint", { noShows: total.noShows, visits: total.completed + total.noShows })}
+          hint={t("kpi.noShowHint", { noShows: num(total.noShows), visits: num(total.completed + total.noShows) })}
         />
-        <StatTile label={t("kpi.lateCancel")} value={pct(total.lateCancelRate)} ratio={ratio(total.lateCancelRate)} hint={t("kpi.lateCancelHint", { hours: a.lateCancelHours })} />
+        <StatTile label={t("kpi.lateCancel")} value={pct(total.lateCancelRate)} ratio={ratio(total.lateCancelRate)} hint={t("kpi.lateCancelHint", { hours: num(a.lateCancelHours) })} />
         <StatTile
           label={t("kpi.confirmation")}
           value={pct(a.confirmation.total.rate)}
           ratio={ratio(a.confirmation.total.rate)}
-          hint={t("kpi.confirmationHint", { confirmed: a.confirmation.total.confirmed, sent: a.confirmation.total.sent })}
+          hint={t("kpi.confirmationHint", { confirmed: num(a.confirmation.total.confirmed), sent: num(a.confirmation.total.sent) })}
         />
         <StatTile
           label={t("kpi.waitlist")}
           value={pct(a.waitlist.fillRate)}
           ratio={ratio(a.waitlist.fillRate)}
-          hint={t("kpi.waitlistHint", { booked: a.waitlist.booked, closed: closedEntries })}
+          hint={t("kpi.waitlistHint", { booked: num(a.waitlist.booked), closed: num(closedEntries) })}
         />
         <StatTile
           label={t("kpi.recalls")}
           value={pct(a.recalls.conversion)}
           ratio={ratio(a.recalls.conversion)}
-          hint={t("kpi.recallsHint", { booked: a.recalls.booked, contacted: a.recalls.contacted })}
+          hint={t("kpi.recallsHint", { booked: num(a.recalls.booked), contacted: num(a.recalls.contacted) })}
         />
         <StatTile
           label={t("kpi.leadTime")}
+          // A plural text: the translator shows `count` with the locale's separators ("3,5 giorni").
           value={a.leadTime.medianDays == null ? t("none") : t("kpi.leadTimeValue", { count: a.leadTime.medianDays })}
           hint={t("kpi.leadTimeHint", { count: a.leadTime.bookings })}
         />
@@ -167,14 +170,14 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
             <BarChart
               id="noshow"
               caption={t("sections.noShowChart")}
-              data={outcomeBars((r) => r.noShowRate, (r) => t("kpi.noShowHint", { noShows: r.noShows, visits: r.completed + r.noShows }))}
+              data={outcomeBars((r) => r.noShowRate, (r) => t("kpi.noShowHint", { noShows: num(r.noShows), visits: num(r.completed + r.noShows) }))}
               max={Math.max(10, ...outcomeRows.map((r) => r.noShowRate.pct ?? 0))}
               empty={t("noData")}
             />
             <BarChart
               id="latecancel"
               caption={t("sections.lateCancelChart")}
-              data={outcomeBars((r) => r.lateCancelRate, () => t("kpi.lateCancelHint", { hours: a.lateCancelHours }))}
+              data={outcomeBars((r) => r.lateCancelRate, () => t("kpi.lateCancelHint", { hours: num(a.lateCancelHours) }))}
               max={Math.max(10, ...outcomeRows.map((r) => r.lateCancelRate.pct ?? 0))}
               empty={t("noData")}
             />
@@ -185,7 +188,7 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
             headers={[t(`dimension.${by}`), t("table.visits"), t("table.noShows"), t("table.lateCancels"), t("table.noShowRate"), t("table.lateCancelRate")]}
             rows={outcomeRows.map((r) => ({
               key: r.key,
-              cells: [outcomeLabel(r), r.completed + r.noShows, r.noShows, r.lateCancels, pct(r.noShowRate), pct(r.lateCancelRate)],
+              cells: [outcomeLabel(r), num(r.completed + r.noShows), num(r.noShows), num(r.lateCancels), pct(r.noShowRate), pct(r.lateCancelRate)],
             }))}
           />
         </section>
@@ -204,7 +207,7 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
                 summary={t("showTable")}
                 caption={t("sections.confirmationByChannel")}
                 headers={[t("table.item"), t("table.sent"), t("table.confirmed"), t("table.rate")]}
-                rows={a.confirmation.byChannel.map((r) => ({ key: r.key, cells: [tc(`channels.${r.key}`), r.sent, r.confirmed, pct(r.rate)] }))}
+                rows={a.confirmation.byChannel.map((r) => ({ key: r.key, cells: [tc(`channels.${r.key}`), num(r.sent), num(r.confirmed), pct(r.rate)] }))}
               />
             </div>
             <div>
@@ -213,7 +216,7 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
                 summary={t("showTable")}
                 caption={t("sections.confirmationByOffset")}
                 headers={[t("table.item"), t("table.sent"), t("table.confirmed"), t("table.rate")]}
-                rows={a.confirmation.byOffset.map((r) => ({ key: r.key, cells: [t(`offsets.${r.key}`), r.sent, r.confirmed, pct(r.rate)] }))}
+                rows={a.confirmation.byOffset.map((r) => ({ key: r.key, cells: [t(`offsets.${r.key}`), num(r.sent), num(r.confirmed), pct(r.rate)] }))}
               />
             </div>
           </div>
@@ -226,14 +229,22 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
           <p className="mt-2 text-3xl font-extrabold tracking-tight">{pct(a.waitlist.fillRate)}</p>
           <p className="text-sm text-slate-600">{t("kpi.waitlist")}</p>
           {ratio(a.waitlist.fillRate) != null ? <Meter ratio={ratio(a.waitlist.fillRate)!} className="mt-2" /> : null}
-          <p className="mt-3 text-xs text-slate-600">{t("sections.waitlistDetail", { ...a.waitlist })}</p>
+          <p className="mt-3 text-xs text-slate-600">
+            {t("sections.waitlistDetail", {
+              entries: num(a.waitlist.entries),
+              booked: num(a.waitlist.booked),
+              removed: num(a.waitlist.removed),
+              expired: num(a.waitlist.expired),
+              waiting: num(a.waitlist.waiting),
+            })}
+          </p>
         </Card>
         <Card className="p-5 sm:p-6">
           <h2 className="text-lg font-bold">{t("sections.recalls")}</h2>
           <p className="mt-2 text-3xl font-extrabold tracking-tight">{pct(a.recalls.conversion)}</p>
           <p className="text-sm text-slate-600">{t("kpi.recalls")}</p>
           {ratio(a.recalls.conversion) != null ? <Meter ratio={ratio(a.recalls.conversion)!} className="mt-2" /> : null}
-          <p className="mt-3 text-xs text-slate-600">{t("sections.recallsDetail", { due: a.recalls.due, contacted: a.recalls.contacted, booked: a.recalls.booked })}</p>
+          <p className="mt-3 text-xs text-slate-600">{t("sections.recallsDetail", { due: num(a.recalls.due), contacted: num(a.recalls.contacted), booked: num(a.recalls.booked) })}</p>
         </Card>
       </div>
 
@@ -250,8 +261,8 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
                   key: b.key,
                   label: t(`leadBuckets.${b.key}`),
                   value: b.count,
-                  display: formatDecimal(b.count, locale),
-                  detail: t("chart.column", { label: t(`leadBuckets.${b.key}`), value: formatDecimal(b.count, locale) }),
+                  display: num(b.count),
+                  detail: t("chart.column", { label: t(`leadBuckets.${b.key}`), value: num(b.count) }),
                 }))}
                 empty={t("noData")}
               />
@@ -259,7 +270,7 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
                 summary={t("showTable")}
                 caption={t("sections.leadTime")}
                 headers={[t("table.item"), t("table.count")]}
-                rows={a.leadTime.buckets.map((b) => ({ key: b.key, cells: [t(`leadBuckets.${b.key}`), b.count] }))}
+                rows={a.leadTime.buckets.map((b) => ({ key: b.key, cells: [t(`leadBuckets.${b.key}`), num(b.count)] }))}
               />
             </div>
             <BarChart
@@ -267,7 +278,7 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
               data={a.newPatients.bySource.map((r) => {
                 const key = `sources.${r.key}` as const;
                 const label = t.has(key) ? t(key) : r.key;
-                return { key: r.key, label, value: r.count, display: formatDecimal(r.count, locale), detail: t("chart.bar", { label, value: r.count }) };
+                return { key: r.key, label, value: r.count, display: num(r.count), detail: t("chart.bar", { label, value: num(r.count) }) };
               })}
               empty={t("noData")}
             />
@@ -277,8 +288,8 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
                 key: r.key,
                 label: t(`contexts.${r.key}`),
                 value: r.count,
-                display: formatDecimal(r.count, locale),
-                detail: t("chart.bar", { label: t(`contexts.${r.key}`), value: r.count }),
+                display: num(r.count),
+                detail: t("chart.bar", { label: t(`contexts.${r.key}`), value: num(r.count) }),
               }))}
               empty={t("noData")}
             />
@@ -304,11 +315,11 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
                 key: m.month,
                 label: monthLabel(m.month),
                 value: m.count,
-                display: formatDecimal(m.count, locale),
+                display: num(m.count),
                 detail:
                   m.average != null
                     ? t("sections.reviewsSummary", { count: m.count, average: formatDecimal(m.average, locale, 1) })
-                    : t("chart.column", { label: monthLong(m.month), value: m.count }),
+                    : t("chart.column", { label: monthLong(m.month), value: num(m.count) }),
               }))}
               empty={t("noData")}
             />
@@ -318,7 +329,7 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
               headers={[t("table.month"), t("table.count"), t("table.average")]}
               rows={a.reviews.months.map((m) => ({
                 key: m.month,
-                cells: [capitalizeFirst(monthLong(m.month), locale), m.count, m.average != null ? formatDecimal(m.average, locale, 1) : t("none")],
+                cells: [capitalizeFirst(monthLong(m.month), locale), num(m.count), m.average != null ? formatDecimal(m.average, locale, 1) : t("none")],
               }))}
             />
           </div>
@@ -339,8 +350,8 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
                   key: k,
                   label: t(`funnel.${k}`),
                   value: a.funnel[k],
-                  display: formatDecimal(a.funnel[k], locale),
-                  detail: t("chart.bar", { label: t(`funnel.${k}`), value: a.funnel[k] }),
+                  display: num(a.funnel[k]),
+                  detail: t("chart.bar", { label: t(`funnel.${k}`), value: num(a.funnel[k]) }),
                   color: ORDINAL[i],
                 }))}
                 empty={t("noData")}
@@ -355,7 +366,10 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
             <DataTable
               caption={t("sections.funnel")}
               headers={[t("ranking.practitioner"), t("funnel.impressions"), t("funnel.views"), t("funnel.bookings"), t("measures.bookingRate")]}
-              rows={a.funnel.byPractitioner.map((r) => ({ key: r.practitionerId, cells: [r.name, r.impressions, r.views, r.bookings, pct(r.bookingRate)] }))}
+              rows={a.funnel.byPractitioner.map((r) => ({
+                key: r.practitionerId,
+                cells: [r.name, num(r.impressions), num(r.views), num(r.bookings), pct(r.bookingRate)],
+              }))}
               empty={t("noData")}
             />
           </div>

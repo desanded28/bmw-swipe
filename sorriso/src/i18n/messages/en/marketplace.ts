@@ -216,10 +216,13 @@ export default {
       public: "Public profile",
     },
     title: "Title",
+    titlePlaceholder: "Dr.",
     name: "Full name",
     areas: "Areas of interest",
+    /** Shown on public pages when the practice left "Areas of interest" empty. */
+    defaultSpecialty: "Dentist",
     areasHint:
-      "For example implantology or aesthetic dentistry. Only orthodontics, oral surgery and paediatric dentistry are legal specialisations: tick them below instead.",
+      "For example implantology or aesthetic dentistry. Only orthodontics, oral surgery and paediatric dentistry are legal specialisations: tick them below instead. Left empty, public pages show \"Dentist\" in the visitor's language.",
     calendarColour: "Calendar colour",
     licence: "Licence or registration number",
     bio: "Bio",

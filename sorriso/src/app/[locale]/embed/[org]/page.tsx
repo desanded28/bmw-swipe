@@ -37,17 +37,47 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
 }
 
 /**
+ * What the browser's Referer says about the page that framed us, given the claimed parent origin:
+ * - "parent": the claimed parent itself (widget.js sets referrerpolicy=strict-origin-when-cross-origin,
+ *   so a real host always sends at least its origin);
+ * - "ownEmbed": this practice's embed page with the same ?parent (the frame moved on inside itself,
+ *   e.g. to another language; same-origin Referers are full URLs). Only our own page can be that
+ *   Referer, and it showed the flow only if it passed these checks itself;
+ * - "ownPage": another page of ours; "other": a different site;
+ * - "none": no Referer (e.g. referrerpolicy=no-referrer on the iframe) or an unparsable one.
+ */
+type RefererSays = "parent" | "ownEmbed" | "ownPage" | "other" | "none";
+
+function refererSays(referer: string | null, origin: string, ownHost: string | null, slug: string): RefererSays {
+  if (!referer) return "none";
+  let from: URL;
+  try {
+    from = new URL(referer);
+  } catch {
+    return "none";
+  }
+  if (from.origin === origin) return "parent";
+  if (from.host !== ownHost && from.origin !== new URL(APP_URL).origin) return "other";
+  const embedOf = /^\/[^/]+\/embed\/([^/]+)\/?$/.exec(from.pathname)?.[1];
+  return embedOf === slug && from.searchParams.get("parent") === origin ? "ownEmbed" : "ownPage";
+}
+
+/**
  * The host page's origin as the widget reported it (?parent=), if it may receive messages: an
- * exact origin, https (http only for localhost outside production), and listed in the practice's
- * allowed websites when it set any. When the browser told us who framed us (Referer, an origin
- * under the default referrer policy), it must agree; a Referer from our own pages (the frame moving
- * on, e.g. to another language) says nothing about the host. null: no messages are posted at all.
+ * exact origin, https (http only for localhost outside production).
+ * - No allowed websites set (any https host may embed): a Referer from a different site contradicts
+ *   ?parent and no messages are posted; a missing Referer or one of our own pages proves nothing.
+ * - Allowed websites set: fail closed. The parent must be listed AND the Referer must vouch for it
+ *   ("parent" or "ownEmbed"); without one (no-referrer framing with a spoofed ?parent) the frame is
+ *   blocked, so an unlisted site can't show the practice's flow by hiding who it is.
+ * null origin: no messages are posted at all.
  */
 function allowedParent(
   parent: string | undefined,
   allowed: string[],
   referer: string | null,
   ownHost: string | null,
+  slug: string,
 ): { origin: string | null; blocked: boolean } {
   let origin: string | null = null;
   try {
@@ -57,17 +87,9 @@ function allowedParent(
   } catch {
     origin = null;
   }
-  if (origin && referer) {
-    try {
-      const from = new URL(referer);
-      const own = from.host === ownHost || from.origin === new URL(APP_URL).origin;
-      if (!own && from.origin !== origin) origin = null;
-    } catch {
-      /* an unparsable Referer proves nothing either way */
-    }
-  }
-  if (!allowed.length) return { origin, blocked: false };
-  const ok = Boolean(origin && allowed.includes(origin));
+  const says = origin ? refererSays(referer, origin, ownHost, slug) : "none";
+  if (!allowed.length) return { origin: says === "other" ? null : origin, blocked: false };
+  const ok = Boolean(origin && allowed.includes(origin) && (says === "parent" || says === "ownEmbed"));
   return { origin: ok ? origin : null, blocked: !ok };
 }
 
@@ -103,11 +125,21 @@ export default async function EmbedPage({ params, searchParams }: { params: Para
   const t = getT(locale, "booking");
   const h = await headers();
   const framed = isFramedRequest(h);
+  // A browser without Fetch Metadata sends no Sec-Fetch-Dest: with a ?parent the page may well be
+  // framed, so the allowed-websites rule applies to it too (it still counts as top-level for the
+  // processing context: no practice ref, no messages).
+  const mayBeFramed = framed || (h.get("sec-fetch-dest") === null && Boolean(sp.parent));
   const [row] = await db.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, clinic.org.id));
-  const parent = allowedParent(sp.parent, row ? getPrivacy(row).embedOrigins : [], framed ? h.get("referer") : null, h.get("host"));
+  const parent = allowedParent(
+    sp.parent,
+    row ? getPrivacy(row).embedOrigins : [],
+    mayBeFramed ? h.get("referer") : null,
+    h.get("host"),
+    clinic.org.slug,
+  );
   const bookHref = lhref(locale, `/book/${clinic.org.slug}`);
 
-  if (framed && parent.blocked) {
+  if (mayBeFramed && parent.blocked) {
     return (
       <main id="content" tabIndex={-1} className="grid min-h-dvh place-items-center bg-white p-6 text-center outline-none">
         <div className="max-w-sm">

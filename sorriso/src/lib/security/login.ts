@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gt } from "drizzle-orm";
+import { and, count, desc, eq, gt, ne } from "drizzle-orm";
 import { db } from "@/db";
 import { loginAttempts, sessions, users, type User } from "@/db/schema";
 import { audit } from "../audit";
@@ -18,6 +18,10 @@ import { describeUserAgent } from "./user-agent";
  *   15 minutes, every attempt is refused with the same generic answer, the correct password
  *   included, until the window has passed. Failures before the email's last successful sign-in
  *   don't count against it.
+ * - An attempt is counted before its password is checked (a row written as a failure, turned into
+ *   a success afterwards), so a burst of parallel requests can't all read "0 failures" first:
+ *   every request counts the rows written before it, and at most 5 per email (20 per network)
+ *   ever reach the password check in a window.
  * - Unknown emails cost the same scrypt round as wrong passwords (verifyAgainstDummy) and get
  *   the same answer, so neither the response nor its timing tells whether an account exists.
  * - The account owner is emailed when the email limit is reached, and on a sign-in from a device
@@ -41,7 +45,13 @@ export function loginEmailHash(email: string): string {
 
 export type Throttle = { blocked: boolean; emailFailures: number; networkFailures: number };
 
-export async function loginThrottle(emailHash: string, networkHash: string, now: Date = new Date()): Promise<Throttle> {
+/**
+ * Failures in the window for this email and network. `blocked` once either has reached its limit,
+ * i.e. the next attempt would be one too many. authenticate() calls it after writing its own
+ * attempt (as a failure) and passes that row's id as `except`, so the attempt isn't held against
+ * itself; rows still in flight from parallel requests do count.
+ */
+export async function loginThrottle(emailHash: string, networkHash: string, now: Date = new Date(), except?: string): Promise<Throttle> {
   const since = new Date(now.getTime() - LOGIN_WINDOW_MS);
   const [lastSuccess] = await db
     .select({ at: loginAttempts.createdAt })
@@ -50,29 +60,32 @@ export async function loginThrottle(emailHash: string, networkHash: string, now:
     .orderBy(desc(loginAttempts.createdAt))
     .limit(1);
   const emailSince = lastSuccess && lastSuccess.at > since ? lastSuccess.at : since;
+  const others = except ? ne(loginAttempts.id, except) : undefined;
   const [[byEmail], [byNetwork]] = await Promise.all([
     db
       .select({ n: count() })
       .from(loginAttempts)
-      .where(and(eq(loginAttempts.emailHash, emailHash), eq(loginAttempts.success, false), gt(loginAttempts.createdAt, emailSince))),
+      .where(and(eq(loginAttempts.emailHash, emailHash), eq(loginAttempts.success, false), gt(loginAttempts.createdAt, emailSince), others)),
     db
       .select({ n: count() })
       .from(loginAttempts)
-      .where(and(eq(loginAttempts.ipHash, networkHash), eq(loginAttempts.success, false), gt(loginAttempts.createdAt, since))),
+      .where(and(eq(loginAttempts.ipHash, networkHash), eq(loginAttempts.success, false), gt(loginAttempts.createdAt, since), others)),
   ]);
   const emailFailures = byEmail?.n ?? 0;
   const networkFailures = byNetwork?.n ?? 0;
   return { blocked: emailFailures >= MAX_EMAIL_FAILURES || networkFailures >= MAX_NETWORK_FAILURES, emailFailures, networkFailures };
 }
 
-export async function recordLoginAttempt(i: { emailHash: string; networkHash: string; success: boolean; now?: Date }): Promise<void> {
+export async function recordLoginAttempt(i: { emailHash: string; networkHash: string; success: boolean; now?: Date }): Promise<string> {
+  const id = newId();
   await db.insert(loginAttempts).values({
-    id: newId(),
+    id,
     emailHash: i.emailHash,
     ipHash: i.networkHash,
     success: i.success,
     createdAt: i.now ?? new Date(),
   });
+  return id;
 }
 
 /**
@@ -122,19 +135,26 @@ export async function authenticate(i: { email: string; password: string; headers
   const email = normalizeEmail(i.email);
   const emailHash = loginEmailHash(email);
   const networkHash = clientNetworkHash(i.headers);
-  const throttle = await loginThrottle(emailHash, networkHash, now);
+  // Count first, check second: this attempt is on record as a failure before any password is
+  // tried, and the throttle reads it together with every attempt written before it. Of N parallel
+  // requests, the k-th to be written sees at least k rows, so only the first 5 (20 per network)
+  // can pass, however many arrive at once.
+  const attemptId = await recordLoginAttempt({ emailHash, networkHash, success: false, now });
+  const throttle = await loginThrottle(emailHash, networkHash, now, attemptId);
   const [user] = email ? await db.select().from(users).where(eq(users.email, email)) : [];
   const org = user ? await defaultOrgFor(user.id) : null;
   const actor = { type: "user" as const, id: user?.id ?? null };
 
   if (throttle.blocked) {
+    // A refused attempt isn't a failure: it doesn't extend the lock, which ends when the window has passed.
+    await db.delete(loginAttempts).where(eq(loginAttempts.id, attemptId));
     await audit({ orgId: org?.id ?? null, actor, action: "auth.login.fail", metadata: { reason: "throttled" }, headers: i.headers, at: now });
     return { ok: false, reason: "throttled" };
   }
 
   const ok = user ? await verifyPassword(i.password, user.passwordHash) : await verifyAgainstDummy(i.password);
   if (!ok || !user) {
-    await recordLoginAttempt({ emailHash, networkHash, success: false, now });
+    // The row written above stays as the failure.
     await audit({
       orgId: org?.id ?? null,
       actor,
@@ -158,7 +178,7 @@ export async function authenticate(i: { email: string; password: string; headers
 
   const userAgent = i.headers.get("user-agent");
   const known = await isKnownDevice({ userId: user.id, emailHash, networkHash, userAgent, now });
-  await recordLoginAttempt({ emailHash, networkHash, success: true, now });
+  await db.update(loginAttempts).set({ success: true }).where(eq(loginAttempts.id, attemptId));
   await audit({ orgId: org?.id ?? null, actor, action: "auth.login.success", headers: i.headers, at: now, metadata: { newDevice: !known } });
   if (!known) {
     const locale = staffEmailLocale(user, org);

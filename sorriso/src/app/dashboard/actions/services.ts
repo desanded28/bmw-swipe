@@ -6,7 +6,7 @@ import { PRICE_TYPES, SERVICE_CATEGORIES, type PriceType, type ServiceCategory }
 import { practitionerServices, practitioners, services } from "@/db/schema";
 import { DEFAULT_LOCALE, type Locale } from "@/i18n/config";
 import { getStaffLocale, getT } from "@/i18n/server";
-import { checkAdvertisingFields } from "@/lib/compliance/advertising";
+import { blockedWords, checkAdvertisingFields } from "@/lib/compliance/advertising";
 import { newId } from "@/lib/ids";
 import { fail, guard, ok, optional, str, type ActionResult } from "./_shared";
 
@@ -72,13 +72,7 @@ export async function saveService(id: string | null, _prev: unknown, fd: FormDat
       if (!values.name) return fail(t("serviceForm.nameRequired"));
 
       const ads = checkAdvertisingFields({ name: values.name, description: values.description, priceIncludes: values.priceIncludes });
-      if (ads.verdict === "block") {
-        const words = Object.values(ads.byField)
-          .flat()
-          .filter((f) => f?.severity === "block")
-          .map((f) => `"${f!.text}"`);
-        return fail(t("advertising.blocked", { words: [...new Set(words)].join(", ") }), "advertising");
-      }
+      if (ads.verdict === "block") return fail(t("advertising.blocked", { words: blockedWords(ads.byField) }), "advertising");
       const warned = ads.verdict === "warn";
 
       if (id) {

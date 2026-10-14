@@ -78,7 +78,7 @@ export function PractitionerEditor({
   const [tab, setTab] = useState<Tab>(viewer.canManage ? "details" : "public");
   const [confirmOptOut, setConfirmOptOut] = useState(false);
   const initial = {
-    title: p?.title ?? "Dr.",
+    title: p?.title ?? "",
     name: p?.name ?? "",
     specialty: p?.specialty ?? "",
     bio: p?.bio ?? "",
@@ -144,7 +144,7 @@ export function PractitionerEditor({
           <Avatar name={name || "?"} color={p?.color ?? "#0d9488"} size={44} />
           <div className="min-w-0">
             <p className="font-bold">{name ? practitionerName({ title, name }) : t("profile.previewEmpty")}</p>
-            <p className="text-sm text-slate-600">{specialty}</p>
+            <p className="text-sm text-slate-600">{specialty.trim() || t("profile.defaultSpecialty")}</p>
           </div>
         </div>
         {bio ? <p className="mt-3 whitespace-pre-line text-sm text-slate-700">{bio}</p> : null}
@@ -284,7 +284,7 @@ export function PractitionerEditor({
             <label htmlFor={`${uid}title`} className={label}>
               {t("profile.title")}
             </label>
-            <Input id={`${uid}title`} name="title" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={20} />
+            <Input id={`${uid}title`} name="title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t("profile.titlePlaceholder")} maxLength={20} />
           </div>
           <div>
             <label htmlFor={`${uid}name`} className={label}>

@@ -26,7 +26,11 @@ type Props = {
   initial?: PrivacyActionKind | null;
   /** Today in the practice's time zone (YYYY-MM-DD), for date limits. */
   today: string;
+  /** The open privacy request an erasure would answer (opened from it), with its labels. */
+  answering?: AnsweredRequest | null;
 };
+
+export type AnsweredRequest = { id: string; type: string; received: string; language: string };
 
 /**
  * The data protection actions on a patient record: download (with step-up), restrict or lift the
@@ -71,7 +75,7 @@ export function PatientPrivacyActions(props: Props) {
           {open === "export" ? <ExportPanel patientId={props.patientId} /> : null}
           {open === "restrict" ? <RestrictPanel patientId={props.patientId} today={props.today} /> : null}
           {open === "unrestrict" ? <UnrestrictPanel patientId={props.patientId} /> : null}
-          {open === "erase" ? <ErasePanel patientId={props.patientId} fullName={props.fullName} today={props.today} /> : null}
+          {open === "erase" ? <ErasePanel patientId={props.patientId} fullName={props.fullName} today={props.today} answering={props.answering ?? null} /> : null}
           {open === "consents" ? <ConsentPanel patientId={props.patientId} purposes={props.purposes} /> : null}
         </div>
       ) : null}
@@ -183,8 +187,8 @@ function UnrestrictPanel({ patientId }: { patientId: string }) {
     <form action={action} className="space-y-3">
       <h3 className="font-bold">{t("privacy.unrestrictTitle")}</h3>
       <p className="text-sm text-slate-600">{t("privacy.unrestrictHint")}</p>
-      <Field label={t("privacy.restrictReason")}>
-        <Textarea name="reason" rows={2} maxLength={500} />
+      <Field label={t("privacy.unrestrictReason")}>
+        <Textarea name="reason" rows={2} required minLength={3} maxLength={500} placeholder={t("privacy.unrestrictReasonPlaceholder")} />
       </Field>
       {needsConfirm ? (
         <label className="flex items-start gap-2 text-sm">
@@ -200,7 +204,7 @@ function UnrestrictPanel({ patientId }: { patientId: string }) {
   );
 }
 
-function ErasePanel({ patientId, fullName, today }: { patientId: string; fullName: string; today: string }) {
+function ErasePanel({ patientId, fullName, today, answering }: { patientId: string; fullName: string; today: string; answering: AnsweredRequest | null }) {
   const t = useT("privacyAdmin");
   const [state, action] = useActionState<ActionResult | null, FormData>(erasePatientAction.bind(null, patientId), null);
   useRefreshOnSuccess(state);
@@ -209,6 +213,7 @@ function ErasePanel({ patientId, fullName, today }: { patientId: string; fullNam
   const matches = confirm.trim().replace(/\s+/g, " ").toLowerCase() === fullName.trim().replace(/\s+/g, " ").toLowerCase();
   const groupId = useId();
   const confirmId = useId();
+  const answerId = useId();
 
   return (
     <form action={action} className="space-y-3">
@@ -242,6 +247,19 @@ function ErasePanel({ patientId, fullName, today }: { patientId: string; fullNam
         <Field label={t("privacy.retainUntil")}>
           <Input name="retainUntil" type="date" required min={today} />
         </Field>
+      ) : null}
+      {answering ? (
+        <div className="space-y-2 rounded-xl bg-white p-3 ring-1 ring-slate-200">
+          <input type="hidden" name="requestId" value={answering.id} />
+          <p className="text-sm text-slate-700">{t("privacy.answerFor", { type: answering.type, date: answering.received })}</p>
+          <label htmlFor={answerId} className="block text-[13px] font-semibold text-slate-700">
+            {t("privacy.answerLabel", { language: answering.language })}
+          </label>
+          <Textarea id={answerId} name="answer" rows={3} required minLength={3} maxLength={2000} aria-describedby={`${answerId}-hint`} />
+          <p id={`${answerId}-hint`} className="text-xs text-slate-500">
+            {t("privacy.answerHint")}
+          </p>
+        </div>
       ) : null}
       <div>
         <label htmlFor={confirmId} className="mb-1.5 block text-[13px] font-semibold text-slate-700">

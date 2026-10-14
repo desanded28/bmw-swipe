@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import type { Locale, ReviewAuthorDisplay, ReviewReportGround, ReviewReportStatus, ReviewStatus } from "@/db/enums";
 import { appointments, organizations, practitioners, reviewReports, reviews, users, type Review, type ReviewReport } from "@/db/schema";
@@ -10,8 +10,8 @@ import { getAppointmentDetails, type AppointmentDetails } from "./appointments";
 import { audit, type AuditEvent } from "./audit";
 import { absoluteUrl, APP_NAME } from "./config";
 import { ageOn, GUARDIAN_ROUTING_AGE, isMinor } from "./contact";
-import { decrypt, encrypt, hmac } from "./crypto";
-import { reviewFlags } from "./health-terms";
+import { decrypt, encrypt, hmac, isEncrypted } from "./crypto";
+import { reviewFlags, scanHealthTerms } from "./health-terms";
 import { newId } from "./ids";
 import { isManageLinkValid, manageLinkValidUntil } from "./links";
 import { logError } from "./log";
@@ -33,8 +33,12 @@ import { ConsentError, recordConsent, withdrawConsent } from "./privacy/consent"
  *    appeal once (DSA Art. 20), and a different moderator decides the appeal.
  *
  * Health data: comments the flagger holds are stored encrypted (AAD "reviews.comment") until a
- * moderator publishes them; the practice's report details and the author's reply to the
- * moderators are always encrypted. Published comments are plain text (they are public).
+ * moderator publishes them, and so are removed ones; the practice's report details, the author's
+ * reply to the moderators and the moderators' statements of reasons (review_reports.decision_reason,
+ * reviews.removed_reason: they often describe what was wrong) are always encrypted. Published
+ * comments are plain text (they are public). The practice sees a comment only while that text is
+ * the public one. Practice replies go through the same flagger and can't carry health or contact
+ * details.
  * Audit: review.reply, review.report, review.moderate (with the statement of reasons as reason),
  * review.withdraw; publication consent is in the ledger (consent.record).
  */
@@ -55,6 +59,8 @@ const DAY_MS = 86_400_000;
 const COMMENT_AAD = "reviews.comment";
 const DETAILS_AAD = "review_reports.details";
 const RESPONSE_AAD = "review_reports.patient_response";
+const DECISION_AAD = "review_reports.decision_reason";
+const REMOVED_AAD = "reviews.removed_reason";
 /** reporterContactHash markers for reports nobody filed by hand. */
 const AUTO_CHECK = "auto";
 const AUTHOR_APPEAL = "author";
@@ -109,13 +115,32 @@ export function readReportDetails(value: string | null): ReportDetails {
 }
 
 export function readAuthorResponse(value: string | null): string | null {
+  return readEncrypted(value, RESPONSE_AAD, "decrypt_response");
+}
+
+function readEncrypted(value: string | null, aad: string, step: string): string | null {
   if (!value) return null;
   try {
-    return decrypt(value, RESPONSE_AAD);
+    return decrypt(value, aad);
   } catch (err) {
-    logError("reviews", err, { step: "decrypt_response" });
+    logError("reviews", err, { step });
     return null;
   }
+}
+
+/** A moderator's statement of reasons as stored on review_reports (encrypted). */
+export function readDecisionReason(value: string | null): string | null {
+  return readEncrypted(value, DECISION_AAD, "decrypt_decision_reason");
+}
+
+/** The statement of reasons stored on a removed review (encrypted). */
+export function readRemovedReason(value: string | null): string | null {
+  return readEncrypted(value, REMOVED_AAD, "decrypt_removed_reason");
+}
+
+/** A report row with its statement of reasons readable (for pages and emails, never stored back). */
+function withReadableReason(r: ReviewReport): ReviewReport {
+  return { ...r, decisionReason: readDecisionReason(r.decisionReason) };
 }
 
 /** Trim, normalise newlines, cap; empty becomes null. */
@@ -276,19 +301,33 @@ class ReviewFlowError extends Error {
   }
 }
 
-/** Is a report about this review being handled (the review stays hidden meanwhile)? */
-async function openReport(tx: Tx, reviewId: string): Promise<ReviewReport | null> {
+const OPEN_STATUSES = ["open", "awaiting_patient"] as const;
+const isOpen = (r: Pick<ReviewReport, "status">) => (OPEN_STATUSES as readonly string[]).includes(r.status);
+
+/**
+ * Is the practice's report about this review being handled? Only that hides a review while the
+ * moderators check it: a notice from the public and an appeal leave it as it is.
+ */
+async function hidingReport(tx: Tx, reviewId: string): Promise<ReviewReport | null> {
   const [r] = await tx
     .select()
     .from(reviewReports)
-    .where(and(eq(reviewReports.reviewId, reviewId), inArray(reviewReports.status, ["open", "awaiting_patient"]), isNull(reviewReports.appealOfId)))
+    .where(
+      and(
+        eq(reviewReports.reviewId, reviewId),
+        inArray(reviewReports.status, [...OPEN_STATUSES]),
+        isNull(reviewReports.appealOfId),
+        isNotNull(reviewReports.reporterUserId),
+      ),
+    )
     .limit(1);
   return r ?? null;
 }
 
 /**
  * The author edits their review while their link is valid. The new text goes through the same
- * check; a review under a report stays hidden until the moderators decide.
+ * check; a review under the practice's report stays hidden until the moderators decide. A text
+ * that isn't published at once is stored encrypted, like any held text.
  */
 export async function updateReview(token: string, input: ReviewInput & { now?: Date }): Promise<ReviewResult> {
   const now = input.now ?? new Date();
@@ -301,7 +340,7 @@ export async function updateReview(token: string, input: ReviewInput & { now?: D
   if (r.status === "removed" || r.status === "withdrawn") return { ok: false, code: "closed" };
 
   const flags = reviewFlags(checked.comment);
-  const reported = await openReport(db, r.id);
+  const reported = await hidingReport(db, r.id);
   const status: ReviewStatus = flags.length || reported ? "under_review" : "published";
   const display = displayFor(d, input.display, now);
   await db
@@ -406,11 +445,22 @@ export function editableUntil(d: Pick<AppointmentDetails, "appointment">): Date 
 
 type PracticeActor = { user: { id: string }; org: { id: string } };
 
-export type PracticeReviewError = "not_found" | "only_published" | "too_long" | "confirm_required" | "already" | "final" | "details_required";
+export type PracticeReviewError =
+  | "not_found"
+  | "only_published"
+  | "too_long"
+  | "confirm_required"
+  | "health_terms"
+  | "already"
+  | "final"
+  | "details_required";
 
 /**
  * The practice's public reply (empty removes it). Only under a published review, and only after
- * the staff member confirmed it reveals nothing about the patient's health or treatment.
+ * the staff member confirmed it reveals nothing about the patient's health or treatment. The
+ * health-term flagger runs here too, whatever the browser did: a reply with health or contact
+ * details (a "hold" finding) is refused, since a practice may never publish them about a patient;
+ * treatment names and symptoms ("warn") pass and are recorded in the audit entry.
  */
 export async function replyAsPractice(
   s: PracticeActor,
@@ -422,7 +472,10 @@ export async function replyAsPractice(
   const reply = cleanText(i.reply, REPLY_MAX);
   if (reply === "too_long") return { ok: false, code: "too_long" };
   if (reply && r.status !== "published") return { ok: false, code: "only_published" };
+  const findings = scanHealthTerms(reply);
+  if (findings.some((f) => f.severity === "hold")) return { ok: false, code: "health_terms" };
   if (reply && !i.confirmed) return { ok: false, code: "confirm_required" };
+  const warned = [...new Set(findings.map((f) => f.rule))];
   await db.transaction(async (tx) => {
     await tx
       .update(reviews)
@@ -434,7 +487,7 @@ export async function replyAsPractice(
         actor: { type: "user", id: s.user.id },
         action: "review.reply",
         entity: { type: "review", id: r.id },
-        metadata: { removed: reply === null },
+        metadata: { removed: reply === null, ...(warned.length ? { flags: warned.join(",") } : {}) },
       },
       tx,
     );
@@ -443,10 +496,42 @@ export async function replyAsPractice(
 }
 
 /**
- * The practice reports a review (DSA notice). A new report hides the review until a moderator
- * decides. Within six months of a decision, the practice's next report is its one appeal (a
- * different moderator reviews it; the review stays as decided meanwhile); after an appeal the
- * decision is final.
+ * The practice's own reports about a review (originals filed from its dashboard) and the appeals
+ * of them, by either side; newest first. Reports by anyone else (a notice from the public, the
+ * automatic check) and their appeals are not the practice's.
+ */
+function practiceChain(history: readonly ReviewReport[]): ReviewReport[] {
+  const isOwn = (h: ReviewReport) => h.reporterUserId != null && !h.appealOfId;
+  const own = new Set(history.filter(isOwn).map((h) => h.id));
+  return history.filter((h) => isOwn(h) || (h.appealOfId != null && own.has(h.appealOfId)));
+}
+
+/**
+ * What the practice's next report about a review would be, from its own reports only:
+ *  - the latest decision on its own report, if that decision kept the review (it went against the
+ *    practice), was taken within APPEAL_DAYS and hasn't been appealed: that report (an appeal);
+ *  - "final" when that decision was appealed (by either side) within APPEAL_DAYS;
+ *  - otherwise null: a fresh report (it hides the review, the author is asked, the practice is
+ *    told the outcome). That includes a review a notice from the public or the automatic check
+ *    was decided on: those decisions aren't the practice's to appeal.
+ */
+function practiceAppealTarget(history: readonly ReviewReport[], now: Date): ReviewReport | "final" | null {
+  const chain = practiceChain(history);
+  const decided = chain.find((h) => !h.appealOfId && h.decidedAt);
+  if (!decided?.decidedAt) return null;
+  const within = (d: Date) => now.getTime() - d.getTime() <= APPEAL_DAYS * DAY_MS;
+  const appeal = chain.find((h) => h.appealOfId === decided.id);
+  if (appeal || decided.status === "appealed") return within(appeal?.decidedAt ?? decided.decidedAt) ? "final" : null;
+  if (!within(decided.decidedAt)) return null;
+  return decided.decision === "keep" ? decided : null;
+}
+
+/**
+ * The practice reports a published review (DSA notice). A new report hides the review until a
+ * moderator decides; it can be filed while a notice from the public about the same review is
+ * open. Within six months of a decision that kept the review on the practice's own report, the
+ * practice's next report is its one appeal (a different moderator reviews it; the review stays
+ * published meanwhile); after an appeal the decision is final.
  */
 export async function reportAsPractice(
   s: PracticeActor,
@@ -460,10 +545,11 @@ export async function reportAsPractice(
   if (!r || r.status === "withdrawn") return { ok: false, code: "not_found" };
 
   const history = await db.select().from(reviewReports).where(eq(reviewReports.reviewId, r.id)).orderBy(desc(reviewReports.createdAt));
-  if (history.some((h) => h.status === "open" || h.status === "awaiting_patient")) return { ok: false, code: "already" };
-  const appealable = appealTarget(history, now);
+  if (practiceChain(history).some(isOpen)) return { ok: false, code: "already" };
+  const appealable = practiceAppealTarget(history, now);
   if (appealable === "final") return { ok: false, code: "final" };
-  if (!appealable && r.status !== "published") return { ok: false, code: "not_found" };
+  // Held, removed or hidden reviews aren't public: there is nothing for the practice to report.
+  if (r.status !== "published") return { ok: false, code: "not_found" };
 
   const reportId = newId();
   await db.transaction(async (tx) => {
@@ -497,22 +583,14 @@ export async function reportAsPractice(
   return { ok: true, appeal: Boolean(appealable), reportId };
 }
 
-/**
- * Which earlier decision a new report from the practice would appeal: the latest decided original
- * report within APPEAL_DAYS that hasn't been appealed; "final" when it already was; null when a
- * new report is a fresh one.
- */
-function appealTarget(history: ReviewReport[], now: Date): ReviewReport | "final" | null {
-  const latest = history.find((h) => h.decidedAt);
-  if (!latest?.decidedAt || now.getTime() - latest.decidedAt.getTime() > APPEAL_DAYS * DAY_MS) return null;
-  if (latest.appealOfId || latest.status === "appealed" || history.some((h) => h.appealOfId === latest.id)) return "final";
-  return latest;
-}
-
 export type PracticeReviewRow = {
   id: string;
   rating: number;
-  /** Shown to the practice only for reviews that were public at some point. */
+  /**
+   * Only while the stored text is the public one: a published review, or one the practice's report
+   * hides while it is checked. Never a text the automatic check held (also after an edit), nor a
+   * removed one.
+   */
   comment: string | null;
   authorDisplay: ReviewAuthorDisplay;
   authorName: string | null;
@@ -522,6 +600,7 @@ export type PracticeReviewRow = {
   reply: string | null;
   createdAt: Date;
   practitionerId: string;
+  /** The latest of the practice's own reports about it, or the latest appeal of one of them. */
   report: {
     id: string;
     ground: ReviewReportGround;
@@ -531,11 +610,27 @@ export type PracticeReviewRow = {
     decisionReason: string | null;
     byPractice: boolean;
   } | null;
-  /** The practice can still appeal the latest decision. */
+  /** The practice can still appeal the decision on its own report (once). */
   canAppeal: boolean;
 };
 
-/** The practice's reviews page: every review of the org, with the latest moderation state. */
+/**
+ * The comment as the practice may read it. Held and removed texts are stored encrypted (see
+ * storedComment and applyDecision); a plain text under review is the published one the
+ * practice's report is hiding.
+ */
+function practiceVisibleComment(r: Review): string | null {
+  if (!r.comment) return null;
+  if (r.status === "published") return readComment(r.comment);
+  if (r.status === "under_review" && r.publishedAt && !isEncrypted(r.comment)) return r.comment;
+  return null;
+}
+
+/**
+ * The practice's reviews page: every review of the org, with the state of the practice's own
+ * reports. Decisions on notices from the public or on the automatic check (and their reasons,
+ * which may describe health details) are not shown to the practice.
+ */
 export async function practiceReviews(orgId: string, now: Date = new Date()): Promise<PracticeReviewRow[]> {
   const rows = await db.select().from(reviews).where(eq(reviews.orgId, orgId)).orderBy(desc(reviews.createdAt)).limit(300);
   const ids = rows.map((r) => r.id);
@@ -544,12 +639,13 @@ export async function practiceReviews(orgId: string, now: Date = new Date()): Pr
     : [];
   return rows.map((r) => {
     const history = reports.filter((x) => x.reviewId === r.id);
-    const latest = history[0] ?? null;
-    const target = appealTarget(history, now);
+    const chain = practiceChain(history);
+    const latest = chain[0] ?? null;
+    const target = practiceAppealTarget(history, now);
     return {
       id: r.id,
       rating: r.rating,
-      comment: r.publishedAt ? readComment(r.comment) : null,
+      comment: practiceVisibleComment(r),
       authorDisplay: r.authorDisplay,
       authorName: r.authorDisplay === "first_initial" ? r.authorName : null,
       locale: r.locale,
@@ -565,11 +661,11 @@ export async function practiceReviews(orgId: string, now: Date = new Date()): Pr
             status: latest.status,
             createdAt: latest.createdAt,
             decision: latest.decision,
-            decisionReason: latest.decisionReason,
+            decisionReason: readDecisionReason(latest.decisionReason),
             byPractice: latest.reporterUserId != null,
           }
         : null,
-      canAppeal: Boolean(target && target !== "final" && r.status !== "withdrawn"),
+      canAppeal: Boolean(target && target !== "final" && r.status === "published" && !chain.some(isOpen)),
     };
   });
 }
@@ -671,7 +767,8 @@ const dayLabel = (date: Date, tz: string, locale: Locale) => fmtDay(zonedDate(da
 /**
  * Ask the author for their side (7 days). Sent through the patient's channel (guardian routing,
  * opt-outs, restriction respected); returns sent: false when they can't be reached, and the
- * moderator then decides on what they have.
+ * moderator then decides on what they have. The message says the review is hidden only when it
+ * is (the practice's report hides it; a notice from the public or an appeal doesn't).
  */
 export async function askAuthor(admin: Moderator, reportId: string, now: Date = new Date()): Promise<{ ok: true; sent: boolean } | { ok: false; code: ModerationError }> {
   const [report] = await db.select().from(reviewReports).where(and(eq(reviewReports.id, reportId), eq(reviewReports.status, "open")));
@@ -686,7 +783,7 @@ export async function askAuthor(admin: Moderator, reportId: string, now: Date = 
     orgId: d.org.id,
     patient: d.patient,
     ns: "reviewEmails",
-    kind: "moderationRequest",
+    kind: ctx.review.status === "published" ? "moderationRequestVisible" : "moderationRequestHidden",
     vars: { practice: d.org.name, date: dayLabel(due, d.org.timezone, locale), url },
     url,
     appointmentId: d.appointment.id,
@@ -717,10 +814,10 @@ export async function authorModerationView(token: string, now: Date = new Date()
   const responseDue = report.patientAskedAt ? new Date(report.patientAskedAt.getTime() + AUTHOR_RESPONSE_DAYS * DAY_MS) : null;
   const appealUntil = report.decidedAt ? new Date(report.decidedAt.getTime() + APPEAL_DAYS * DAY_MS) : null;
   return {
-    report,
-    review: { ...ctx.review, comment: readComment(ctx.review.comment) },
+    report: withReadableReason(report),
+    review: { ...ctx.review, comment: readComment(ctx.review.comment), removedReason: readRemovedReason(ctx.review.removedReason) },
     org: ctx.details.org,
-    appeal: appeal ?? null,
+    appeal: appeal ? withReadableReason(appeal) : null,
     responseDue,
     appealUntil,
     canRespond: report.status === "awaiting_patient" && !report.patientResponse && responseDue != null && now <= responseDue,
@@ -815,15 +912,41 @@ async function applyDecision(tx: Tx, review: Review, decision: "keep" | "remove"
   } else {
     await tx
       .update(reviews)
-      .set({ status: "removed", published: false, removedReason: reason, decidedAt: now, comment: storedComment(readComment(review.comment), true) })
+      .set({
+        status: "removed",
+        published: false,
+        removedReason: encrypt(reason, REMOVED_AAD),
+        decidedAt: now,
+        comment: storedComment(readComment(review.comment), true),
+      })
       .where(eq(reviews.id, review.id));
   }
+}
+
+/**
+ * Whether a decision on `report` changes the review row. Several reports about one review can be
+ * open at once (the practice's and a notice from the public), so:
+ *  - a removed review comes back only through an appeal of the decision that removed it (a later
+ *    decision on another report, or an appeal of an older decision, leaves it removed);
+ *  - "keep" doesn't publish a review another open report from the practice is hiding: that report
+ *    still waits for its own decision.
+ */
+function decisionApplies(report: ReviewReport, review: Review, history: readonly ReviewReport[], decision: "keep" | "remove"): boolean {
+  if (review.status === "removed") {
+    const removal = history
+      .filter((h) => h.decision === "remove" && h.decidedAt)
+      .sort((a, b) => b.decidedAt!.getTime() - a.decidedAt!.getTime())[0];
+    return Boolean(report.appealOfId && removal && report.appealOfId === removal.id);
+  }
+  const otherHiding = history.some((h) => h.id !== report.id && isOpen(h) && !h.appealOfId && h.reporterUserId != null);
+  return !(decision === "keep" && otherHiding);
 }
 
 /**
  * Decide a report or an appeal: keep or remove the review, with a statement of reasons sent to
  * the author, to the practice when it reported, and to a member of the public who sent a notice.
  * An appeal must be decided by someone other than the moderator who took the first decision.
+ * The decision is always recorded and sent; whether it changes the review is decisionApplies().
  */
 export async function decideReport(
   admin: Moderator,
@@ -844,13 +967,21 @@ export async function decideReport(
   const ctx = await reviewContext(report.reviewId);
   if (!ctx || ctx.review.status === "withdrawn") return { ok: false, code: "not_found" };
   const isAppeal = Boolean(report.appealOfId);
+  const history = await db.select().from(reviewReports).where(eq(reviewReports.reviewId, report.reviewId));
+  const applies = decisionApplies(report, ctx.review, history, i.decision);
 
   await db.transaction(async (tx) => {
     await tx
       .update(reviewReports)
-      .set({ decision: i.decision, decisionReason: reason, decidedByUserId: admin.id, decidedAt: now, status: isAppeal ? "closed" : "decided" })
+      .set({
+        decision: i.decision,
+        decisionReason: encrypt(reason, DECISION_AAD),
+        decidedByUserId: admin.id,
+        decidedAt: now,
+        status: isAppeal ? "closed" : "decided",
+      })
       .where(eq(reviewReports.id, report.id));
-    await applyDecision(tx, ctx.review, i.decision, reason, now);
+    if (applies) await applyDecision(tx, ctx.review, i.decision, reason, now);
     await audit(
       {
         orgId: report.orgId,
@@ -858,7 +989,7 @@ export async function decideReport(
         action: "review.moderate",
         entity: { type: "review", id: report.reviewId },
         reason,
-        metadata: { reportId: report.id, decision: i.decision, appeal: isAppeal, ground: report.ground },
+        metadata: { reportId: report.id, decision: i.decision, appeal: isAppeal, ground: report.ground, applied: applies },
       },
       tx,
     );
@@ -882,7 +1013,7 @@ export async function decideHeldReview(
   if (!reason) return { ok: false, code: "reason_required" };
   const ctx = await reviewContext(i.reviewId);
   if (!ctx || ctx.review.status !== "under_review") return { ok: false, code: "not_found" };
-  if (await openReport(db, ctx.review.id)) return { ok: false, code: "not_found" };
+  if (await hidingReport(db, ctx.review.id)) return { ok: false, code: "not_found" };
   const flags = ctx.review.flags ?? [];
   const reportId = newId();
   await db.transaction(async (tx) => {
@@ -896,7 +1027,7 @@ export async function decideHeldReview(
       details: null,
       status: "decided",
       decision: i.decision,
-      decisionReason: reason,
+      decisionReason: encrypt(reason, DECISION_AAD),
       decidedByUserId: admin.id,
       decidedAt: now,
       createdAt: now,
@@ -957,28 +1088,32 @@ async function notifyDecision(i: {
     logError("reviews", err, { step: "notify_author", reportId: report.id });
   }
 
-  // The side that reported: the practice (the staff member who reported, else the practice's address)...
-  const original = report.appealOfId ? (await db.select().from(reviewReports).where(eq(reviewReports.id, report.appealOfId)))[0] : report;
-  if (original?.reporterUserId) {
-    const [reporter] = await db.select({ email: users.email, locale: users.locale }).from(users).where(eq(users.id, original.reporterUserId));
+  // The practice, when the report being decided is its own (a report or its appeal) or the author
+  // appealed the decision on the practice's report: the staff member who reported, else the
+  // practice's address.
+  const original = report.appealOfId ? ((await db.select().from(reviewReports).where(eq(reviewReports.id, report.appealOfId)))[0] ?? null) : report;
+  const practiceReporterId = report.reporterUserId ?? (original && !original.appealOfId ? original.reporterUserId : null);
+  if (practiceReporterId) {
+    const [reporter] = await db.select({ email: users.email, locale: users.locale }).from(users).where(eq(users.id, practiceReporterId));
     const to = reporter?.email ?? ctx.orgEmail ?? ctx.orgPrivacyEmail;
     const plocale = isLocale(reporter?.locale) ? reporter.locale : ctx.orgLocale;
     if (to) {
       const t = getT(plocale, "reviewEmails");
-      const finalNote = isAppeal || original.id !== report.id ? t("practice.final") : t("practice.appeal");
+      // Only a decision that kept the review can be appealed by the practice; the author can appeal a removal.
+      const note = isAppeal ? t("practice.final") : decision === "keep" ? t("practice.appeal") : t("practice.authorMayAppeal");
       await platformEmail({
         to,
         locale: plocale,
         orgId: d.org.id,
         subject: decision === "keep" ? t("practice.keptSubject") : t("practice.removedSubject"),
         intro: decision === "keep" ? t("practice.keptBody", { practice: d.org.name, reason }) : t("practice.removedBody", { practice: d.org.name, reason }),
-        note: finalNote,
+        note,
         button: { label: t("practice.open"), url: absoluteUrl("/dashboard/reviews") },
         footer: t("practice.footer"),
       });
     }
   }
-  // ...or a member of the public who sent a notice.
+  // A member of the public whose notice is decided (or whose notice's decision the author appealed).
   if (original && !original.reporterUserId && original.reporterContactHash && original.reporterContactHash !== AUTO_CHECK && original.reporterContactHash !== AUTHOR_APPEAL) {
     const notice = readReportDetails(original.details);
     if (notice.email) {
@@ -1061,7 +1196,7 @@ export async function moderationQueue(): Promise<{ reports: QueueReport[]; held:
     orgName,
     practitionerName,
     source: report.reporterUserId ? "practice" : report.reporterContactHash === AUTHOR_APPEAL ? "author" : "public",
-    previous: previous.find((p) => p.id === report.appealOfId) ?? null,
+    previous: ((x) => (x ? withReadableReason(x) : null))(previous.find((p) => p.id === report.appealOfId)),
     responseDue: report.patientAskedAt ? new Date(report.patientAskedAt.getTime() + AUTHOR_RESPONSE_DAYS * DAY_MS) : null,
     decideBy: new Date(report.createdAt.getTime() + AUTHOR_RESPONSE_DAYS * DAY_MS),
   }));

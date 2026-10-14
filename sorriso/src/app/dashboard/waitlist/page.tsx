@@ -1,6 +1,7 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { Hourglass, Lock } from "lucide-react";
 import type { Metadata } from "next";
+import Link from "next/link";
 import { removeWaitlistEntry } from "@/app/dashboard/actions/waitlist";
 import { ActionButton } from "@/components/dashboard/ActionButton";
 import { Badge, Card, EmptyState, PageHeader } from "@/components/ui";
@@ -19,8 +20,10 @@ export async function generateMetadata(): Promise<Metadata> {
 
 /**
  * The waitlist (calendar.read). Contacts only with patient.contact.read, the patient's note only
- * with appointment.notes.read, restricted patients as a placeholder without
- * patient.restricted.read. Showing the list is recorded in the access log (patient.view, count).
+ * with appointment.notes.read. A restricted (Art. 18) or erased patient shows no contacts and no
+ * note to anyone, only the name (a placeholder without patient.restricted.read) and a way to the
+ * patient record, which asks for a reason. Showing the list is recorded in the access log
+ * (patient.view, count).
  */
 export default async function WaitlistPage() {
   const s = await requirePermission("calendar.read");
@@ -30,6 +33,7 @@ export default async function WaitlistPage() {
   const seeContacts = can(s.role, "patient.contact.read");
   const seeNotes = can(s.role, "appointment.notes.read");
   const seeRestricted = can(s.role, "patient.restricted.read");
+  const openRecords = seeRestricted && can(s.role, "patient.read");
   const canWrite = can(s.role, "appointment.write");
   const rows = await db
     .select({
@@ -42,6 +46,7 @@ export default async function WaitlistPage() {
         offersSent: waitlist.offersSent,
       },
       patient: {
+        id: patients.id,
         firstName: patients.firstName,
         lastName: patients.lastName,
         phone: patients.phone,
@@ -63,17 +68,20 @@ export default async function WaitlistPage() {
     .limit(100);
   const active = rows.filter((r) => r.w.status === "active");
   const booked = rows.filter((r) => r.w.status === "booked");
-  const masked = (p: (typeof rows)[number]["patient"]) => Boolean(p.restrictedAt || p.erasedAt) && !seeRestricted;
+  const restricted = (p: (typeof rows)[number]["patient"]) => Boolean(p.restrictedAt || p.erasedAt);
+  const masked = (p: (typeof rows)[number]["patient"]) => restricted(p) && !seeRestricted;
   const nameOf = (p: (typeof rows)[number]["patient"]) =>
     masked(p) ? (p.erasedAt ? tc("erasedPatient") : tc("restrictedPatient")) : fullName(p);
 
-  // Notes are fetched separately, only for viewers who may read them (decrypting nothing otherwise).
+  // Notes are fetched separately, only for viewers who may read them and only for the entries of
+  // unrestricted patients shown here (decrypting nothing else).
   const notes = new Map<string, string>();
-  if (seeNotes && active.length) {
+  const noteIds = seeNotes ? active.filter((r) => !restricted(r.patient)).map((r) => r.w.id) : [];
+  if (noteIds.length) {
     const noteRows = await db
       .select({ id: waitlist.id, note: waitlist.note })
       .from(waitlist)
-      .where(and(eq(waitlist.orgId, s.org.id), eq(waitlist.status, "active")));
+      .where(and(eq(waitlist.orgId, s.org.id), inArray(waitlist.id, noteIds)));
     for (const r of noteRows) if (r.note) notes.set(r.id, r.note);
   }
   await auditListView(s, "waitlist", rows.length, "patient.view");
@@ -89,16 +97,25 @@ export default async function WaitlistPage() {
         <Card>
           <ul className="divide-y divide-slate-100" aria-label={t("waitlist.waiting")}>
             {active.map(({ w, patient, service, practitioner, location }) => {
-              const hidden = masked(patient);
-              const note = hidden ? undefined : notes.get(w.id);
+              const locked = restricted(patient);
+              const note = locked ? undefined : notes.get(w.id);
               return (
                 <li key={w.id} className="flex flex-wrap items-center gap-4 p-4">
                   <div className="min-w-0 flex-1">
                     <p className="flex items-center gap-1.5 font-semibold">
-                      {hidden ? <Lock size={14} className="text-amber-700" aria-hidden /> : null}
+                      {locked ? <Lock size={14} className="text-amber-700" aria-hidden /> : null}
                       {nameOf(patient)}
                     </p>
-                    {seeContacts && !hidden ? (
+                    {locked ? (
+                      <p className="text-xs text-amber-900">
+                        {t("waitlist.restricted")}{" "}
+                        {openRecords && !patient.erasedAt ? (
+                          <Link href={`/dashboard/patients/${patient.id}`} className="font-semibold underline">
+                            {t("waitlist.openRecord")}
+                          </Link>
+                        ) : null}
+                      </p>
+                    ) : seeContacts ? (
                       <p className="text-xs text-slate-600">{[formatPhone(patient.phone), patient.email].filter(Boolean).join(" · ")}</p>
                     ) : null}
                   </div>

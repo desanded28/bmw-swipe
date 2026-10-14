@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
 import { auditLog, consents, messages, organizations, patients, reminders, type OrgSettings } from "@/db/schema";
 import { createAppointment } from "@/lib/booking";
+import { newId } from "@/lib/ids";
 import { unsubscribeToken } from "@/lib/links";
 import { patientEmailHeaders, unsubscribeUrl } from "@/lib/messaging";
 import { processDueReminders } from "@/lib/reminders";
@@ -14,11 +15,11 @@ type Practice = Awaited<ReturnType<typeof createPractice>>;
 
 let p: Practice;
 let ip = 0;
-const call = (method: "GET" | "POST", query: string, body?: string) =>
+const call = (method: "GET" | "POST", query: string, body?: string, from?: string) =>
   new Request(`https://sorriso.test/api/privacy/unsubscribe?${query}`, {
     method,
     headers: {
-      "x-real-ip": `192.0.2.${(ip++ % 250) + 1}`,
+      "x-real-ip": from ?? `192.0.2.${(ip++ % 250) + 1}`,
       "accept-language": "en",
       ...(body ? { "content-type": "application/x-www-form-urlencoded" } : {}),
     },
@@ -131,6 +132,35 @@ describe("/api/privacy/unsubscribe", () => {
     expect(res.status).toBe(200);
     const [patient] = await db.select().from(patients).where(eq(patients.id, d.patient.id));
     expect(patient.emailOptIn).toBe(false);
+  });
+
+  it("never drops a valid one-click POST because of its network: the mailbox provider sends everyone's", async () => {
+    // One provider address posting for 40 patients in a few minutes (beyond the 30 a network may
+    // send with bad tokens): every withdrawal is recorded.
+    const provider = "198.51.100.77";
+    const ids: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      const id = newId();
+      await db.insert(patients).values({ id, orgId: p.orgId, firstName: "Bulk", lastName: `P${i}`, email: `bulk${i}-${id}@example.com`, locale: "it", emailOptIn: true });
+      ids.push(id);
+    }
+    for (const id of ids) {
+      const res = await POST(call("POST", `t=${encodeURIComponent(unsubscribeToken(id, "email"))}&c=email`, "List-Unsubscribe=One-Click", provider));
+      expect(res.status).toBe(200);
+    }
+    const off = await db.select({ id: patients.id, emailOptIn: patients.emailOptIn }).from(patients).where(eq(patients.orgId, p.orgId));
+    expect(off.filter((r) => ids.includes(r.id)).every((r) => r.emailOptIn === false)).toBe(true);
+  });
+
+  it("limits bad tokens per network, without slowing down valid ones from it", async () => {
+    const prober = "198.51.100.88";
+    const statuses: number[] = [];
+    for (let i = 0; i < 32; i++) statuses.push((await POST(call("POST", `t=nope${i}&c=email`, "List-Unsubscribe=One-Click", prober))).status);
+    expect(statuses.slice(0, 30).every((st) => st === 400)).toBe(true);
+    expect(statuses.slice(30)).toEqual([429, 429]);
+    const { d } = await emailPatientBooking();
+    const ok = await POST(call("POST", `t=${encodeURIComponent(unsubscribeToken(d.patient.id, "email"))}&c=email`, "List-Unsubscribe=One-Click", prober));
+    expect(ok.status).toBe(200);
   });
 
   it("refuses a forged or tampered token, in the visitor's language, without touching anyone", async () => {

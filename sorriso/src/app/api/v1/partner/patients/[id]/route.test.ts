@@ -4,13 +4,13 @@ import { db } from "@/db";
 import { apiKeys, auditLog, organizations, patients, type ApiScope } from "@/db/schema";
 import { newId, newToken, sha256 } from "@/lib/ids";
 import { createPractice } from "@/test/fixtures";
-import { DELETE, GET } from "./route";
+import { DELETE, ERASE_RATE, GET } from "./route";
 
 let orgId: string;
 
-async function key(scopes: ApiScope[]) {
+async function key(scopes: ApiScope[], allowedIps: string[] | null = null) {
   const secret = `sk_${newToken()}`;
-  await db.insert(apiKeys).values({ id: newId(), orgId, name: "test", prefix: secret.slice(0, 10), keyHash: sha256(secret), scopes });
+  await db.insert(apiKeys).values({ id: newId(), orgId, name: "test", prefix: secret.slice(0, 10), keyHash: sha256(secret), scopes, allowedIps });
   return secret;
 }
 
@@ -42,6 +42,21 @@ describe("partner API: /api/v1/partner/patients/:id", () => {
     expect(res.status).toBe(403);
     expect((await res.json()).error.code).toBe("insufficient_scope");
     expect(res.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  it("honours the key's IP allow-list (403 ip_not_allowed) and limits erasures per key", async () => {
+    const fenced = await key(["patients:erase", "patients:read"], ["198.51.100.7"]);
+    const p = await addPatient();
+    const res = await call(GET, p.id, fenced);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error.code).toBe("ip_not_allowed");
+
+    const eraser = await key(["patients:erase"]);
+    for (let i = 0; i < ERASE_RATE.limit; i++) expect((await call(DELETE, `missing-${i}`, eraser)).status).not.toBe(429);
+    const limited = await call(DELETE, p.id, eraser);
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toBeTruthy();
+    expect((await db.select().from(patients).where(eq(patients.id, p.id)))[0].erasedAt).toBeNull();
   });
 
   it("erases with the practice's default (restrict by default needs a keep-until date)", async () => {

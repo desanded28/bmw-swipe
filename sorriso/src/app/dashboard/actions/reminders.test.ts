@@ -1,8 +1,8 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import type { MembershipRole } from "@/db/enums";
-import { appointments, organizations, reminders } from "@/db/schema";
+import { appointments, auditLog, organizations, reminders } from "@/db/schema";
 import type { StaffSession } from "@/lib/auth";
 import { createAppointment } from "@/lib/booking";
 import { resolveSettings } from "@/lib/settings";
@@ -111,6 +111,14 @@ describe("runRemindersNow", () => {
       (await db.select().from(reminders).where(and(eq(reminders.appointmentId, id), eq(reminders.status, "pending")))).length;
     expect(await pending(a.appointment.id)).toBe(0);
     expect(await pending(b.appointment.id)).toBeGreaterThan(0);
+    // The run is on the practice's access log, with its counts (no names or contacts).
+    const [entry] = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.orgId, A.orgId), eq(auditLog.actorId, "user-owner"), eq(auditLog.entityType, "org")))
+      .orderBy(desc(auditLog.seq));
+    expect(entry).toMatchObject({ action: "appointment.update", entityId: A.orgId });
+    expect(entry.metadata).toMatchObject({ job: "reminders.run", due: expect.any(Number), sent: expect.any(Number) });
   });
 });
 
@@ -128,6 +136,24 @@ describe("saveInboundNumber", () => {
     const service = `MG${"a".repeat(32)}`;
     expect(await saveInboundNumber(service)).toMatchObject({ ok: true });
     expect(await saveInboundNumber("")).toMatchObject({ ok: true, message: expect.stringContaining("removed") });
+  });
+
+  it("refuses the platform's shared senders, however they are written", async () => {
+    const service = `MG${"b".repeat(32)}`;
+    vi.stubEnv("TWILIO_FROM", "+390200000099");
+    vi.stubEnv("TWILIO_MESSAGING_SERVICE_SID", service);
+    vi.stubEnv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886");
+    vi.stubEnv("TWILIO_SHARED_SENDERS", "+390200000098, +390200000097");
+    await signIn("owner", B.orgId);
+    for (const value of ["+39 02 0000 0099", "0039 0200000099", service, service.toUpperCase(), "+1 415 523 8886", "+390200000097"]) {
+      expect(await saveInboundNumber(value), value).toMatchObject({ ok: false, code: "shared" });
+    }
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, B.orgId));
+    expect(org.inboundNumber).toBeNull();
+    // A Messaging Service of the practice's own is stored as Twilio writes it.
+    expect(await saveInboundNumber(`MG${"C".repeat(32)}`)).toMatchObject({ ok: true });
+    expect((await db.select().from(organizations).where(eq(organizations.id, B.orgId)))[0].inboundNumber).toBe(`MG${"c".repeat(32)}`);
+    await saveInboundNumber("");
   });
 });
 

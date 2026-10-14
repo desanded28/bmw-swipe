@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { appointments, locations, organizations, type Appointment, type RiskLevel } from "@/db/schema";
 import { NO_CARE_FLAGS, type CareFlags } from "@/components/dashboard/slots/contracts";
@@ -157,14 +157,15 @@ export async function riskFor(
   if (!(await isAllowed(a.patientId, "adaptive_reminders", tx))) return null;
   const settings = resolveSettings(org.settings as Parameters<typeof resolveSettings>[0]);
   // An objection to no-show tracking keeps the attendance history out of the score.
-  const history = (await isAllowed(a.patientId, "no_show_tracking", tx))
-    ? await attendance(tx, a, settings.booking.cancelUntilHours, now)
-    : { noShows: 0, completed: 0, lateCancels: 0 };
+  const tracked = await isAllowed(a.patientId, "no_show_tracking", tx);
+  const history = tracked ? await attendance(tx, a, settings.booking.cancelUntilHours, now) : { noShows: 0, completed: 0, lateCancels: 0 };
   const local = zonedParts(a.startsAt, timezone);
   return computeRisk({
     history24m: history,
     leadTimeHours: Math.max(0, (a.startsAt.getTime() - a.createdAt.getTime()) / HOUR_MS),
-    isNewPatient: a.isNewPatient || history.completed === 0,
+    // Without the history (objection), only the booking's own "first visit" mark counts: a
+    // withheld history must never make a long-standing patient look new.
+    isNewPatient: a.isNewPatient || (tracked && history.completed === 0),
     unconfirmedAtT24: a.confirmation !== "confirmed" && now.getTime() >= a.startsAt.getTime() - 24 * HOUR_MS,
     weekday: local.weekday,
     hour: Math.floor(local.minutes / 60),
@@ -196,23 +197,24 @@ export async function refreshAppointmentRisk(tx: Tx, appointmentId: string, now:
 /** How far ahead the scheduled refresh looks, and how old a stored risk may get. */
 const REFRESH_AHEAD_MS = 7 * DAY_MS;
 const REFRESH_EVERY_MS = 6 * HOUR_MS;
+/** A stored risk further ahead is re-checked this often (an objection since then clears it). */
+const REFRESH_FAR_EVERY_MS = 24 * HOUR_MS;
 
 /**
  * Keep upcoming visits' risk current (run by runCareJobs every 15 minutes): visits in the next 7
  * days whose risk is older than 6 hours, or was computed before the visit's 24-hour mark and the
- * mark has passed (the "unconfirmed the day before" factor). Practices without risk-based reminders
- * get their stale values cleared. Returns how many appointments were updated.
+ * mark has passed (the "unconfirmed the day before" factor); and any later visit carrying a risk
+ * older than a day, so an objection to adaptive reminders clears it however far ahead the visit
+ * is. Practices without risk-based reminders get every stored value on a future visit cleared.
+ * Returns how many appointments were updated.
  */
 export async function refreshRisks(now: Date = new Date(), opts: { limit?: number } = {}): Promise<number> {
   const limit = opts.limit ?? 500;
   const orgs = await db.select({ id: organizations.id, settings: organizations.settings }).from(organizations);
   const on = orgs.filter((o) => getPrivacy(o).riskBasedReminders).map((o) => o.id);
   const off = orgs.filter((o) => !getPrivacy(o).riskBasedReminders).map((o) => o.id);
-  const upcoming = and(
-    inArray(appointments.status, ["scheduled", "requested"]),
-    gt(appointments.startsAt, now),
-    lte(appointments.startsAt, new Date(now.getTime() + REFRESH_AHEAD_MS)),
-  );
+  const future = and(inArray(appointments.status, ["scheduled", "requested"]), gt(appointments.startsAt, now));
+  const horizon = new Date(now.getTime() + REFRESH_AHEAD_MS);
   const ids: string[] = [];
   for (const chunk of chunks(on, 200)) {
     const rows = await db
@@ -221,17 +223,28 @@ export async function refreshRisks(now: Date = new Date(), opts: { limit?: numbe
       .where(
         and(
           inArray(appointments.orgId, chunk),
-          upcoming,
+          future,
           or(
-            isNull(appointments.riskComputedAt),
-            lt(appointments.riskComputedAt, new Date(now.getTime() - REFRESH_EVERY_MS)),
             and(
-              lt(appointments.riskComputedAt, sql`${appointments.startsAt} - ${24 * HOUR_MS}`),
-              lte(appointments.startsAt, new Date(now.getTime() + 24 * HOUR_MS)),
+              lte(appointments.startsAt, horizon),
+              or(
+                isNull(appointments.riskComputedAt),
+                lt(appointments.riskComputedAt, new Date(now.getTime() - REFRESH_EVERY_MS)),
+                and(
+                  lt(appointments.riskComputedAt, sql`${appointments.startsAt} - ${24 * HOUR_MS}`),
+                  lte(appointments.startsAt, new Date(now.getTime() + 24 * HOUR_MS)),
+                ),
+              ),
+            ),
+            and(
+              gt(appointments.startsAt, horizon),
+              isNotNull(appointments.riskLevel),
+              or(isNull(appointments.riskComputedAt), lt(appointments.riskComputedAt, new Date(now.getTime() - REFRESH_FAR_EVERY_MS))),
             ),
           ),
         ),
       )
+      .orderBy(asc(appointments.startsAt))
       .limit(limit - ids.length);
     ids.push(...rows.map((r) => r.id));
     if (ids.length >= limit) break;
@@ -249,11 +262,44 @@ export async function refreshRisks(now: Date = new Date(), opts: { limit?: numbe
     const cleared = await db
       .update(appointments)
       .set({ riskLevel: null, riskReasons: [], riskComputedAt: now })
-      .where(and(inArray(appointments.orgId, chunk), isNotNull(appointments.riskLevel), upcoming))
+      .where(and(inArray(appointments.orgId, chunk), isNotNull(appointments.riskLevel), future))
       .returning({ id: appointments.id });
     n += cleared.length;
   }
   return n;
+}
+
+/**
+ * The patient objected to adaptive reminders (Art. 21): clear the stored risk of all their future
+ * visits at once, rather than waiting for the scheduled refresh. For the objection flow (privacy
+ * center, staff-recorded objections); inside a transaction pass its `tx`. Returns the visits cleared.
+ */
+export async function clearRiskFor(tx: Tx, orgId: string, patientId: string, now: Date = new Date()): Promise<number> {
+  const cleared = await tx
+    .update(appointments)
+    .set({ riskLevel: null, riskReasons: [], riskComputedAt: now })
+    .where(
+      and(
+        eq(appointments.orgId, orgId),
+        eq(appointments.patientId, patientId),
+        inArray(appointments.status, ["scheduled", "requested"]),
+        gt(appointments.startsAt, now),
+        isNotNull(appointments.riskLevel),
+      ),
+    )
+    .returning({ id: appointments.id });
+  return cleared.length;
+}
+
+/**
+ * Of these patients, the ones whose stored risk may be shown and used: those who haven't objected
+ * to adaptive reminders (Art. 21). The stored value can predate an objection (it is refreshed on a
+ * schedule), so every reader of a stored risk checks this first.
+ */
+export async function riskAllowedFor(patientIds: readonly string[], tx: Tx = db): Promise<Set<string>> {
+  const unique = [...new Set(patientIds)];
+  const allowed = await Promise.all(unique.map((id) => isAllowed(id, "adaptive_reminders", tx)));
+  return new Set(unique.filter((_, i) => allowed[i]));
 }
 
 function chunks<T>(list: readonly T[], size: number): T[][] {
@@ -268,7 +314,9 @@ function chunks<T>(list: readonly T[], size: number): T[][] {
  * The care flags of some of the org's appointments, for the calendar and appointment lists
  * (WP2 calls it with the ids it is about to render). Every id in `apptIds` gets an entry; ids of
  * other orgs get NO_CARE_FLAGS. The result is already filtered for the viewer: redFlag stays
- * null without patient.clinical.read (`perms` is permissionsFor(role)).
+ * null without patient.clinical.read (`perms` is permissionsFor(role)). A risk is shown only
+ * where the practice uses it, for upcoming visits, and never for a patient who objected to
+ * adaptive reminders (checked live: the stored value may predate the objection).
  *
  * Not audited: it reveals a status and, to clinicians, one boolean. Opening the answers is
  * audited (patient.clinical.view, src/lib/forms.ts).
@@ -302,9 +350,11 @@ export async function loadCareFlags(
     );
   }
   const forms = await anamnesisStatuses(orgId, rows, getCare(org));
+  const isUpcoming = (r: (typeof rows)[number]) => r.status === "scheduled" || r.status === "requested";
+  // A stored risk can predate an objection to adaptive reminders: never show it once there is one.
+  const allowed = showRisk ? await riskAllowedFor(rows.filter((r) => isUpcoming(r) && r.riskLevel).map((r) => r.patientId)) : new Set<string>();
   for (const r of rows) {
-    const upcoming = r.status === "scheduled" || r.status === "requested";
-    const risk = showRisk && upcoming ? r.riskLevel : null;
+    const risk = showRisk && isUpcoming(r) && allowed.has(r.patientId) ? r.riskLevel : null;
     const f = forms.get(r.id);
     out.set(r.id, {
       riskLevel: risk,

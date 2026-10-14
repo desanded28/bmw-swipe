@@ -20,6 +20,10 @@ import { clientIpHash } from "../rate-limit";
  *   carries the contact itself, encrypted with the server key and bound to this session (AES-GCM,
  *   AAD = session id). Reading it back checks it against the stored HMAC, so a cookie can't be
  *   pointed at someone else's contact.
+ * - The same sealed part lists the records this session unlocked with the identity challenge
+ *   (surname and birth date, privacy-center.ts answerChallenge): a contact shared by two adults
+ *   keeps asking for the challenge, so the unlock has to live with the session. Sealed and bound to
+ *   the session id, it can't be forged or carried over to another session; it ends with the session.
  *
  * Writes go through the root db: don't call these inside db.transaction().
  */
@@ -49,11 +53,40 @@ export type PatientSession = {
   /** The verified contact, normalised (E.164 phone or lower-case email). */
   contact: VerifiedContact;
   contactHash: string;
+  /** Records unlocked in this session by the identity challenge (patient ids). */
+  unlocked: readonly string[];
   expiresAt: Date;
   createdAt: Date;
 };
 
 const aadFor = (sessionId: string) => `patient_sessions:${sessionId}`;
+
+/** More than any family needs; keeps the cookie small. */
+const MAX_UNLOCKED = 40;
+
+type Sealed = { contact: VerifiedContact; unlocked: string[] };
+
+function seal(sessionId: string, contact: VerifiedContact, unlocked: readonly string[]): string {
+  return encrypt(JSON.stringify({ k: contact.kind, v: contact.value, u: unlocked.slice(-MAX_UNLOCKED) }), aadFor(sessionId));
+}
+
+/** The sealed part's plaintext: JSON, or the first format's bare "kind:value". */
+function unseal(plain: string): Sealed | null {
+  if (!plain.startsWith("{")) {
+    const sep = plain.indexOf(":");
+    const kind = plain.slice(0, sep);
+    if (kind !== "phone" && kind !== "email") return null;
+    return { contact: { kind, value: plain.slice(sep + 1) }, unlocked: [] };
+  }
+  try {
+    const o = JSON.parse(plain) as { k?: unknown; v?: unknown; u?: unknown };
+    if ((o.k !== "phone" && o.k !== "email") || typeof o.v !== "string") return null;
+    const unlocked = Array.isArray(o.u) ? o.u.filter((x): x is string => typeof x === "string" && x.length > 0 && x.length <= 64) : [];
+    return { contact: { kind: o.k, value: o.v }, unlocked };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Open a session for a contact just verified with a one-time code. Returns the session and the
@@ -78,8 +111,9 @@ export async function createPatientSession(
     ipHash: clientIpHash(opts.headers),
     createdAt: now,
   });
-  const sealed = encrypt(`${contact.kind}:${value}`, aadFor(id));
-  return { session: { id, contact: { kind: contact.kind, value }, contactHash: hash, expiresAt, createdAt: now }, cookieValue: `${token}.${sealed}` };
+  const verified: VerifiedContact = { kind: contact.kind, value };
+  const sealed = seal(id, verified, []);
+  return { session: { id, contact: verified, contactHash: hash, unlocked: [], expiresAt, createdAt: now }, cookieValue: `${token}.${sealed}` };
 }
 
 /** The session behind a cookie value, or null when it is unknown, expired, or tampered with. */
@@ -96,22 +130,41 @@ export async function resolvePatientSession(cookieValue: string | null | undefin
     .from(patientSessions)
     .where(and(eq(patientSessions.id, id), gt(patientSessions.expiresAt, now)));
   if (!row) return null;
-  let plain: string;
+  let opened: Sealed | null;
   try {
-    plain = decrypt(sealed, aadFor(id));
+    opened = unseal(decrypt(sealed, aadFor(id)));
   } catch {
     return null;
   }
-  const sep = plain.indexOf(":");
-  const kind = plain.slice(0, sep);
-  const value = plain.slice(sep + 1);
-  if ((kind !== "phone" && kind !== "email") || kind !== row.contactType) return null;
-  if (contactHash(kind, value) !== row.contactHash) return null;
-  return { id, contact: { kind, value }, contactHash: row.contactHash, expiresAt: row.expiresAt, createdAt: row.createdAt };
+  if (!opened) return null;
+  const { contact, unlocked } = opened;
+  if (contact.kind !== row.contactType || contactHash(contact.kind, contact.value) !== row.contactHash) return null;
+  return { id, contact, contactHash: row.contactHash, unlocked, expiresAt: row.expiresAt, createdAt: row.createdAt };
 }
 
-/** The cookie as Next's cookies().set() takes it. */
-export function patientSessionCookie(cookieValue: string, expiresAt: Date) {
+/**
+ * The cookie value of the same session with one more record unlocked (same token, so the same
+ * session row and expiry). Null when the cookie is not a live session.
+ */
+export async function cookieWithUnlocked(
+  cookieValue: string | null | undefined,
+  patientId: string,
+  now: Date = new Date(),
+): Promise<{ session: PatientSession; cookieValue: string } | null> {
+  const session = await resolvePatientSession(cookieValue, now);
+  if (!session || !cookieValue) return null;
+  if (session.unlocked.includes(patientId)) return { session, cookieValue };
+  const unlocked = [...session.unlocked, patientId].slice(-MAX_UNLOCKED);
+  const token = cookieValue.slice(0, cookieValue.indexOf("."));
+  return { session: { ...session, unlocked }, cookieValue: `${token}.${seal(session.id, session.contact, unlocked)}` };
+}
+
+/**
+ * The cookie as Next's cookies().set() takes it. Pass `now` when re-setting the cookie of a running
+ * session: its max-age is then what is left of the 30 minutes, never a fresh 30.
+ */
+export function patientSessionCookie(cookieValue: string, expiresAt: Date, now?: Date) {
+  const left = now ? Math.floor((expiresAt.getTime() - now.getTime()) / 1000) : Math.floor(PATIENT_SESSION_TTL_MS / 1000);
   return {
     name: patientSessionCookieName(),
     value: cookieValue,
@@ -120,7 +173,7 @@ export function patientSessionCookie(cookieValue: string, expiresAt: Date) {
     secure: cookieSecure(),
     path: "/",
     expires: expiresAt,
-    maxAge: Math.max(0, Math.floor(PATIENT_SESSION_TTL_MS / 1000)),
+    maxAge: Math.max(0, Math.min(left, Math.floor(PATIENT_SESSION_TTL_MS / 1000))),
   };
 }
 
@@ -132,6 +185,21 @@ export async function getPatientSession(now: Date = new Date()): Promise<Patient
     if (session) return session;
   }
   return null;
+}
+
+/**
+ * Remember, for the rest of the current session, that it unlocked this record with the identity
+ * challenge (server actions only: it re-sets the cookie). Returns false without a live session.
+ */
+export async function rememberUnlocked(patientId: string, now: Date = new Date()): Promise<boolean> {
+  const jar = await cookies();
+  for (const name of PATIENT_SESSION_COOKIE_NAMES) {
+    const next = await cookieWithUnlocked(jar.get(name)?.value, patientId, now);
+    if (!next) continue;
+    jar.set({ ...patientSessionCookie(next.cookieValue, next.session.expiresAt, now), name });
+    return true;
+  }
+  return false;
 }
 
 /** Open a session and set its cookie (server actions and route handlers only). */

@@ -27,7 +27,7 @@ export default {
       basis: "This is needed for the care you ask for (Art. 6(1)(b) and 9(2)(h) GDPR). Optional choices need your consent, which you can withdraw at any time.",
       rights: "You can see, correct, download or delete your data at any time in the <link>privacy center</link>.",
       otherAdult:
-        "You are booking for someone else: please tell them. The practice's privacy notice is sent to their own contact, if you give one (Art. 14 GDPR).",
+        "You are booking for someone else: please tell them about this booking and point them to the practice's privacy notice below (Art. 14 GDPR).",
       guardian: "As parent or guardian, you make these choices for the child.",
     },
     links: {
@@ -42,6 +42,17 @@ export default {
     whatsappHeading: "Messages on WhatsApp",
     optionalHeading: "Optional",
     optionalHint: "Not needed to book. You can change your mind at any time in the privacy center.",
+    /** Booking for another adult: nothing is asked of the booker on the patient's behalf. */
+    otherAdult: {
+      choices:
+        "Only they can give consent for themselves, so no choices are asked of you here. They can make their own later, through the link in their messages or in the privacy center.",
+      whatsapp: "WhatsApp can't be chosen for someone else, because it needs their own consent: please choose SMS or email. They can switch to WhatsApp themselves later.",
+      // Marketplace bookings for another adult are refused until the confirmation flow is wired (OTHER_ADULT_ON_MARKETPLACE in minors.ts).
+      marketplaceRefused:
+        "On Sorriso, only the patient can agree to how Sorriso handles their booking, so adults book for themselves here. Ask them to book, or book with the practice directly on its own website or by phone.",
+      marketplaceHeld:
+        "They will get a message asking them to confirm this booking and give their own consent to Sorriso. If they don't confirm within 48 hours, the booking is cancelled.",
+    },
   },
   relation: {
     legend: "Who is this appointment for?",
@@ -190,7 +201,10 @@ export default {
       submit: "Confirm",
       wrong: "These details don't match. Check them and try again.",
       rateLimited: "Too many attempts. Try again tomorrow, or contact the practice.",
+      unavailable: "This record can't be confirmed here. Please contact the practice.",
       help: "Can't confirm? Contact the practice: {contact}.",
+      noBirthDate: "{practice} has no date of birth on this record, so it can't be confirmed here. To see it, contact the practice: {contact}.",
+      noBirthDateNoContact: "{practice} has no date of birth on this record, so it can't be confirmed here. To see it, contact the practice.",
     },
     sections: {
       details: "Your details",
@@ -423,6 +437,15 @@ export default {
     },
     notice: "Privacy notice of {practice}",
     saved: "Saved.",
+    asGuardian: "You manage these choices as the parent or guardian of {name}.",
+    /** The appointment was booked by someone other than the patient: the link alone opens nothing. */
+    locked: {
+      intro:
+        "This appointment at {practice} was booked for the patient by someone else. To protect the patient's privacy, their choices can be seen and changed only by them.",
+      heading: "Are you the patient?",
+      stepUp: "We send a one-time code to the patient's own contact on file. With it you can see your data, change your choices and download everything.",
+      refused: "Only the patient can change these choices. Use the one-time code sent to their own contact.",
+    },
     invalid: "This link is invalid or has expired. You can still use the <link>privacy center</link>.",
   },
   /** Marketplace bookings made for another adult: only that adult can confirm and consent. */
@@ -439,6 +462,13 @@ export default {
     requested: "Thank you. The practice will now confirm the appointment.",
     declined: "The appointment was cancelled. Nothing more will be done with this booking.",
     notWaiting: "This appointment doesn't need your confirmation.",
+    codeHeading: "First, get a code",
+    codeIntro: "To make sure it's really you, we send a one-time code to your own contact on file.",
+    sendCode: "Send code",
+    resend: "Send a new code",
+    codeSent: "We've sent a 6-digit code to {contact}. It expires in 5 minutes.",
+    noContact: "There is no contact of yours on file to send a code to, so the booking can't be confirmed here. Please contact the practice.",
+    neededToConfirm: "Needed to confirm",
   },
   unsubscribe: {
     title: "Unsubscribe",

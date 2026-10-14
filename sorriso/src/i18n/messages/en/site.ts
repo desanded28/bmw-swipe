@@ -177,10 +177,11 @@ export default {
       inline: "Or inline, inside an element of your page, here in German and for one practitioner:",
       attributesCaption: "Widget attributes",
       attributes: {
-        "data-clinic": "Required. Your practice's address on Sorriso (the slug).",
+        "data-clinic": "Required. Your practice's address on Sorriso (the slug). Without it the script shows nothing.",
         "data-lang":
           "The language of the form and of the patient's messages. Without it: the language of your page (its lang attribute), then the visitor's browser, then Italian.",
-        "data-target": "A CSS selector: show the form inside that element instead of a floating button.",
+        "data-target":
+          "A CSS selector: show the form inside that element instead of a floating button. If no element matches when the script runs, nothing is shown.",
         "data-practitioner": "Open the form for one practitioner (their id).",
         "data-service": "Preselect a treatment (its id).",
         "data-location": "Preselect an office (its id).",
@@ -196,7 +197,7 @@ export default {
       eventsWarning:
         "Don't forward this event to advertising or analytics tools (such as Meta or Google tags): it reveals that a visitor booked a dental appointment, which is health data. Under the data processing agreement you may use it only to show your own confirmation.",
       origins:
-        "To stop other websites from embedding your booking form, list your website's addresses under Dashboard, Privacy settings, Allowed websites. Elsewhere the widget then shows only a link that opens the booking page in a new tab.",
+        "To stop other websites from embedding your booking form, list your website's addresses under Dashboard, Privacy settings, Allowed websites. Elsewhere the widget then shows only a link that opens the booking page in a new tab. The check relies on the address your visitors' browsers send with the frame: the widget asks for it, and if you write your own iframe, don't give it <code>referrerpolicy=\"no-referrer\"</code>.",
     },
     booking: {
       title: "2. Book through the API",

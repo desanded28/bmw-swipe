@@ -1,7 +1,8 @@
 import { and, asc, eq, gt, inArray, lt, lte, sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, type Tx } from "@/db";
 import {
   appointments,
+  auditLog,
   locations,
   organizations,
   patients,
@@ -16,13 +17,14 @@ import { getAppointmentDetails, getOrgAppointmentDetails, type AppointmentDetail
 import { audit, type AuditEvent } from "./audit";
 import { BookingError, cancelAppointment, proposeAlternatives, rescheduleAppointment, type Alternative } from "./booking";
 import { absoluteUrl } from "./config";
-import { recipientFor } from "./contact";
+import { isRestricted, recipientFor } from "./contact";
 import { practitionerName } from "./format";
 import { manageTokenOf } from "./links";
 import { logError } from "./log";
 import { sendPatientMessage } from "./messaging";
 import { getPrivacy } from "./privacy/settings";
 import { cancelPendingReminders, scheduleReminders } from "./reminders";
+import { riskAllowedFor } from "./risk";
 import { resolveSettings } from "./settings";
 
 /**
@@ -32,19 +34,25 @@ import { resolveSettings } from "./settings";
  *   1. addTimeOff returns the appointments the closure covers; staff open "Rebook N patients".
  *   2. sendRebookOffers: each patient gets a discreet "we need to move your appointment" message
  *      in their language with a link to /{locale}/a/<token>/rebook; the visit is flagged
- *      needsAttention and its reminders stop (they would announce a visit that can't happen).
+ *      needsAttention, its reminders stop (they would announce a visit that can't happen) and the
+ *      offer is recorded (an audit row naming the visit's start time).
  *   3. The patient picks one of proposeAlternatives() in one tap (rescheduleAppointment with
- *      practiceMoved: the patient policies don't apply), or asks to be called.
+ *      practiceMoved: the patient policies don't apply, but only a time the assistant offers is
+ *      accepted), or asks to be called.
  *   4. Or staff cancel instead: cancelledBy 'staff', reason 'practice_unavailable' (the marketplace
  *      reliability metric counts these).
- * Whether a visit needs rebooking is never stored: it is "a closure covers it", checked live, so
- * removing the closure ends it (and brings the reminders back).
+ * Staff see every visit a closure covers (coveredByClosure, checked live). The patient is told the
+ * visit must move, and may move it, only once the practice offered it (patientRebook): an offer
+ * recorded for the visit's current time, the visit still flagged (clearing the flag withdraws the
+ * offer) and still covered (removing the closure ends it and brings the reminders back). A visit
+ * staff kept in a closure on purpose, or plan to phone about, never shows the patient anything.
  */
 
 /** The reason stored on visits staff cancel because the practice is closed. */
 export const PRACTICE_UNAVAILABLE = "practice_unavailable";
-/** confirmedVia of a visit whose patient asked to be called instead of picking a time. */
-export const CALL_REQUESTED = "rebook_call";
+/** How many times the rebooking page offers, and how many with "see more times". */
+export const REBOOK_CHOICES = 3;
+export const REBOOK_MORE_CHOICES = 9;
 
 type Closure = Pick<TimeOff, "practitionerId" | "locationId" | "roomId" | "startsAt" | "endsAt">;
 type Visit = Pick<Appointment, "practitionerId" | "locationId" | "roomId" | "startsAt" | "endsAt">;
@@ -109,10 +117,69 @@ async function coveringClosures(a: Pick<Appointment, "orgId"> & Visit): Promise<
   return rows.filter((t) => closureCovers(t, a));
 }
 
-/** Does this upcoming visit need a new time because the practice closed? */
-export async function needsRebooking(a: Pick<Appointment, "orgId" | "status"> & Visit, now: Date = new Date()): Promise<boolean> {
+/** Staff side: is this an upcoming visit a closure covers (it needs a new time, or a decision)? */
+export async function coveredByClosure(a: Pick<Appointment, "orgId" | "status"> & Visit, now: Date = new Date()): Promise<boolean> {
   if (!(UPCOMING as readonly string[]).includes(a.status) || a.startsAt <= now) return false;
   return (await coveringClosures(a)).length > 0;
+}
+
+// ---------------------------------------------------------------- what the practice told the patient
+
+/** The audit metadata that records an offer, and a patient's request to be called. */
+const OFFER = "offer";
+const CALL = "call_requested";
+
+type RebookMarks = { offers: Set<number>; calls: Set<number> };
+
+/**
+ * The offers sent and the calls requested for these visits, by the visit start they were about
+ * (audit rows appointment.update with metadata.rebook and metadata.startsAt). A visit moved since
+ * has a new start, so an offer about the old time no longer counts.
+ */
+async function rebookMarks(orgId: string, ids: readonly string[], tx: Tx = db): Promise<Map<string, RebookMarks>> {
+  const out = new Map<string, RebookMarks>();
+  for (let i = 0; i < ids.length; i += 400) {
+    const rows = await tx
+      .select({ id: auditLog.entityId, metadata: auditLog.metadata })
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.orgId, orgId),
+          eq(auditLog.entityType, "appointment"),
+          inArray(auditLog.entityId, ids.slice(i, i + 400)),
+          eq(auditLog.action, "appointment.update"),
+          sql`json_extract(${auditLog.metadata}, '$.rebook') in (${OFFER}, ${CALL})`,
+        ),
+      );
+    for (const r of rows) {
+      const start = Number(r.metadata?.startsAt);
+      if (!r.id || !Number.isFinite(start)) continue;
+      const m = out.get(r.id) ?? { offers: new Set<number>(), calls: new Set<number>() };
+      (r.metadata?.rebook === OFFER ? m.offers : m.calls).add(start);
+      out.set(r.id, m);
+    }
+  }
+  return out;
+}
+
+const offered = (m: RebookMarks | undefined, a: Pick<Appointment, "startsAt">) => Boolean(m?.offers.has(a.startsAt.getTime()));
+const callRequested = (m: RebookMarks | undefined, a: Pick<Appointment, "startsAt">) => Boolean(m?.calls.has(a.startsAt.getTime()));
+
+export type PatientRebook = { open: boolean; callRequested: boolean };
+
+/**
+ * Patient side: may the holder of this visit's link be told it must move, and move it? Only when
+ * the practice offered it (sendRebookOffers, for the visit's current time), the visit is still
+ * flagged needsAttention (staff clearing it withdraws the offer) and a closure still covers it.
+ */
+export async function patientRebook(
+  a: Pick<Appointment, "id" | "orgId" | "status" | "needsAttention"> & Visit,
+  now: Date = new Date(),
+): Promise<PatientRebook> {
+  if (!a.needsAttention || !(UPCOMING as readonly string[]).includes(a.status) || a.startsAt <= now) return { open: false, callRequested: false };
+  const m = (await rebookMarks(a.orgId, [a.id])).get(a.id);
+  if (!offered(m, a) || !(await coveredByClosure(a, now))) return { open: false, callRequested: false };
+  return { open: true, callRequested: callRequested(m, a) };
 }
 
 export type ClashRow = {
@@ -120,18 +187,31 @@ export type ClashRow = {
   start: Date;
   end: Date;
   timezone: string;
+  /** Empty when `masked`. */
   patientName: string;
+  /** A restricted patient (Art. 18) and a viewer without patient.restricted.read: show a placeholder. */
+  masked: boolean;
   practitionerName: string;
   locationName: string;
-  /** An offer went out (or something else needs a look). */
+  /** The visit is flagged for staff (an offer went out, or something else needs a look). */
   needsAttention: boolean;
+  /** An offer was sent for the visit's current time. */
+  offerSent: boolean;
   callRequested: boolean;
   /** The patient (or their guardian) has a phone or email we may use. */
   reachable: boolean;
 };
 
-/** The visits one closure covers, for the "Rebook N patients" drawer. Org-scoped. */
-export async function listClosureClashes(orgId: string, closureId: string, now: Date = new Date()): Promise<ClashRow[]> {
+/**
+ * The visits one closure covers, for the "Rebook N patients" drawer. Org-scoped. A restricted
+ * patient's name is masked unless `restricted` (the viewer has patient.restricted.read).
+ */
+export async function listClosureClashes(
+  orgId: string,
+  closureId: string,
+  now: Date = new Date(),
+  opts: { restricted?: boolean } = {},
+): Promise<ClashRow[]> {
   const [t] = await db.select().from(timeOff).where(and(eq(timeOff.id, closureId), eq(timeOff.orgId, orgId)));
   if (!t) return [];
   const ids = await clashingAppointments(orgId, t, now);
@@ -144,19 +224,25 @@ export async function listClosureClashes(orgId: string, closureId: string, now: 
     .innerJoin(locations, eq(locations.id, appointments.locationId))
     .where(and(eq(appointments.orgId, orgId), inArray(appointments.id, ids)))
     .orderBy(asc(appointments.startsAt));
+  const marks = await rebookMarks(orgId, ids);
   return rows.map(({ a, p, pr, l }) => {
+    const restricted = isRestricted(p);
+    const masked = restricted && !opts.restricted;
     const to = recipientFor(p, now);
     return {
       id: a.id,
       start: a.startsAt,
       end: a.endsAt,
       timezone: l.timezone,
-      patientName: `${p.firstName} ${p.lastName}`.trim(),
+      patientName: masked ? "" : `${p.firstName} ${p.lastName}`.trim(),
+      masked,
       practitionerName: practitionerName(pr),
       locationName: l.name,
       needsAttention: a.needsAttention,
-      callRequested: a.confirmedVia === CALL_REQUESTED,
-      reachable: Boolean((to.phone && p.smsOptIn) || (to.email && p.emailOptIn)),
+      offerSent: offered(marks.get(a.id), a),
+      callRequested: callRequested(marks.get(a.id), a),
+      // Restricted patients get no messages (sendRebookOffers): the practice calls them.
+      reachable: !restricted && Boolean((to.phone && p.smsOptIn) || (to.email && p.emailOptIn)),
     };
   });
 }
@@ -171,9 +257,10 @@ export type RebookOffersResult = { sent: string[]; unreachable: string[]; skippe
 /**
  * Offer new times to the patients of these visits (the practice closed). Only upcoming visits of
  * this org that a closure covers get one; each is flagged needsAttention, its pending reminders
- * are cancelled, and the patient (the guardian for a child under 14) gets careMessages.practiceMoved
- * in their language with the rebooking link. Restricted patients get nothing (unreachable: call
- * them). Audited per visit as appointment.update.
+ * are cancelled, the offer is recorded for the visit's current time (what lets the patient's link
+ * open the rebooking page, patientRebook), and the patient (the guardian for a child under 14)
+ * gets careMessages.practiceMoved in their language with the rebooking link. Restricted patients
+ * get nothing (unreachable: call them). Audited per visit as appointment.update.
  */
 export async function sendRebookOffers(
   orgId: string,
@@ -186,7 +273,7 @@ export async function sendRebookOffers(
     try {
       const d = await getOrgAppointmentDetails(orgId, id);
       const token = d ? manageTokenOf(d.appointment) : null;
-      if (!d || !token || !(await needsRebooking(d.appointment, now))) {
+      if (!d || !token || !(await coveredByClosure(d.appointment, now))) {
         out.skipped.push(id);
         continue;
       }
@@ -197,6 +284,18 @@ export async function sendRebookOffers(
           .where(and(eq(appointments.id, id), eq(appointments.orgId, orgId)));
         // Reminders would announce a visit that can't take place.
         await cancelPendingReminders(tx, id, ["reminder"]);
+        // The offer, for this start time: it commits with the flag.
+        await audit(
+          {
+            orgId,
+            actor,
+            action: "appointment.update",
+            entity: { type: "appointment", id },
+            metadata: { rebook: OFFER, startsAt: d.appointment.startsAt.getTime() },
+            at: now,
+          },
+          tx,
+        );
       });
       const to = recipientFor(d.patient, now);
       const url = rebookUrl(token);
@@ -217,7 +316,7 @@ export async function sendRebookOffers(
         actor,
         action: "appointment.update",
         entity: { type: "appointment", id },
-        metadata: { rebook: "offer", delivered, skipReason: res.ok ? null : res.reason },
+        metadata: { rebook: "offer_delivery", delivered, skipReason: res.ok ? null : res.reason },
         at: now,
       });
     } catch (err) {
@@ -237,7 +336,7 @@ export async function cancelForClosure(orgId: string, ids: readonly string[], ac
   const done: string[] = [];
   for (const id of [...new Set(ids)]) {
     const [a] = await db.select().from(appointments).where(and(eq(appointments.id, id), eq(appointments.orgId, orgId)));
-    if (!a || !(await needsRebooking(a, now))) continue;
+    if (!a || !(await coveredByClosure(a, now))) continue;
     const res = await cancelAppointment(id, { by: "staff", reason: PRACTICE_UNAVAILABLE, notifyPatient: true, now });
     if (!res) continue;
     done.push(id);
@@ -268,6 +367,11 @@ export async function afterClosureRemoved(orgId: string, closure: Closure, now: 
 
 // ---------------------------------------------------------------- the patient's page
 
+/** The rebooking state behind a patient's link. A restricted record's link offers nothing (the practice calls). */
+async function linkRebook(d: AppointmentDetails, now: Date): Promise<PatientRebook> {
+  return isRestricted(d.patient) ? { open: false, callRequested: false } : patientRebook(d.appointment, now);
+}
+
 export type RebookChoice = Alternative & { key: string; practitionerName: string; locationName: string };
 
 export type RebookState =
@@ -287,12 +391,13 @@ function parseChoiceKey(key: string): { practitionerId: string; locationId: stri
   return { practitionerId, locationId, start };
 }
 
-/** What the rebooking page shows for this link. */
-export async function rebookState(token: string, now: Date = new Date(), n = 3): Promise<RebookState> {
+/** What the rebooking page shows for this link: `n` times (REBOOK_CHOICES, or REBOOK_MORE_CHOICES). */
+export async function rebookState(token: string, now: Date = new Date(), n = REBOOK_CHOICES): Promise<RebookState> {
   const d = await getAppointmentDetails({ token });
   if (!d) return { kind: "invalid" };
-  if (!(await needsRebooking(d.appointment, now))) return { kind: "not_needed", d };
-  const alternatives = await proposeAlternatives(d.appointment.id, n, { now, orgId: d.org.id });
+  const state = await linkRebook(d, now);
+  if (!state.open) return { kind: "not_needed", d };
+  const alternatives = await proposeAlternatives(d.appointment.id, Math.min(n, REBOOK_MORE_CHOICES), { now, orgId: d.org.id });
   const pIds = [...new Set(alternatives.map((a) => a.practitionerId))];
   const lIds = [...new Set(alternatives.map((a) => a.locationId))];
   const people = pIds.length ? await db.select().from(practitioners).where(and(eq(practitioners.orgId, d.org.id), inArray(practitioners.id, pIds))) : [];
@@ -300,7 +405,7 @@ export async function rebookState(token: string, now: Date = new Date(), n = 3):
   return {
     kind: "needed",
     d,
-    callRequested: d.appointment.confirmedVia === CALL_REQUESTED,
+    callRequested: state.callRequested,
     choices: alternatives.map((a) => {
       const p = people.find((x) => x.id === a.practitionerId);
       return {
@@ -318,18 +423,22 @@ export type AcceptResult =
   | { ok: false; reason: "invalid" | "not_needed" | "not_offered" | "taken" };
 
 /**
- * The patient picked a new time. The choice must keep the practitioner or the office (what the
- * assistant offers); the slot is checked again by rescheduleAppointment (practiceMoved), so a
- * time taken in the meantime is refused ("taken") and the page shows fresh choices.
+ * The patient picked a new time. Only a time the assistant offers right now is accepted: the key
+ * must be one of proposeAlternatives() (the page shows at most REBOOK_MORE_CHOICES of them, a
+ * prefix of the same ranking), so no other day, office, horizon or step can be posted. A time
+ * taken in the meantime, or any other key, is "taken" and the page shows fresh choices. The slot
+ * is checked again by rescheduleAppointment (practiceMoved) inside its transaction.
  */
 export async function acceptAlternative(token: string, key: string, opts: { headers?: Headers; now?: Date } = {}): Promise<AcceptResult> {
   const now = opts.now ?? new Date();
   const d = await getAppointmentDetails({ token });
   if (!d) return { ok: false, reason: "invalid" };
-  if (!(await needsRebooking(d.appointment, now))) return { ok: false, reason: "not_needed" };
+  if (!(await linkRebook(d, now)).open) return { ok: false, reason: "not_needed" };
   const choice = parseChoiceKey(key);
   const a = d.appointment;
   if (!choice || (choice.practitionerId !== a.practitionerId && choice.locationId !== a.locationId)) return { ok: false, reason: "not_offered" };
+  const pool = await proposeAlternatives(a.id, REBOOK_MORE_CHOICES, { now, orgId: d.org.id });
+  if (!pool.some((alt) => choiceKey(alt) === key)) return { ok: false, reason: "taken" };
   try {
     const after = await rescheduleAppointment(a.id, {
       startsAt: choice.start,
@@ -355,16 +464,22 @@ export async function acceptAlternative(token: string, key: string, opts: { head
   }
 }
 
-/** The patient would rather be called than pick a time: the visit shows on the front desk's call list. */
+/**
+ * The patient would rather be called than pick a time: the visit goes to the top of the front
+ * desk's call list. Recorded for the visit's current time (an audit row); the visit's
+ * confirmation is left as it was: the patient declined nothing.
+ */
 export async function requestCallBack(token: string, opts: { headers?: Headers; now?: Date } = {}): Promise<"ok" | "invalid" | "not_needed"> {
   const now = opts.now ?? new Date();
   const d = await getAppointmentDetails({ token });
   if (!d) return "invalid";
-  if (!(await needsRebooking(d.appointment, now))) return "not_needed";
+  const state = await linkRebook(d, now);
+  if (!state.open) return "not_needed";
+  if (state.callRequested) return "ok";
   await db.transaction(async (tx) => {
     await tx
       .update(appointments)
-      .set({ needsAttention: true, confirmation: "declined", confirmedVia: CALL_REQUESTED, confirmedAt: now, updatedAt: now })
+      .set({ needsAttention: true, updatedAt: now })
       .where(and(eq(appointments.id, d.appointment.id), eq(appointments.orgId, d.org.id)));
     await audit(
       {
@@ -372,7 +487,7 @@ export async function requestCallBack(token: string, opts: { headers?: Headers; 
         actor: { type: "patient_link", id: d.appointment.id },
         action: "appointment.update",
         entity: { type: "appointment", id: d.appointment.id },
-        metadata: { rebook: "call_requested" },
+        metadata: { rebook: CALL, startsAt: d.appointment.startsAt.getTime() },
         headers: opts.headers,
         at: now,
       },
@@ -387,8 +502,11 @@ export async function requestCallBack(token: string, opts: { headers?: Headers; 
 export type CallRow = {
   appointmentId: string;
   patientId: string;
+  /** Empty when `masked`. */
   patientName: string;
-  /** null unless the viewer may read contacts. */
+  /** A restricted patient (Art. 18) and a viewer without patient.restricted.read: show a placeholder. */
+  masked: boolean;
+  /** null unless the viewer may read contacts; always null for a restricted patient (open the record with a reason). */
   phone: string | null;
   start: Date;
   timezone: string;
@@ -401,9 +519,11 @@ export type CallRow = {
 /**
  * Who the front desk should phone: visits the practice must move (closure) whose patient hasn't
  * picked a new time — first those who asked to be called — and, where the practice uses no-show
- * risk, unconfirmed high-risk visits in the next 48 hours. Help only: nothing here blocks anything.
+ * risk, unconfirmed high-risk visits in the next 48 hours of patients who haven't objected to
+ * adaptive reminders. Help only: nothing here blocks anything. Restricted patients are masked
+ * unless `restricted` (the viewer has patient.restricted.read), and never carry a phone.
  */
-export async function frontDeskCallList(orgId: string, now: Date, opts: { contacts: boolean }): Promise<CallRow[]> {
+export async function frontDeskCallList(orgId: string, now: Date, opts: { contacts: boolean; restricted?: boolean }): Promise<CallRow[]> {
   const [org] = await db.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, orgId));
   if (!org) return [];
   const rows = await db
@@ -425,32 +545,50 @@ export async function frontDeskCallList(orgId: string, now: Date, opts: { contac
     .orderBy(asc(appointments.startsAt))
     .limit(300);
   const showRisk = getPrivacy(org).riskBasedReminders;
+  const isRisky = (a: Appointment) =>
+    showRisk && a.riskLevel === "high" && a.confirmation !== "confirmed" && a.startsAt.getTime() <= now.getTime() + 48 * 3_600_000;
+  // A stored risk can predate an objection to adaptive reminders: such patients are not listed for it.
+  const allowed = await riskAllowedFor(rows.filter(({ a }) => isRisky(a)).map(({ a }) => a.patientId));
+  const marks = await rebookMarks(
+    orgId,
+    rows.filter(({ a }) => a.needsAttention).map(({ a }) => a.id),
+  );
   const out: CallRow[] = [];
   for (const { a, p, pr, l, s } of rows) {
-    const rebook = a.needsAttention && (await needsRebooking(a, now));
-    const risky = showRisk && a.riskLevel === "high" && a.confirmation !== "confirmed" && a.startsAt.getTime() <= now.getTime() + 48 * 3_600_000;
+    const rebook = a.needsAttention && (await coveredByClosure(a, now));
+    const risky = isRisky(a) && allowed.has(a.patientId);
     if (!rebook && !risky) continue;
+    const restricted = isRestricted(p);
+    const masked = restricted && !opts.restricted;
     out.push({
       appointmentId: a.id,
       patientId: p.id,
-      patientName: `${p.firstName} ${p.lastName}`.trim(),
-      phone: opts.contacts ? recipientFor(p, now).phone : null,
+      patientName: masked ? "" : `${p.firstName} ${p.lastName}`.trim(),
+      masked,
+      phone: opts.contacts && !restricted ? recipientFor(p, now).phone : null,
       start: a.startsAt,
       timezone: l.timezone,
       practitionerName: practitionerName(pr),
       serviceName: s.name,
-      reason: rebook ? (a.confirmedVia === CALL_REQUESTED ? "rebook_call" : "rebook") : "risk",
-      riskReasons: risky ? a.riskReasons : [],
+      reason: rebook ? (callRequested(marks.get(a.id), a) ? "rebook_call" : "rebook") : "risk",
+      riskReasons: risky && !masked ? a.riskReasons : [],
     });
   }
   const order = { rebook_call: 0, rebook: 1, risk: 2 } as const;
   return out.sort((x, y) => order[x.reason] - order[y.reason] || x.start.getTime() - y.start.getTime());
 }
 
-/** For the appointment drawer: does the visit need rebooking, and did the patient ask for a call? */
-export async function rebookStatus(orgId: string, appointmentId: string, now: Date = new Date()): Promise<{ needed: boolean; callRequested: boolean }> {
+/**
+ * For the appointment drawer: does a closure cover the visit (it needs a new time or a decision),
+ * was the patient offered new times for it, and did they ask to be called?
+ */
+export async function rebookStatus(
+  orgId: string,
+  appointmentId: string,
+  now: Date = new Date(),
+): Promise<{ needed: boolean; offerSent: boolean; callRequested: boolean }> {
   const [a] = await db.select().from(appointments).where(and(eq(appointments.id, appointmentId), eq(appointments.orgId, orgId)));
-  if (!a) return { needed: false, callRequested: false };
-  const needed = await needsRebooking(a, now);
-  return { needed, callRequested: needed && a.confirmedVia === CALL_REQUESTED };
+  if (!a || !(await coveredByClosure(a, now))) return { needed: false, offerSent: false, callRequested: false };
+  const m = (await rebookMarks(orgId, [a.id])).get(a.id);
+  return { needed: true, offerSent: offered(m, a) && a.needsAttention, callRequested: callRequested(m, a) && a.needsAttention };
 }

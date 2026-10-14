@@ -295,6 +295,24 @@ describe("same-name protection and duplicates (WP8)", () => {
     expect(online.patient.id).not.toBe(first.patient.id);
     expect(online.patient.restrictedAt).toBeNull();
     expect(online.patient.possibleDuplicateOfId).toBe(first.patient.id);
+
+    // The duplicates queue masks the restricted record unless the viewer may read restricted records.
+    const pairs = await listDuplicatePairs(q.orgId, { contacts: true });
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].other).toMatchObject({
+      id: first.patient.id,
+      restricted: true,
+      masked: true,
+      firstName: "",
+      lastName: "",
+      birthDate: null,
+      phone: null,
+      email: null,
+      appointments: 0,
+      lastVisit: null,
+    });
+    expect(pairs[0].patient).toMatchObject({ masked: false, firstName: "Rosa", phone: "+393471234502" });
+    expect((await listDuplicatePairs(q.orgId, { contacts: true, restricted: true }))[0].other).toMatchObject({ masked: false, firstName: "Rosa" });
   });
 
   it("merging moves the person's records to the kept one; the merged record stays as a tombstone the consent ledger follows", async () => {

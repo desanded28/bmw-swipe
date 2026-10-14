@@ -159,6 +159,8 @@ export default {
     remove: "Remove",
     removeConfirm: "Remove this patient from the waitlist?",
     note: "Patient's note: {note}",
+    restricted: "Restricted record: contact details and the note are hidden.",
+    openRecord: "Open the patient record (a reason is required)",
     booked: "Recently booked from the waitlist",
     bookedBadge: "Booked",
   },

@@ -6,9 +6,10 @@ import { appointments, organizations, patients } from "@/db/schema";
 import { createPractice, MONDAY, NOW, TZ } from "@/test/fixtures";
 import { evaluateSlot, getAvailability, loadAvailabilityContext } from "./availability";
 import { createAppointment } from "./booking";
+import { newId } from "./ids";
 import { permissionsFor } from "./permissions";
 import { withdrawConsent } from "./privacy/consent";
-import { computeRisk, loadCareFlags, refreshAppointmentRisk, RISK_THRESHOLDS, type RiskInput } from "./risk";
+import { clearRiskFor, computeRisk, loadCareFlags, refreshAppointmentRisk, refreshRisks, RISK_THRESHOLDS, type RiskInput } from "./risk";
 import { zonedToUtc } from "./time";
 
 const base: RiskInput = {
@@ -197,5 +198,109 @@ describe("loadCareFlags", () => {
     // Another practice asking for this id gets nothing.
     const other = await createPractice();
     expect((await loadCareFlags(other.orgId, [d.appointment.id], permissionsFor("owner"))).get(d.appointment.id)).toEqual(NO_CARE_FLAGS);
+  });
+});
+
+describe("objections (Art. 21)", () => {
+  let p: Awaited<ReturnType<typeof createPractice>>;
+  let seq = 3471000000;
+  const who = (firstName: string) => ({ firstName, lastName: "Objects", phone: `+39${seq++}`, locale: "it" as const });
+  const DAY = 86_400_000;
+  const book = (patient: Parameters<typeof createAppointment>[0]["patient"], startsAt: Date) =>
+    createAppointment({ orgId: p.orgId, serviceId: p.visit, practitionerId: p.drA, locationId: p.milano, startsAt, patient, source: "staff", online: false, force: true, now: NOW });
+  const object = (patientId: string, purpose: "adaptive_reminders" | "no_show_tracking") =>
+    db.transaction((tx) => withdrawConsent(tx, { orgId: p.orgId, patientId, purpose, locale: "it", method: "staff_recorded", source: "staff", now: NOW }));
+  const riskOf = async (id: string) => (await db.select().from(appointments).where(eq(appointments.id, id)))[0];
+
+  beforeAll(async () => {
+    p = await createPractice();
+    await db
+      .update(organizations)
+      .set({ settings: { ...p.settings, privacy: { ...p.settings.privacy, riskBasedReminders: true } } })
+      .where(eq(organizations.id, p.orgId));
+  });
+
+  it("an objection to no-show tracking never makes a long-standing patient look new", async () => {
+    const first = await book(who("Fedele"), zonedToUtc(MONDAY, 9 * 60, TZ));
+    // Ten visits over the last two years, all attended.
+    for (let i = 1; i <= 10; i++) {
+      const startsAt = new Date(NOW.getTime() - i * 60 * DAY);
+      const id = newId();
+      await db.insert(appointments).values({
+        id,
+        manageToken: `h:${id}`,
+        orgId: p.orgId,
+        locationId: p.milano,
+        practitionerId: p.drA,
+        serviceId: p.visit,
+        patientId: first.patient.id,
+        startsAt,
+        endsAt: new Date(startsAt.getTime() + 30 * 60_000),
+        blockedUntil: new Date(startsAt.getTime() + 30 * 60_000),
+        status: "completed",
+        source: "staff",
+        isNewPatient: false,
+      });
+    }
+    const next = await book({ id: first.patient.id }, zonedToUtc(MONDAY, 11 * 60, TZ));
+    expect(next.appointment.isNewPatient).toBe(false);
+    await refreshAppointmentRisk(db, next.appointment.id, NOW);
+    expect((await riskOf(next.appointment.id)).riskReasons).not.toContain("new_patient");
+
+    await object(first.patient.id, "no_show_tracking");
+    await refreshAppointmentRisk(db, next.appointment.id, NOW);
+    const after = await riskOf(next.appointment.id);
+    // Scored without the history, but not as a first visit.
+    expect(after.riskReasons).not.toContain("new_patient");
+    expect(after.riskLevel).toBe("low");
+  });
+
+  it("a stored risk disappears from the calendar as soon as the patient objects, and the refresh clears it however far ahead", async () => {
+    const d = await book(who("Lontana"), new Date(NOW.getTime() + 45 * DAY));
+    await db
+      .update(appointments)
+      .set({ riskLevel: "high", riskReasons: ["no_show_history"], riskComputedAt: new Date(NOW.getTime() - 2 * DAY) })
+      .where(eq(appointments.id, d.appointment.id));
+    const flags = async () => (await loadCareFlags(p.orgId, [d.appointment.id], permissionsFor("reception"))).get(d.appointment.id)!;
+    expect((await flags()).riskLevel).toBe("high");
+
+    await object(d.patient.id, "adaptive_reminders");
+    // No refresh yet: the stored value is still there, but nobody sees it.
+    expect((await riskOf(d.appointment.id)).riskLevel).toBe("high");
+    expect(await flags()).toMatchObject({ riskLevel: null, riskReasons: [] });
+
+    await refreshRisks(NOW);
+    expect((await riskOf(d.appointment.id)).riskLevel).toBeNull();
+  });
+
+  it("clearRiskFor clears every future visit of the patient at once", async () => {
+    const a = await book(who("Subito"), new Date(NOW.getTime() + 20 * DAY));
+    const b = await book({ id: a.patient.id }, new Date(NOW.getTime() + 40 * DAY));
+    await db.update(appointments).set({ riskLevel: "medium", riskReasons: ["long_lead_time"] }).where(eq(appointments.patientId, a.patient.id));
+    expect(await db.transaction((tx) => clearRiskFor(tx, p.orgId, a.patient.id, NOW))).toBe(2);
+    expect((await riskOf(a.appointment.id)).riskLevel).toBeNull();
+    expect((await riskOf(b.appointment.id)).riskLevel).toBeNull();
+    // Another practice can't touch them.
+    const other = await createPractice();
+    expect(await db.transaction((tx) => clearRiskFor(tx, other.orgId, a.patient.id, NOW))).toBe(0);
+  });
+
+  it("a practice that turns risk off gets every future stored value cleared, not only the next week's", async () => {
+    const q = await createPractice();
+    const d = await createAppointment({
+      orgId: q.orgId,
+      serviceId: q.visit,
+      practitionerId: q.drA,
+      locationId: q.milano,
+      startsAt: new Date(NOW.getTime() + 60 * DAY),
+      patient: who("Spenta"),
+      source: "staff",
+      online: false,
+      force: true,
+      now: NOW,
+    });
+    await db.update(appointments).set({ riskLevel: "high", riskReasons: ["unconfirmed"] }).where(eq(appointments.id, d.appointment.id));
+    await refreshRisks(NOW);
+    expect((await riskOf(d.appointment.id)).riskLevel).toBeNull();
   });
 });

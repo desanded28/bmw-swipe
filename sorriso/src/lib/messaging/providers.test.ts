@@ -2,9 +2,10 @@ import { createHmac } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
-import { messages, organizations } from "@/db/schema";
+import { messages, organizations, patients } from "@/db/schema";
 import { createPractice, NOW } from "@/test/fixtures";
 import { newId } from "../ids";
+import { recordConsent } from "../privacy/consent";
 import { purgeProviderCopies } from "../reminders";
 import { deliver } from "./index";
 import { deleteProviderMessage, sendSms, twilioSmsBaseUrl } from "./providers";
@@ -146,6 +147,47 @@ describe("WhatsApp templates", () => {
     expect(await chooseTextChannel({ ...patient, smsOptIn: false }, { whatsappEnabled: false }, { kind: "reminder" })).toBeNull();
   });
 
+  it("in the live deployment: never chosen, and never 'captured', without a WhatsApp sender and a template; SMS instead", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("MESSAGING_LIVE", "1");
+    vi.stubEnv("TWILIO_ACCOUNT_SID", "ACtest");
+    vi.stubEnv("TWILIO_AUTH_TOKEN", "tok");
+    vi.stubEnv("TWILIO_FROM", "+390200000000");
+    vi.stubEnv("TWILIO_WHATSAPP_FROM", "");
+    vi.stubEnv("TWILIO_WHATSAPP_CONTENT_SIDS", "");
+    // A patient who chose WhatsApp and consented to it, at a practice that offers it.
+    const id = newId();
+    await db.insert(patients).values({ id, orgId, firstName: "Giulia", lastName: "Neri", phone: PHONE, locale: "it", preferredChannel: "whatsapp" });
+    await recordConsent(db, { orgId, patientId: id, purpose: "whatsapp_channel", granted: true, locale: "it", method: "web_checkbox", source: "booking" });
+    const [patient] = await db.select().from(patients).where(eq(patients.id, id));
+    const choose = () => chooseTextChannel(patient, { whatsappEnabled: true }, { kind: "reminder" });
+
+    expect(hasWhatsAppTemplate("reminder", "it")).toBe(false);
+    expect(await choose()).toBe("sms");
+    expect(await sendWhatsApp({ to: PHONE, kind: "reminder", locale: "it", variables: {} })).toEqual({ status: "skipped", reason: "no_template" });
+    expect(await sendWhatsApp({ to: PHONE, text: "Grazie" })).toEqual({ status: "skipped", reason: "not_configured" });
+    // deliver() records it as failed, not as captured or sent.
+    const msg = await deliver({ orgId, patientId: id, channel: "whatsapp", to: PHONE, text: "Grazie" });
+    expect(msg).toMatchObject({ status: "failed", error: "whatsapp: not configured (TWILIO_WHATSAPP_FROM)" });
+
+    // A sender but no template for the kind: still SMS. Both: WhatsApp.
+    vi.stubEnv("TWILIO_WHATSAPP_FROM", "+14155238886");
+    expect(await choose()).toBe("sms");
+    vi.stubEnv("TWILIO_WHATSAPP_CONTENT_SIDS", JSON.stringify({ reminder: { it: `HX${"e".repeat(32)}` } }));
+    expect(await choose()).toBe("whatsapp");
+    // Templates without a sender: SMS again.
+    vi.stubEnv("TWILIO_WHATSAPP_FROM", "");
+    expect(await choose()).toBe("sms");
+
+    // Outside the live deployment the development shortcut still shows the WhatsApp path (captured).
+    vi.stubEnv("MESSAGING_LIVE", "");
+    vi.stubEnv("TWILIO_WHATSAPP_CONTENT_SIDS", "");
+    expect(hasWhatsAppTemplate("reminder", "it")).toBe(true);
+    expect(await choose()).toBe("whatsapp");
+    expect(await sendWhatsApp({ to: PHONE, kind: "reminder", locale: "it", variables: {} })).toMatchObject({ status: "captured", provider: "dev" });
+    expect(calls).toHaveLength(0);
+  });
+
   it("puts only discreet variables in a template", () => {
     expect(whatsappVariables({ name: " Giulia\n", date: "mer 16 set\talle 10:30", clinic: "Studio", link: "https://sorriso.test/a/x" })).toEqual({
       "1": "Giulia",
@@ -208,6 +250,84 @@ describe("provider copies", () => {
     expect((await get(rows[1].id)).providerDeletedAt).toBeNull();
     expect((await get(rows[2].id)).providerDeletedAt).toBeNull();
     expect(calls.some((c) => c.url.endsWith(`${SID(10)}.json`))).toBe(true);
+  });
+});
+
+describe("provider copies the cron can't delete", () => {
+  let P: string;
+  beforeAll(async () => {
+    ({ orgId: P } = await createPractice());
+    await db.update(organizations).set({ settings: { privacy: { retention: { providerMessageDays: 7 } } } }).where(eq(organizations.id, P));
+  });
+  let n = 100;
+  const insert = async (provider: string, daysOld: number) => {
+    const row = {
+      id: newId(),
+      orgId: P,
+      channel: "sms" as const,
+      direction: "outbound" as const,
+      to: PHONE,
+      body: "x",
+      status: "delivered" as const,
+      provider,
+      providerId: SID(n++),
+      createdAt: new Date(NOW.getTime() - daysOld * 86_400_000),
+    };
+    await db.insert(messages).values(row);
+    return row;
+  };
+  const deletedAt = async (id: string) => (await db.select().from(messages).where(eq(messages.id, id)))[0].providerDeletedAt;
+  const deletes = (sid: string) => calls.filter((c) => c.method === "DELETE" && c.url.endsWith(`/${sid}.json`)).length;
+  const errorLines = () => logLines.filter((l) => l.includes("step=provider-delete")).length;
+
+  it("leaves a region without credentials alone, so the other copies are not starved", async () => {
+    // Only US1 credentials: the copies sent through IE1 can't be deleted from here.
+    vi.stubEnv("TWILIO_ACCOUNT_SID", "ACtest");
+    vi.stubEnv("TWILIO_US1_AUTH_TOKEN", "us1-token");
+    reply = () => new Response(null, { status: 204 });
+    const ie1 = [await insert("twilio:ie1", 40), await insert("twilio:ie1", 39), await insert("twilio:ie1", 38)];
+    const us1 = await insert("twilio", 10);
+    await purgeProviderCopies(NOW, { batch: 2 });
+    expect(await deletedAt(us1.id)).not.toBeNull();
+    for (const r of ie1) expect(await deletedAt(r.id)).toBeNull();
+    expect(calls.some((c) => c.url.includes("ie1.twilio.com"))).toBe(false);
+  });
+
+  it("goes oldest first, skips a copy that just failed, and retries it later", async () => {
+    vi.stubEnv("TWILIO_ACCOUNT_SID", "ACtest");
+    vi.stubEnv("TWILIO_US1_AUTH_TOKEN", "us1-token");
+    const stuck = await insert("twilio", 60);
+    const next = await insert("twilio", 50);
+    reply = (url) =>
+      url.endsWith(`/${stuck.providerId}.json`)
+        ? new Response(JSON.stringify({ message: "Cannot delete message in progress", code: 20009 }), { status: 400 })
+        : new Response(null, { status: 204 });
+    await purgeProviderCopies(NOW, { batch: 1 });
+    expect(deletes(stuck.providerId)).toBe(1);
+    expect(await deletedAt(next.id)).toBeNull();
+    // The next run moves on instead of failing on the same copy again.
+    await purgeProviderCopies(NOW, { batch: 1 });
+    expect(deletes(stuck.providerId)).toBe(1);
+    expect(await deletedAt(next.id)).not.toBeNull();
+    // Hours later the stuck copy is tried again.
+    reply = () => new Response(null, { status: 204 });
+    await purgeProviderCopies(new Date(NOW.getTime() + 7 * 3_600_000), { batch: 1 });
+    expect(deletes(stuck.providerId)).toBe(2);
+    expect(await deletedAt(stuck.id)).not.toBeNull();
+  });
+
+  it("stops on a provider that keeps failing, with one error line per run", async () => {
+    vi.stubEnv("TWILIO_ACCOUNT_SID", "ACtest");
+    vi.stubEnv("TWILIO_US1_AUTH_TOKEN", "wrong-token");
+    const rows = [];
+    for (let i = 0; i < 8; i++) rows.push(await insert("twilio", 80 - i));
+    reply = () => new Response(JSON.stringify({ message: "Authenticate", code: 20003 }), { status: 401 });
+    const before = errorLines();
+    const summary = await purgeProviderCopies(NOW);
+    expect(summary.failed).toBe(5);
+    expect(rows.reduce((sum, r) => sum + deletes(r.providerId), 0)).toBe(5);
+    expect(errorLines() - before).toBe(1);
+    for (const r of rows) expect(await deletedAt(r.id)).toBeNull();
   });
 });
 

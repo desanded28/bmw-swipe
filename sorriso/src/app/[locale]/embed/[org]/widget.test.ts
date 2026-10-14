@@ -96,10 +96,15 @@ function runWidget(dataset: Record<string, string>, opts: { htmlLang?: string; b
     detail: Record<string, unknown>;
   }
   const navigator = { language: opts.browser ?? "" };
+  const consoleCalls: unknown[][] = [];
+  const record = (...args: unknown[]) => consoleCalls.push(args);
   new Function("window", "document", "navigator", "CustomEvent", "console", SOURCE)(window, document, navigator, CustomEvent, {
-    warn() {},
+    log: record,
+    info: record,
+    warn: record,
+    error: record,
   });
-  return env;
+  return Object.assign(env, { consoleCalls });
 }
 
 const iframeIn = (root: FakeElement) => root.find((e) => e.tagName === "iframe");
@@ -180,9 +185,47 @@ describe("public/widget.js", () => {
     expect(close.attrs["aria-label"]).toBe("Fermer");
 
     env.keydown!({ key: "Escape" });
-    expect(env.body.find((e) => e.attrs.role === "dialog")).toBeNull();
+    expect(dialog.style.display).toBe("none");
+    expect(env.keydown).toBeNull();
     expect(env.focused).toBe(button);
     expect(button.attrs["aria-expanded"]).toBe("false");
+
+    // Opening again shows the same frame: what the visitor typed is still there.
+    (button.onclick as () => void)();
+    expect(dialog.style.display).toBe("flex");
+    expect(iframeIn(dialog)).toBe(frame);
+    expect(env.body.children.filter((e) => e.attrs.role === "dialog")).toHaveLength(1);
+    expect(env.focused).toBe(frame);
+  });
+
+  it("closes the dialog on Escape pressed inside the frame (its close message), from the frame only", () => {
+    const env = runWidget({ clinic: "x" });
+    const button = env.body.find((e) => e.tagName === "button")!;
+    (button.onclick as () => void)();
+    const dialog = env.body.find((e) => e.attrs.role === "dialog")!;
+    const frame = iframeIn(dialog)!;
+    const close = { source: "sorriso", type: "close" };
+    env.message!({ origin: "https://evil.example", source: frame.contentWindow, data: close });
+    env.message!({ origin: ORIGIN, source: {}, data: close });
+    expect(dialog.style.display).toBe("flex");
+    env.message!({ origin: ORIGIN, source: frame.contentWindow, data: close });
+    expect(dialog.style.display).toBe("none");
+    expect(env.focused).toBe(button);
+  });
+
+  it("ignores the close message for an inline frame", () => {
+    const env = runWidget({ clinic: "x", target: "#booking" });
+    const frame = iframeIn(env.host)!;
+    env.message!({ origin: ORIGIN, source: frame.contentWindow, data: { source: "sorriso", type: "close" } });
+    expect(iframeIn(env.host)).toBe(frame);
+  });
+
+  it("does nothing, silently, without data-clinic or with a target that matches nothing (no console)", () => {
+    const none = runWidget({});
+    expect(none.body.children).toHaveLength(0);
+    const missing = runWidget({ clinic: "x", target: "#nowhere" });
+    expect(missing.body.children).toHaveLength(0);
+    expect([...none.consoleCalls, ...missing.consoleCalls]).toEqual([]);
   });
 
   it("keeps Tab inside the dialog with focus sentinels", () => {

@@ -13,6 +13,7 @@ import {
   profileCompleteness,
   RANK_WEIGHTS,
   rankResults,
+  reliabilitySignals,
   scoreResult,
   tieBreaker,
   type RankContext,
@@ -149,17 +150,23 @@ describe("profileCompleteness", () => {
 
 let p: Awaited<ReturnType<typeof createPractice>>;
 
-async function visit(practitionerId: string, status: "completed" | "cancelled", cancelledBy: "staff" | "patient" | null = null, daysAgo = 10) {
+async function visit(
+  practitionerId: string,
+  status: "completed" | "cancelled",
+  cancelledBy: "staff" | "patient" | null = null,
+  daysAgo = 10,
+  practice: Awaited<ReturnType<typeof createPractice>> = p,
+) {
   const patientId = newId();
   const appointmentId = newId();
   const at = new Date(Date.now() - daysAgo * 86_400_000);
-  await db.insert(patients).values({ id: patientId, orgId: p.orgId, firstName: "Luca", lastName: "Neri" });
+  await db.insert(patients).values({ id: patientId, orgId: practice.orgId, firstName: "Luca", lastName: "Neri" });
   await db.insert(appointments).values({
     id: appointmentId,
-    orgId: p.orgId,
-    locationId: p.milano,
+    orgId: practice.orgId,
+    locationId: practice.milano,
     practitionerId,
-    serviceId: p.visit,
+    serviceId: practice.visit,
     patientId,
     startsAt: at,
     endsAt: at,
@@ -208,6 +215,25 @@ describe("buildRankInputs", () => {
     expect(a.profileCompleteness).toBeCloseTo(3 / 6, 9);
     expect(a.soonestSlotAt).toBeInstanceOf(Date);
     expect(await buildRankInputs("no-such-org")).toEqual([]);
+  });
+
+  it("gives a practitioner with few or no appointments the practice-wide rate, over all of the practice's appointments", async () => {
+    const q = await createPractice();
+    // Dr. A: 20 appointments, half cancelled by the practice. Dr. C: 3 completed. Dr. B: none.
+    for (let i = 0; i < 10; i++) await visit(q.drA, "completed", null, 10, q);
+    for (let i = 0; i < 10; i++) await visit(q.drA, "cancelled", "staff", 10, q);
+    for (let i = 0; i < 3; i++) await visit(q.drC, "completed", null, 10, q);
+    const practiceWide = { rate: 10 / 23, sample: 23 };
+    // Asked about Dr. B alone (e.g. the only search candidate): still the whole practice's rate, not a perfect record.
+    expect((await reliabilitySignals([q.drB])).get(q.drB)).toEqual(practiceWide);
+    const all = await reliabilitySignals([q.drA, q.drB, q.drC]);
+    expect(all.get(q.drA)).toEqual({ rate: 0.5, sample: 20 });
+    expect(all.get(q.drB)).toEqual(practiceWide);
+    expect(all.get(q.drC)).toEqual(practiceWide);
+    // A practice with no appointments at all: no signal either way.
+    const empty = await createPractice();
+    expect((await reliabilitySignals([empty.drA])).get(empty.drA)).toEqual({ rate: 0, sample: 0 });
+    expect(await reliabilitySignals([])).toEqual(new Map());
   });
 
   it("gives the same inputs and search order when non-ranking practice columns change", async () => {

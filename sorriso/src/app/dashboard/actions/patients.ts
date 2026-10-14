@@ -17,6 +17,7 @@ import { ConsentError, currentConsents, recordConsent, withdrawConsent } from "@
 import { ErasureError, erasePatient, grantRestrictedAccess, hasRestrictedAccess, restrictPatient, unrestrictPatient } from "@/lib/privacy/erasure";
 import { isStepUpRequired } from "@/lib/privacy/gates";
 import { isPlatformConsentPurpose } from "@/lib/privacy/roles";
+import { getPrivacy } from "@/lib/privacy/settings";
 import { formatPhone, normalizePhone } from "@/lib/phone";
 import { fail, guard, ok, optional, staff, str, type ActionResult } from "./_shared";
 
@@ -108,6 +109,14 @@ function searchFilter(q: string): SQL | undefined {
 }
 
 /**
+ * Restricted and erased records are hidden from staff without patient.restricted.read (Art. 18):
+ * left out of the list and of every search, so a name or a phone fragment can't reveal that such
+ * a record exists.
+ */
+const visibleTo = (s: StaffSession): SQL | undefined =>
+  can(s.role, "patient.restricted.read") ? undefined : and(isNull(patients.restrictedAt), isNull(patients.erasedAt));
+
+/**
  * The patients list, one page at a time. With a search term it is a POST server action, so names
  * never reach the URL, the browser history or server logs. Every call is audited as
  * patient.search with the number of results only (never the term).
@@ -115,7 +124,7 @@ function searchFilter(q: string): SQL | undefined {
 export async function listPatientRows(q: string, page = 1): Promise<PatientPage> {
   const s = await staff("patient.read");
   const term = String(q ?? "").slice(0, 100);
-  const where = and(eq(patients.orgId, s.org.id), isNull(patients.mergedIntoId), searchFilter(term));
+  const where = and(eq(patients.orgId, s.org.id), isNull(patients.mergedIntoId), visibleTo(s), searchFilter(term));
   const current = Math.max(1, Math.floor(Number(page)) || 1);
   const now = Date.now();
   const [rows, [{ total }]] = await Promise.all([
@@ -165,9 +174,9 @@ export async function listPatientRows(q: string, page = 1): Promise<PatientPage>
 
 /**
  * Patient lookup for the new-appointment drawer (8 matches by name, phone digits or email).
- * Erased records are left out; restricted ones are masked for staff without
- * patient.restricted.read (and flagged, so the drawer can ask for a reason). Audited as
- * patient.search without the term.
+ * Erased records are left out, and restricted ones too for staff without
+ * patient.restricted.read; those with it see them flagged, so the drawer can ask for a reason.
+ * Audited as patient.search without the term.
  */
 export async function searchPatients(q: string) {
   const s = await staff("patient.read");
@@ -184,7 +193,7 @@ export async function searchPatients(q: string) {
       restrictedAt: patients.restrictedAt,
     })
     .from(patients)
-    .where(and(eq(patients.orgId, s.org.id), isNull(patients.erasedAt), isNull(patients.mergedIntoId), searchFilter(term)))
+    .where(and(eq(patients.orgId, s.org.id), isNull(patients.erasedAt), isNull(patients.mergedIntoId), visibleTo(s), searchFilter(term)))
     .orderBy(asc(patients.lastName))
     .limit(8);
   await auditStaff(s, "patient.search", undefined, { metadata: { results: rows.length, lookup: true } });
@@ -205,7 +214,9 @@ const TEXT_CHANNELS = { sms: "sms_channel", email: "email_channel" } as const;
  * Save identity and contacts (any member who can read the record). Restricted records are read-only. Turning a channel
  * on for a patient who opted out needs a typed reason and writes a staff-recorded consent row;
  * turning one off writes the withdrawal, so the ledger and the cached flags stay in step.
- * Choosing WhatsApp records the patient's consent to it (otherwise reminders keep going by SMS).
+ * WhatsApp (a transfer to Meta) can be chosen only when the practice enabled it, and only with
+ * the patient's consent: without one in the ledger, staff confirm that the patient agreed
+ * (whatsappAgreed) and write how, and that is recorded as a staff-recorded consent (Art. 7(1)).
  */
 export async function updatePatient(id: string, _prev: unknown, fd: FormData): Promise<ActionResult> {
   return guard(
@@ -238,8 +249,17 @@ export async function updatePatient(id: string, _prev: unknown, fd: FormData): P
       const reason = str(fd, "optInReason").slice(0, 300);
 
       const reEnabling = (["sms", "email"] as const).filter((c) => wants[c] && optedOut[c]);
-      const whatsappBack = preferredChannel === "whatsapp" && ledger.whatsapp_channel?.granted === false;
-      if ((reEnabling.length || whatsappBack) && reason.length < 3) return fail(t("patient.errors.optin_reason_required"), "optin_reason_required");
+      const whatsappEnabled = getPrivacy(s.org).whatsappEnabled;
+      if (preferredChannel === "whatsapp" && p.preferredChannel !== "whatsapp" && !whatsappEnabled) {
+        return fail(t("patient.errors.whatsapp_disabled"), "whatsapp_disabled");
+      }
+      // A consent to record only while WhatsApp is actually used (nothing goes to Meta otherwise).
+      const whatsappConsent = whatsappEnabled && preferredChannel === "whatsapp" && ledger.whatsapp_channel?.granted !== true;
+      const whatsappBack = whatsappConsent && ledger.whatsapp_channel?.granted === false;
+      if (whatsappConsent && fd.get("whatsappAgreed") !== "on") return fail(t("patient.errors.whatsapp_consent_required"), "whatsapp_consent_required");
+      if ((reEnabling.length || whatsappConsent) && reason.length < 3) {
+        return fail(t(reEnabling.length || whatsappBack ? "patient.errors.optin_reason_required" : "patient.errors.whatsapp_how_required"), "optin_reason_required");
+      }
 
       const recordedLocale = isLocale(locale) ? locale : p.locale;
       const base = {
@@ -263,14 +283,15 @@ export async function updatePatient(id: string, _prev: unknown, fd: FormData): P
             if (wants[c]) await recordConsent(tx, { ...base, purpose: TEXT_CHANNELS[c], granted: true });
             else await withdrawConsent(tx, { ...base, purpose: TEXT_CHANNELS[c] });
           }
-          if (preferredChannel === "whatsapp" && ledger.whatsapp_channel?.granted !== true) {
-            await recordConsent(tx, { ...base, purpose: "whatsapp_channel", granted: true });
-          }
+          if (whatsappConsent) await recordConsent(tx, { ...base, purpose: "whatsapp_channel", granted: true });
           await auditStaff(
             s,
             "patient.update",
             { type: "patient", id: p.id },
-            { reason: reEnabling.length || whatsappBack ? reason : null, metadata: { reEnabled: [...reEnabling, ...(whatsappBack ? ["whatsapp"] : [])].join(",") || null } },
+            {
+              reason: reEnabling.length || whatsappConsent ? reason : null,
+              metadata: { reEnabled: [...reEnabling, ...(whatsappConsent ? ["whatsapp"] : [])].join(",") || null },
+            },
             tx,
           );
         });
@@ -347,7 +368,7 @@ export async function unrestrictPatientAction(id: string, _prev: unknown, fd: Fo
       if (gate) return gate;
       try {
         const { notified } = await unrestrictPatient(s.org.id, id, {
-          reason: optional(fd, "reason")?.slice(0, 500) ?? null,
+          reason: str(fd, "reason").slice(0, 500),
           informedOtherwise: fd.get("informedOtherwise") === "on",
           actor: { type: "user", id: s.user.id },
           headers: await headers(),
@@ -364,6 +385,8 @@ export async function unrestrictPatientAction(id: string, _prev: unknown, fd: Fo
 /**
  * Erase a patient: pseudonymise now, or keep on a legal ground and restrict until a date. Needs
  * patient.erase, a recent second factor and the patient's full name typed as confirmation.
+ * Opened from a privacy request (requestId, with privacy.requests), it also answers that request:
+ * the answer is sent to the patient's contact before the contact is removed.
  */
 export async function erasePatientAction(id: string, _prev: unknown, fd: FormData): Promise<ActionResult> {
   return guard(
@@ -378,6 +401,8 @@ export async function erasePatientAction(id: string, _prev: unknown, fd: FormDat
       const gate = await restrictedGate(s, p, t);
       if (gate) return gate;
       const mode = str(fd, "mode") === "restrict" ? "restrict" : "anonymise";
+      const requestId = str(fd, "requestId") || null;
+      if (requestId && !can(s.role, "privacy.requests")) return fail(t("errors.forbidden"), "forbidden");
       try {
         const res = await erasePatient(s.org.id, id, {
           mode,
@@ -385,8 +410,12 @@ export async function erasePatientAction(id: string, _prev: unknown, fd: FormDat
           retainUntil: mode === "restrict" ? optional(fd, "retainUntil") : null,
           actor: { type: "user", id: s.user.id },
           headers: await headers(),
+          answer: requestId ? { requestId, text: str(fd, "answer").slice(0, 2000) } : undefined,
         });
-        return ok(res.mode === "anonymise" ? t("privacy.erased") : t("privacy.erasedRestricted"));
+        const pseudonymised = res.mode === "anonymise";
+        if (!res.answered) return ok(pseudonymised ? t("privacy.erased") : t("privacy.erasedRestricted"));
+        if (res.answered.notified) return ok(pseudonymised ? t("privacy.erasedAnswered") : t("privacy.erasedRestrictedAnswered"));
+        return ok(pseudonymised ? t("privacy.erasedAnswerNotSent") : t("privacy.erasedRestrictedAnswerNotSent"));
       } catch (err) {
         return domainFail(err, t);
       }

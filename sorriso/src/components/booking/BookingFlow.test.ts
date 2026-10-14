@@ -7,9 +7,10 @@ import { I18nProvider } from "@/i18n/provider";
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { getMessages, getT } from "@/i18n/t";
 import type { PublicClinic } from "@/lib/directory";
-import { BookingFlow, flowReducer, initialFlowState, type FlowState } from "./BookingFlow";
-import { CONFIRM_WORD, SLOT_GONE_CODES, apiErrorText, apiFieldErrors } from "./DetailsStep";
+import { BookingFlow, flowReducer, initialFlowState, relayEscapeToHost, selectServiceAction, type FlowState } from "./BookingFlow";
+import { CONFIRM_WORD, SLOT_GONE_CODES, apiErrorText, apiFieldErrors, initialBookingForm } from "./DetailsStep";
 import type { PickedSlot } from "./SlotPicker";
+import { WaitlistOffer, initialWaitlist, waitlistBody, waitlistRange, type WaitlistState } from "./WaitlistOffer";
 
 const clinic: PublicClinic = {
   org: {
@@ -140,10 +141,79 @@ describe("flowReducer", () => {
   it("starts the message language on the page language", () => {
     for (const l of LOCALES) expect(initialFlowState(clinic, {}, "2026-10-14", l).form.details.locale).toBe(l);
   });
+
+  describe("changing the treatment", () => {
+    // Treatment X at offices A and B (Anna), treatment Y only at A (Bruno).
+    const two: PublicClinic = {
+      ...clinic,
+      locations: [clinic.locations[0], { ...clinic.locations[0], id: "locB", name: "Monza" }],
+      practitioners: [
+        { ...clinic.practitioners[0], id: "anna", serviceIds: ["X"], locationIds: ["loc1", "locB"] },
+        { ...clinic.practitioners[0], id: "bruno", serviceIds: ["X", "Y"], locationIds: ["loc1"] },
+      ],
+      services: [
+        { ...clinic.services[0], id: "X" },
+        { ...clinic.services[0], id: "Y" },
+      ],
+    };
+
+    it("drops an office where nobody offers the new treatment, so times aren't searched there in vain", () => {
+      let s = initialFlowState(two, { serviceId: "X" }, "2026-10-14", "it");
+      s = flowReducer(s, { type: "setLocation", locationId: "locB" });
+      s = flowReducer(s, { type: "goto", step: "service" });
+      const action = selectServiceAction(two, s, "Y");
+      expect(action).toEqual({ type: "selectService", serviceId: "Y", keepPractitioner: false, keepLocation: false });
+      const after = flowReducer(s, action);
+      expect(after).toMatchObject({ step: "time", serviceId: "Y", locationId: "", practitionerId: "" });
+    });
+
+    it("keeps an office (and practitioner) that still offer it", () => {
+      let s = initialFlowState(two, { serviceId: "X" }, "2026-10-14", "it");
+      s = flowReducer(s, { type: "setPractitioner", practitionerId: "bruno" });
+      s = flowReducer(s, { type: "setLocation", locationId: "loc1" });
+      expect(flowReducer(s, selectServiceAction(two, s, "Y"))).toMatchObject({ practitionerId: "bruno", locationId: "loc1" });
+      // Anna works at B but doesn't offer Y; Bruno offers Y but not at B.
+      s = flowReducer(s, { type: "setPractitioner", practitionerId: "anna" });
+      s = flowReducer(s, { type: "setLocation", locationId: "locB" });
+      expect(flowReducer(s, selectServiceAction(two, s, "Y"))).toMatchObject({ practitionerId: "", locationId: "" });
+    });
+
+    it("clears the office when the action doesn't say to keep it", () => {
+      const s = { ...initialFlowState(two, { serviceId: "X" }, "2026-10-14", "it"), locationId: "locB" };
+      expect(flowReducer(s, { type: "selectService", serviceId: "Y", keepPractitioner: false }).locationId).toBe("");
+    });
+  });
+});
+
+describe("Escape inside the widget's frame", () => {
+  function fakeDocument() {
+    const listeners = new Map<string, (e: KeyboardEvent) => void>();
+    return {
+      listeners,
+      addEventListener: (type: string, fn: (e: KeyboardEvent) => void) => listeners.set(type, fn),
+      removeEventListener: (type: string) => listeners.delete(type),
+    };
+  }
+  const key = (k: string, extra: Partial<KeyboardEvent> = {}) => ({ key: k, defaultPrevented: false, isComposing: false, ...extra }) as KeyboardEvent;
+
+  it("asks only the validated host to close the dialog, with { source, type } only", () => {
+    const doc = fakeDocument();
+    const posted: [unknown, string][] = [];
+    const stop = relayEscapeToHost(doc as unknown as Document, { postMessage: (m: unknown, o: string) => void posted.push([m, o]) } as unknown as Window, "https://host.example");
+    doc.listeners.get("keydown")!(key("Enter"));
+    doc.listeners.get("keydown")!(key("Escape", { defaultPrevented: true })); // a control handled it
+    doc.listeners.get("keydown")!(key("Escape", { isComposing: true })); // an input method is composing
+    expect(posted).toEqual([]);
+    doc.listeners.get("keydown")!(key("Escape"));
+    expect(posted).toEqual([[{ source: "sorriso", type: "close" }, "https://host.example"]]);
+    stop();
+    expect(doc.listeners.size).toBe(0);
+  });
 });
 
 function renderFlow(locale: Locale, c: PublicClinic = clinic) {
-  const messages = getMessages(locale, ["common", "a11y", "booking", "errors", "consents"]);
+  // The same namespaces the book and embed pages load: the layout's plus consents, privacy, catalog.
+  const messages = getMessages(locale, ["common", "a11y", "site", "booking", "errors", "consents", "privacy", "catalog"]);
   return renderToStaticMarkup(
     h(I18nProvider, {
       locale,
@@ -210,6 +280,83 @@ describe("BookingFlow (server render)", () => {
   });
 });
 
+describe("Waitlist", () => {
+  const value = (patch: Partial<WaitlistState> = {}): WaitlistState => ({ ...initialWaitlist("2026-10-14"), open: true, ...patch });
+
+  it("sends an empty 'Until' as the practice's online booking horizon, never as a single day", () => {
+    expect(waitlistRange(value(), 60)).toEqual({ earliestDate: "2026-10-14", latestDate: "2026-12-13" });
+    expect(waitlistRange(value({ earliestDate: "2026-12-30" }), 60).latestDate).toBe("2027-02-28");
+    expect(waitlistRange(value({ latestDate: "2026-10-20" }), 60).latestDate).toBe("2026-10-20");
+    expect(waitlistRange(value({ earliestDate: "" }), 60).latestDate).toBe("");
+  });
+
+  it("posts the range, the patient's birth date and the relation", () => {
+    const contact = { ...initialBookingForm("de").details, firstName: "Lia", lastName: "Neri", phone: "333 1234567", birthDate: "2016-05-01" };
+    const relation = {
+      bookedFor: "minor" as const,
+      guardian: { name: "Eva Neri", relation: "parent" as const, phone: "+393331112223", email: "" },
+      bookedBy: { name: "", phone: "", email: "" },
+    };
+    const body = waitlistBody({
+      clinic,
+      serviceId: "sv1",
+      practitionerId: "",
+      locationId: "loc1",
+      context: "practice",
+      contact,
+      value: value({ relation, relationAsked: true }),
+      locale: "de",
+    });
+    expect(body).toMatchObject({
+      practitionerId: null,
+      locationId: "loc1",
+      earliestDate: "2026-10-14",
+      latestDate: "2026-12-13",
+      patient: { firstName: "Lia", birthDate: "2016-05-01", phoneCountry: "39", locale: "de" },
+      relation: { bookedFor: "minor", guardian: { name: "Eva Neri", relation: "parent" } },
+    });
+    expect(waitlistBody({ clinic, serviceId: "sv1", practitionerId: "", locationId: "", context: "practice", contact: { ...contact, birthDate: "" }, value: value(), locale: "de" }).patient.birthDate).toBeNull();
+  });
+
+  function renderWaitlist(v: WaitlistState, birthDate = "") {
+    return renderToStaticMarkup(
+      h(I18nProvider, {
+        locale: "en",
+        messages: getMessages("en", ["common", "a11y", "booking", "errors", "consents", "privacy"]),
+        children: h(WaitlistOffer, {
+          clinic,
+          serviceId: "sv1",
+          practitionerId: "",
+          locationId: "",
+          today: "2026-10-14",
+          context: "practice",
+          contact: { ...initialBookingForm("en").details, birthDate },
+          onContactChange: () => {},
+          value: v,
+          onChange: () => {},
+        }),
+      }),
+    );
+  }
+
+  it("shows the end date an empty 'Until' stands for, and the range once on the list", () => {
+    expect(renderWaitlist(value())).toContain("Optional. If you leave it empty, we&#x27;ll look until Sunday 13 December.");
+    expect(renderWaitlist(value({ latestDate: "2026-10-20" }))).not.toContain("we&#x27;ll look until");
+    const done = renderWaitlist(value({ done: true }));
+    expect(done).toContain("You&#x27;re on the waitlist.");
+    expect(done).toContain("We&#x27;ll look for times from Wednesday 14 October to Sunday 13 December.");
+  });
+
+  it("asks the birth date (autocomplete=bday), shared with the booking form, and requires it for a minor", () => {
+    const self = renderWaitlist(value(), "2016-05-01");
+    expect(self).toMatch(/<input[^>]*type="date"[^>]*autoComplete="bday"[^>]*value="2016-05-01"/i);
+    const minor = renderWaitlist(
+      value({ relation: { ...initialWaitlist("2026-10-14").relation, bookedFor: "minor" }, relationAsked: true }),
+    );
+    expect(minor).toMatch(/<input[^>]*type="date"[^>]*autoComplete="bday"[^>]*aria-required="true"/i);
+  });
+});
+
 describe("API errors", () => {
   const te = getT("de", "errors");
   const en = getT("en", "errors");
@@ -220,6 +367,13 @@ describe("API errors", () => {
     expect(apiErrorText(en, "made_up")).toBe(en("generic"));
     expect(apiErrorText(en, undefined)).toBe(en("generic"));
     expect(apiErrorText(te, "rate_limited")).toBe(te("api.rate_limited"));
+  });
+
+  it("explains an outdated privacy notice instead of the generic text", () => {
+    expect(apiErrorText(en, "notice_outdated")).toBe(en("api.notice_outdated"));
+    expect(en("api.notice_outdated")).toMatch(/reload the page/i);
+    // The rule names no field: nothing to highlight, the summary carries the text (and a reload button).
+    expect(apiFieldErrors(en, { code: "notice_outdated", message: "x" })).toEqual({});
   });
 
   it("maps validation issues and rule fields to localised field errors", () => {

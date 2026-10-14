@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, isNull, lt, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lt, notInArray, or, sql } from "drizzle-orm";
 import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import { db, type Tx } from "@/db";
 import {
@@ -33,7 +33,7 @@ import {
   users,
   waitlist,
 } from "@/db/schema";
-import { audit, type AuditEvent } from "../audit";
+import { audit, pruneAuditLog, type AuditEvent } from "../audit";
 import { absoluteUrl } from "../config";
 import { hmac } from "../crypto";
 import { logError } from "../log";
@@ -50,13 +50,12 @@ import { emailOwners, messageDate, ownerRecipients } from "./requests";
  *    (Data Act art. 25: a transition of up to 30 days, then at least 30 days to retrieve data.)
  * 2. The retention job purges the practice once purgeAfter has passed: every row of the
  *    practice, its patients and staff accounts that belong to no other practice, provider copies
- *    of its messages, API keys, sessions and tokens.
+ *    of its messages, API keys, sessions and tokens, and its own access log (audit chain, which
+ *    is part of the export): only the chain's last hash stays, as an anchor, without content.
  * 3. A deletion certificate is issued: a row in Sorriso's own audit chain (tamper-evident) with
  *    the tables and row counts purged, the date, and when the last backups containing the data
- *    expire; owners get it by email with a link to a printable page.
- *
- * The practice's own audit chain has no foreign key and survives the purge; the retention job
- * deletes it after the default audit retention (orphaned chains).
+ *    expire; owners get it by email with a link to a printable page. The retention job carries
+ *    certificates past the audit-log pruning for 10 years (the limitation period).
  */
 
 export const CLOSURE_TRANSITION_DAYS = 30;
@@ -158,26 +157,44 @@ export type DeletionCertificate = {
 
 const TABLE_PREFIX = "t_";
 
-/** The certificate behind a signed token, or null. */
+/** metadata.stage of the org.close row that is a certificate of deletion. */
+export const CERTIFICATE_STAGE = "purged";
+
+/** Far enough in the future that pruning a chain "before" it removes every row. */
+const END_OF_TIME = new Date(8.64e15);
+
+/**
+ * The certificate behind a signed token, or null. The token names the original row; once the
+ * retention job has carried the certificate past the audit-log pruning, the newest copy
+ * (metadata.certificateOf = that id) answers, with the original date.
+ */
 export async function loadCertificate(token: string | null | undefined): Promise<DeletionCertificate | null> {
   const id = verifyCertificateToken(token);
   if (!id) return null;
   const [row] = await db
     .select()
     .from(auditLog)
-    .where(and(eq(auditLog.id, id), isNull(auditLog.orgId), eq(auditLog.action, "org.close")));
+    .where(
+      and(
+        isNull(auditLog.orgId),
+        eq(auditLog.action, "org.close"),
+        or(eq(auditLog.id, id), sql`json_extract(${auditLog.metadata}, '$.certificateOf') = ${id}`),
+      ),
+    )
+    .orderBy(desc(auditLog.seq))
+    .limit(1);
   const m = row?.metadata;
-  if (!row || !m || m.stage !== "purged") return null;
+  if (!row || !m || m.stage !== CERTIFICATE_STAGE) return null;
   const tables: Record<string, number> = {};
   for (const [k, v] of Object.entries(m)) if (k.startsWith(TABLE_PREFIX) && typeof v === "number") tables[k.slice(TABLE_PREFIX.length)] = v;
   return {
-    id: row.id,
+    id,
     orgId: String(row.entityId),
     orgName: String(m.orgName ?? ""),
-    purgedAt: row.at,
+    purgedAt: typeof m.purgedAt === "number" ? new Date(m.purgedAt) : row.at,
     backupsExpireAt: new Date(Number(m.backupsExpireAt)),
     tables,
-    hash: row.hash,
+    hash: typeof m.originalHash === "string" ? m.originalHash : row.hash,
   };
 }
 
@@ -282,9 +299,12 @@ export async function purgeOrg(orgId: string, i: { now?: Date; actor?: Actor } =
   }
 
   const counts = await db.transaction((tx) => deleteOrgRows(tx, orgId));
+  // The practice's access log goes too (it was in the export): its reasons, ids and IP hashes are
+  // the practice's data, which Art. 28(3)(g) says to delete. Only the last hash stays, as an anchor.
+  counts.audit_log = (await pruneAuditLog(orgId, END_OF_TIME)).deleted;
   const backupsExpireAt = new Date(now.getTime() + backupRetentionDays() * DAY_MS);
   const metadata: Record<string, string | number | boolean | null> = {
-    stage: "purged",
+    stage: CERTIFICATE_STAGE,
     orgName: org.name,
     backupsExpireAt: backupsExpireAt.getTime(),
     providerCopies: copies.length,

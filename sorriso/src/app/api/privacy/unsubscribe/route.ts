@@ -6,11 +6,12 @@ import { lhref } from "@/i18n/href";
 import { negotiate } from "@/i18n/negotiate";
 import { getT } from "@/i18n/t";
 import { absoluteUrl } from "@/lib/config";
+import { sha256 } from "@/lib/ids";
 import { verifyUnsubscribeToken } from "@/lib/links";
 import { logError } from "@/lib/log";
 import { esc } from "@/lib/messaging/layout";
 import { currentConsents, withdrawConsent } from "@/lib/privacy/consent";
-import { rateLimitByIp } from "@/lib/rate-limit";
+import { rateLimit, rateLimitByIp } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -18,8 +19,18 @@ type Channel = "email" | "sms" | "whatsapp";
 
 const PURPOSE: Record<Channel, ConsentPurpose> = { email: "email_channel", sms: "sms_channel", whatsapp: "whatsapp_channel" };
 
-/** Opens and posts per network: generous for people, tight for someone walking tokens. */
-const LIMIT = { max: 30, windowMs: 10 * 60_000 };
+/**
+ * Invalid or missing tokens per network: tight for someone probing. Valid tokens are never counted
+ * against the network: RFC 8058 one-click POSTs come from the mailbox provider's servers (and link
+ * scanners from the same networks), so one network carries every patient's unsubscribes and a
+ * per-network limit would drop real withdrawals.
+ */
+const INVALID_LIMIT = { max: 30, windowMs: 10 * 60_000 };
+/**
+ * Requests per valid token (one patient and channel) and method, so link scanners' GETs never use
+ * up the one-click POST: far above any person, and the withdrawal is idempotent anyway.
+ */
+const TOKEN_LIMIT = { max: 20, windowMs: 10 * 60_000 };
 
 /**
  * /api/privacy/unsubscribe?t=<token>&c=<channel> — the List-Unsubscribe link of every patient email
@@ -36,6 +47,10 @@ const LIMIT = { max: 30, windowMs: 10 * 60_000 };
  *   is skipped. Idempotent: an existing opt-out records nothing new.
  *
  * Both answer in the patient's language. No cookie, no third-party resource, never cached.
+ *
+ * The token is checked first (an HMAC: nothing to guess). Only a missing or invalid token counts
+ * against the caller's network; a valid one is limited per token, so the provider's one-click
+ * POSTs for many patients from one network all go through.
  */
 export async function GET(req: Request) {
   return handle(req, "GET");
@@ -55,14 +70,18 @@ async function tokenOf(req: Request, method: "GET" | "POST"): Promise<string | n
 
 async function handle(req: Request, method: "GET" | "POST"): Promise<Response> {
   const fallback = negotiate(req.headers.get("accept-language")) ?? DEFAULT_LOCALE;
-  const limited = await rateLimitByIp(req.headers, "unsubscribe", LIMIT.max, LIMIT.windowMs);
-  if (!limited.ok) {
+  const tooMany = () => {
     const t = getT(fallback, "privacy");
     return page(fallback, 429, t("unsubscribe.title"), { body: t("unsubscribe.rateLimited") });
-  }
+  };
 
   const token = await tokenOf(req, method);
   const parsed = token ? verifyUnsubscribeToken(token) : null;
+  if (!parsed) {
+    if (!(await rateLimitByIp(req.headers, "unsubscribe-invalid", INVALID_LIMIT.max, INVALID_LIMIT.windowMs)).ok) return tooMany();
+  } else if (!(await rateLimit(`unsubscribe:${method}:${sha256(token!).slice(0, 32)}`, TOKEN_LIMIT.max, TOKEN_LIMIT.windowMs)).ok) {
+    return tooMany();
+  }
   const [row] = parsed
     ? await db
         .select({ patient: patients, orgName: organizations.name })

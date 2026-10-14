@@ -17,6 +17,7 @@ Code map:
 | Passwords (scrypt, policy, common-password list) | `src/lib/password.ts`, `src/lib/security/common-passwords.ts` |
 | TOTP (RFC 6238) and recovery codes | `src/lib/totp.ts`, `src/lib/security/mfa.ts` |
 | Sign-in throttling, new-device detection | `src/lib/security/login.ts` |
+| Withdrawing feeds and keys on removal or demotion | `src/lib/security/offboarding.ts` |
 | One-time email tokens (reset, confirm, invite) | `src/lib/security/tokens.ts` |
 | Emails about the account (`authEmails` namespace) | `src/lib/security/emails.ts` |
 | Rate limits | `src/lib/rate-limit.ts` |
@@ -42,9 +43,11 @@ Code map:
 - **Rotation**: a new session id on sign-in, after the second step, on switching practice
   (`switchSessionOrg`), on accepting an invitation and on a password change.
 - **Revocation**: all of a user's sessions are deleted on a password change or reset, an MFA
-  reset by a manager, removal from a practice, and revocation of platform-admin rights. Users can
-  sign out any of their other sessions themselves. A session older than the user's
-  `passwordChangedAt` is refused even if its row survived.
+  reset by a manager, and revocation of platform-admin rights. Removal from a practice deletes the
+  sessions open in that practice, and all of them when it was the person's only practice (one
+  practice must not sign someone out of the others they work for). Users can sign out any of
+  their other sessions themselves. A session older than the user's `passwordChangedAt` is refused
+  even if its row survived.
 
 ## Signing in
 
@@ -52,7 +55,11 @@ Code map:
   5 failures for one email, or 20 from one network (an IPv6 /64 counts as one), within
   15 minutes, every attempt is refused with the same generic message, the correct password
   included, until the window has passed. Failures before the email's last successful sign-in
-  don't count against it.
+  don't count against it. An attempt is written (as a failure) **before** its password is
+  checked and turned into a success afterwards, and the throttle counts every row written before
+  it: a burst of parallel requests can't all read "no failures yet", so at most 5 passwords per
+  email (20 per network) are ever tried in a window. Refused attempts are removed again, so
+  hammering a locked account doesn't extend the lock.
 - **No account enumeration**: an unknown email is checked against a fixed dummy scrypt hash, so
   it costs the same time and gets the same answer as a wrong password. Signup and password reset
   answer "check your inbox" whether or not the address has an account (an existing address gets
@@ -66,7 +73,9 @@ Code map:
 - Every event is audited: `auth.login.success` (with `step: password | mfa | step_up`),
   `auth.login.fail` (with the reason: `password`, `unknown_account`, `throttled`),
   `auth.logout`, `auth.mfa.enable`, `auth.mfa.fail`, `auth.password.change`,
-  `auth.password.reset`, `session.revoke`.
+  `auth.password.reset`, `session.revoke`. Email confirmations and new confirmation links are
+  logged as `settings.update` on the user (`emailVerified: true`, `emailVerification: resent`)
+  until dedicated `auth.email.*` actions exist; signups leave their `legal.accept` rows.
 
 ## Passwords
 
@@ -79,7 +88,8 @@ Code map:
   stored); requesting a new one invalidates the older ones. A reset ends every session and
   emails the user.
 - **Change** (*My security*): needs the current password (5 tries per 15 minutes), ends every
-  other session and emails the user.
+  other session, voids reset links requested before (so a link someone else asked for can't set
+  yet another password afterwards) and emails the user.
 
 ## Two-step verification (TOTP)
 
@@ -91,7 +101,10 @@ Code map:
   has to enrol to `/dashboard/account/security?setup=mfa` and nowhere else (the legal page is
   also reachable, so it can't loop with the legal gate). Demo practices in demo mode are exempt.
 - **Enrolment**: the page shows the setup key and an `otpauth://` link (no QR library, nothing
-  third-party), then asks for a first code. Enabling it signs out the user's other sessions.
+  third-party), then asks for a first code. Enabling it signs out the user's other sessions. Both
+  steps need step-up, so a stolen session cookie alone can't put the thief's authenticator on the
+  account and lock the owner out; right after signing in the password counts as fresh, so the
+  enrolment forced after login goes straight through.
 - **Recovery codes**: 10 codes of 10 characters, stored as HMACs, each usable once, shown once
   (copy or download as a text file). Users can generate a new set (old ones stop working).
 - **Sign-in**: with MFA on, the password gives a *pending* session that is good for nothing but
@@ -102,7 +115,8 @@ Code map:
   `/dashboard/account/security/verify?next=…`; server actions answer
   `{ ok: false, code: "step_up_required" }` and the dashboard's components send the user to the
   same page. Used today for: API keys, invitations, role changes, member removal, MFA resets,
-  recovery codes and turning MFA off (and by WP5 for exports, erasure and privacy settings).
+  MFA enrolment, recovery codes and turning MFA off (and by WP5 for exports, erasure and privacy
+  settings).
 
 ### MFA recovery
 
@@ -112,7 +126,10 @@ Code map:
    two-step* after checking the person's identity in person or by phone (never by email alone).
    The member is signed out everywhere and enrols again at the next sign-in. Only an owner can
    reset another owner. The reset is audited (`session.revoke`, `cause: mfa_reset`) and the
-   member is emailed.
+   member is emailed. The authenticator protects the whole account, in every practice, so a
+   practice can reset it only for someone who works for that practice alone: for a member of
+   another practice too, or a platform admin, the team page doesn't offer it and the action
+   answers `shared_account`. Those go to Sorriso support (step 3's procedure).
 3. **Sole owner locked out**: Sorriso support handles it as a security incident: verify the
    owner's identity against the practice's contract records (for example a signed request on the
    practice's letterhead plus a call back to the number on file), record it in the incident
@@ -153,9 +170,25 @@ practice's ids and checks that nothing of it changes or leaks.
   mailbox, so the email counts as confirmed); an existing account must be signed in.
 - **Rules**: nobody changes their own role or removes themselves; only an owner gives or takes
   away the owner role (or removes or resets an owner); a practice always keeps one owner.
-- **Removal** deletes the membership, ends every session of the person and turns off the
-  calendar feed of a practitioner profile linked to them (it would otherwise keep sending the
-  practice's agenda to their own calendar).
+- **Role changes** are applied with an explicit *Change role* button and a confirmation, never
+  by picking from the list alone.
+- **Removal** deletes the membership and ends the person's sessions in this practice (all their
+  sessions when it was their only practice).
+- **What leaves with a manager** (`src/lib/security/offboarding.ts`): feed URLs and API key
+  secrets are shown once, to whoever creates them, so on removal, or on a role change to a role
+  that can no longer create them, Sorriso withdraws what the person holds:
+  - calendar feeds whose current URL they generated (the newest `ics.feed.rotate` for that
+    practitioner in the audit chain is theirs) are turned off once they can't manage the team;
+    the feed of their own practitioner profile stays while they are a member;
+  - on removal, the feed of the practitioner profile linked to them is turned off too, whoever
+    generated it (it delivers to their calendar);
+  - API keys they created are revoked once they can't manage API keys.
+  Each is audited (`ics.feed.rotate` with `enabled: false`, `apikey.revoke`, with
+  `cause: member_removed | role_changed`), the confirmation dialogs say so, and the result tells
+  the manager how many links and keys stopped working, to issue again if still needed. The
+  audit log is kept at least 24 months, longer than a feed URL lives (12), so every current URL
+  can be attributed except those carried over from before the migration (backfill), which have
+  no `ics.feed.rotate` row: after removing a manager, regenerate such feeds from the team page.
 - Audited: `member.invite` (sent, withdrawn, accepted), `member.role_change`, `member.remove`.
 
 ## Partner API keys
@@ -165,9 +198,15 @@ practice's ids and checks that nothing of it changes or leaks.
   `notes:read`, `patients:erase`. Responses are cut to the scopes: appointment notes only with
   `notes:read`, birth date and no-show count only with `patients:read`. Restricted/erased flags
   are always included so integrations can honour Art. 18 and 17 (Art. 19).
-- **Expiry**: always, 1-24 months (default 12). Expired and revoked keys get 401.
+- **Expiry**: always, 1-24 months (default 12). Expired and revoked keys get 401. A key from
+  before expiries existed (`expires_at` NULL) expires 12 months after it was created
+  (`apiKeyExpiry()`), and the API settings page shows that date. The formerly hard-coded demo
+  key `sk_demo_studio_bianchi_local_only` is refused whatever the database says.
 - **IP allow-list** (optional): exact addresses or CIDR ranges, IPv4 and IPv6; another address
-  gets 403 `ip_not_allowed`.
+  gets 403 `ip_not_allowed`. The address is `clientIp()`'s (see *Rate limits*), so the
+  deployment's trusted header must be configured correctly.
+- The public booking and waitlist routes called with a key need `appointments:write`, count
+  against the key's per-minute limit and are audited as `api.request` like the partner routes.
 - Creating a key needs step-up and emails every owner of the practice.
 - `/api/v1/partner/**` sends **no CORS headers** (a browser page can't use a key), `no-store`,
   600 calls per minute per key, and audits every call (`api.request`: method, route, status;
@@ -180,9 +219,12 @@ practice's ids and checks that nothing of it changes or leaks.
 
 `/api/ics/practitioner/{token}.ics` serves a feed only while the practice's
 `privacy.icsFeedsEnabled` and the practitioner's feed are on and the token (looked up by hash) is
-younger than 12 months. Events cover the past 7 days and the next 30 and read "Appointment" (or
+younger than 12 months (a feed without an expiry, issued before expiries existed, no longer
+works). Events cover the past 7 days and the next 30 and read "Appointment" (or
 "Appointment · G. S." with `icsDetail: initials`): never the treatment, the patient's name or a
-note. Each fetch is audited (`ics.feed.fetch`, with the HMAC of the caller's IP), rate-limited
+note. A patient who restricted processing (Art. 18) or was erased is always just "Appointment",
+whatever `icsDetail` says: the dashboard masks them too, and the calendar provider is a third
+party. Each fetch is audited (`ics.feed.fetch`, with the HMAC of the caller's IP), rate-limited
 (30 per hour per feed; unknown URLs 30 per hour per network) and `Cache-Control: no-store`. The
 URL is shown once when created; only the linked practitioner or a manager can create, rotate
 or turn off a feed, and the card explains that the calendar provider receives the data.
@@ -214,8 +256,21 @@ Static (`next.config.ts`): `poweredByHeader: false`; HSTS (production, 2 years, 
 ## Rate limits
 
 Fixed windows in the `rate_limits` table (shared by every serverless instance), keyed by an HMAC
-of the client's network (`clientIp()` trusts only the hop our edge added; an IPv6 /64 counts as
-one network).
+of the client's network (an IPv6 /64 counts as one network).
+
+**Client address** (`clientIp()` in `src/lib/rate-limit.ts`): only a header the deployment's own
+edge writes is believed. Anything else a client can send with any value, to pick its rate-limit
+bucket or pass an API key's IP allow-list.
+
+| Deployment | Address used | Configure |
+| --- | --- | --- |
+| Vercel | `x-vercel-forwarded-for` (the platform overwrites it) | nothing (`VERCEL` is set by the platform) |
+| Behind one proxy that appends to `X-Forwarded-For` (Caddy, nginx with `$proxy_add_x_forwarded_for`, Traefik) | the last `X-Forwarded-For` hop | nothing (the default) |
+| Behind a proxy that overwrites a dedicated header (nginx `X-Real-IP $remote_addr`, Cloudflare `CF-Connecting-IP`), or several proxies | that header | `TRUSTED_IP_HEADER=x-real-ip` (or `cf-connecting-ip`, …) |
+
+`x-real-ip` and `x-vercel-forwarded-for` are ignored unless configured this way: a proxy that
+doesn't know them passes a client's value through untouched. The app must not be reachable
+except through the proxy (a direct client could write `X-Forwarded-For` itself).
 
 | Endpoint | Limit |
 | --- | --- |
@@ -223,8 +278,8 @@ one network).
 | Second step | 5 per sign-in, 10 per user per 15 min |
 | Signup | 5 per network per hour |
 | Password reset request | 5 per network per 15 min; 3 emails per address per hour |
-| Public booking (`POST /api/v1/clinics/:slug/appointments`) | 10 per network per 10 min |
-| Waitlist | 5 per network per 10 min |
+| Public booking (`POST /api/v1/clinics/:slug/appointments`) | 10 per network per 10 min (with an API key: the key's 600 per minute) |
+| Waitlist | 5 per network per 10 min (with an API key: the key's 600 per minute) |
 | Clinic profile, availability | 120 per network per minute |
 | `/api/v1/appointments/:token` | 60 reads, 20 changes per network per 10 min |
 | Practitioner feed | 30 per feed per hour; 30 unknown URLs per network per hour |
@@ -256,9 +311,11 @@ one network).
 - `scripts/seed.ts` refuses to run when `NODE_ENV` is production or `DATABASE_URL` is not a
   local `file:` database, unless `ALLOW_DEMO_SEED=1` (`npm run db:reset` sets it for a local
   reset).
-- Seeded phone numbers are in the unassigned `+39 000…` range and emails use `.example` domains,
-  so no real person can be contacted even if a provider is misconfigured; the demo API key is
-  random, stored hashed and printed once.
+- Seeded phone numbers are in the unassigned `+39 000…` range and emails use reserved domains
+  (`.example`, `example.com`), the demo logins included (`demo@sorriso.example`,
+  `reception@sorriso.example`, `src/lib/security/demo-accounts.ts`), so no real person can be
+  contacted even if a provider is misconfigured: sign-in alerts, resets and invitations a public
+  demo sends for them go nowhere. The demo API key is random, stored hashed and printed once.
 - The login page's demo box and `?demo=1` exist only when `DEMO_MODE=1`. Messaging outside the
   live deployment goes only to `MESSAGING_ALLOWLIST` (`src/lib/demo.ts`).
 

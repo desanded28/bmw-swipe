@@ -22,7 +22,14 @@ import { newId } from "@/lib/ids";
 import { OTP_TTL_MS, verifyOtp } from "@/lib/otp";
 import { zonedToUtc } from "@/lib/time";
 import { createPractice, MONDAY, NOW, TZ } from "@/test/fixtures";
-import { createPatientSession, patientSessionCookie, PATIENT_SESSION_TTL_MS, resolvePatientSession, type PatientSession } from "./patient-session";
+import {
+  cookieWithUnlocked,
+  createPatientSession,
+  patientSessionCookie,
+  PATIENT_SESSION_TTL_MS,
+  resolvePatientSession,
+  type PatientSession,
+} from "./patient-session";
 import {
   answerChallenge,
   auditView,
@@ -32,14 +39,18 @@ import {
   exportRecord,
   fileRequest,
   findRecords,
+  linkRecord,
+  linkStepUpContacts,
   loadRecordDetails,
   maskContact,
   openTicket,
   parseContact,
   recordFor,
+  recordStepUpVerification,
   requestContactChange,
   requestPrivacyCenterCode,
   sealTicket,
+  sessionRecords,
   setConsentChoice,
   updatePreferences,
   withdrawOwnReview,
@@ -243,6 +254,8 @@ describe("patient sessions", () => {
   it("uses an HttpOnly, SameSite=Lax, 30-minute __Host- cookie on https", () => {
     const cookie = patientSessionCookie("v", at(PATIENT_SESSION_TTL_MS));
     expect(cookie).toMatchObject({ name: "__Host-sorriso_pc", httpOnly: true, sameSite: "lax", secure: true, path: "/", maxAge: 1800 });
+    // Re-set during the session (an unlock), it keeps the original end: never 30 fresh minutes.
+    expect(patientSessionCookie("v", at(PATIENT_SESSION_TTL_MS), at(20 * 60_000)).maxAge).toBe(600);
   });
 });
 
@@ -425,7 +438,7 @@ describe("what a session can see and do", () => {
     const [row] = await db.select().from(patients).where(eq(patients.id, ids.marioB));
     expect(row.phone).toBe(NEW);
     expect(isContactVerified(row, "phone", NEW)).toBe(true);
-    expect(lastTo(P1)?.text).toContain("was changed");
+    expect(lastTo(P1)?.text).toContain("The mobile number on your record");
     // Practice A's record keeps its own number.
     const [other] = await db.select().from(patients).where(eq(patients.id, ids.marioA));
     expect(other.phone).toBe(P1);
@@ -449,5 +462,107 @@ describe("decoy challenges", () => {
     for (const code of ["000000", "123456", "999999"]) if ((await verifyOtp({ challengeId: t.c, code, purpose: "privacy_center", now: NOW })).ok) valid++;
     expect(valid).toBe(0);
     expect(sent).toHaveLength(0);
+  });
+});
+
+/** A mobile number no other test (or earlier run on the same database) uses. */
+const freshPhone = () => `+39345${String(Math.floor(Math.random() * 10_000_000)).padStart(7, "0")}`;
+
+describe("identity challenge on shared contacts", () => {
+  const P3 = freshPhone(); // spouses sharing one phone, both proven
+  const P4 = freshPhone(); // a record with no birth date
+  const pid = { paolo: "", laura: "", sara: "" };
+
+  beforeAll(async () => {
+    pid.paolo = await patient(a.orgId, { firstName: "Paolo", lastName: "Neri", phone: P3, birthDate: "1975-02-02", verifiedContacts: [contactHash("phone", P3)!] });
+    pid.laura = await patient(a.orgId, { firstName: "Laura", lastName: "Neri", phone: P3, birthDate: "1977-03-03", verifiedContacts: [contactHash("phone", P3)!] });
+    pid.sara = await patient(b.orgId, { firstName: "Sara", lastName: "Blu", phone: P4 });
+  });
+
+  it("keeps a record unlocked for the rest of the session when two adults share the contact", async () => {
+    const { session: s0, cookieValue } = await createPatientSession({ kind: "phone", value: P3 }, { headers: visitor(), now: NOW });
+    expect((await findRecords(s0.contact, NOW)).map((r) => r.disclosure)).toEqual(["challenge", "challenge"]);
+    expect(await answerChallenge(s0, pid.paolo, { lastName: "Neri", birthDate: "1975-02-02" }, { now: NOW })).toEqual({ ok: true });
+    // The contact still matches two adults: the disclosure rule alone would ask again.
+    expect(await recordFor(s0, pid.paolo, NOW)).toBeNull();
+
+    const next = (await cookieWithUnlocked(cookieValue, pid.paolo, NOW))!;
+    expect(next.cookieValue.split(".")[0]).toBe(cookieValue.split(".")[0]);
+    const s1 = (await resolvePatientSession(next.cookieValue, NOW))!;
+    expect(s1).toMatchObject({ id: s0.id, unlocked: [pid.paolo], expiresAt: s0.expiresAt });
+    expect((await sessionRecords(s1, NOW)).map((r) => [r.patient.id, r.disclosure])).toEqual(
+      expect.arrayContaining([
+        [pid.paolo, "details"],
+        [pid.laura, "challenge"],
+      ]),
+    );
+    expect(await recordFor(s1, pid.paolo, NOW)).not.toBeNull();
+    expect(await recordFor(s1, pid.laura, NOW)).toBeNull();
+    expect(await exportRecord(s1, { patientId: pid.paolo, locale: "en", now: NOW })).not.toBeNull();
+    expect(await exportRecord(s1, { patientId: pid.laura, locale: "en", now: NOW })).toBeNull();
+    // Another contact's session gains nothing from the unlock, and the unlock ends with the session.
+    expect(await recordFor({ ...(await session(P2)), unlocked: [pid.paolo] }, pid.paolo, NOW)).toBeNull();
+    expect(await resolvePatientSession(next.cookieValue, at(PATIENT_SESSION_TTL_MS))).toBeNull();
+  });
+
+  it("doesn't offer the challenge for a record without a birth date, and uses up no attempts", async () => {
+    const s = await session(P4);
+    const [rec] = await findRecords(s.contact, NOW);
+    expect(rec).toMatchObject({ disclosure: "challenge", canChallenge: false });
+    for (let i = 0; i < 7; i++) {
+      expect(await answerChallenge(s, pid.sara, { lastName: "Blu", birthDate: "1990-01-01" }, { now: NOW })).toEqual({ ok: false, reason: "unavailable" });
+    }
+    expect(await recordFor(s, pid.sara, NOW)).toBeNull();
+  });
+});
+
+describe("the appointment link's privacy page", () => {
+  const T = freshPhone(); // a 15-year-old's own phone
+  const G = freshPhone(); // their legal guardian
+  const BOOKER = freshPhone();
+  const rows: Record<string, typeof patients.$inferSelect> = {};
+  const fifteen = `${new Date(NOW).getUTCFullYear() - 15}-01-01`;
+
+  beforeAll(async () => {
+    const make = async (key: string, v: Parameters<typeof patient>[1]) => {
+      const id = await patient(a.orgId, v);
+      rows[key] = (await db.select().from(patients).where(eq(patients.id, id)))[0];
+    };
+    await make("teen", { firstName: "Teo", lastName: "Gialli", phone: T, birthDate: fifteen, guardianName: "Gina Gialli", guardianRelation: "legal_guardian", guardianPhone: G });
+    await make("grown", { firstName: "Ada", lastName: "Gialli", phone: freshPhone(), birthDate: "2000-01-01", guardianPhone: G, guardianRelation: "parent" });
+    await make("adult", { firstName: "Nonna", lastName: "Pina", phone: BOOKER, email: "nonna@example.com", birthDate: "1940-01-01" });
+  });
+
+  const org = () => ({ id: a.orgId, slug: "studio", name: "Studio Test", legalName: null, email: null, phone: null, privacyEmail: null, timezone: TZ, brandColor: "#0c675d", settings: a.settings });
+  const appt = (bookedFor: "self" | "minor" | "other_adult") => ({ id: "x", bookedFor, bookedByPhone: bookedFor === "other_adult" ? BOOKER : null, bookedByEmail: null });
+
+  it("acts as the patient only when the patient booked; a guardian's booking acts as the guardian", () => {
+    expect(linkRecord({ patient: rows.teen, org: org(), appointment: appt("self") }, NOW).acting).toMatchObject({ actorRelation: "self" });
+    const minor = linkRecord({ patient: rows.teen, org: org(), appointment: appt("minor") }, NOW);
+    expect(minor.rec.via).toBe("guardian");
+    expect(minor.acting).toMatchObject({ actorRelation: "legal_guardian", source: "manage_link" });
+  });
+
+  it("lets nobody act for an adult someone else booked for, or for a minor who has turned 18", () => {
+    expect(linkRecord({ patient: rows.adult, org: org(), appointment: appt("other_adult") }, NOW).acting).toBeNull();
+    expect(linkRecord({ patient: rows.grown, org: org(), appointment: appt("minor") }, NOW).acting).toBeNull();
+  });
+
+  it("never sends the step-up code to the booker's own contact", () => {
+    const forOther = linkStepUpContacts({ patient: rows.adult, appointment: appt("other_adult") }, NOW);
+    expect(forOther).toEqual([{ kind: "email", value: "nonna@example.com" }]);
+    expect(linkStepUpContacts({ patient: rows.adult, appointment: appt("self") }, NOW).map((c) => c.kind)).toEqual(["phone", "email"]);
+  });
+
+  it("records the step-up contact as verified, audited as the new session", async () => {
+    const s = await session(T);
+    expect(await recordStepUpVerification(s, { patientId: rows.teen.id, contact: { kind: "phone", value: T }, now: NOW })).toBe(true);
+    const [row] = await db.select().from(patients).where(eq(patients.id, rows.teen.id));
+    expect(isContactVerified(row, "phone", T)).toBe(true);
+    const [log] = await db.select().from(auditLog).where(and(eq(auditLog.entityId, rows.teen.id), eq(auditLog.actorId, s.id)));
+    expect(log).toMatchObject({ actorType: "patient_session", action: "patient.update", orgId: a.orgId });
+    expect(log.metadata).toMatchObject({ change: "contact_verified", source: "manage_link_step_up" });
+    // A contact that isn't on the record changes and audits nothing.
+    expect(await recordStepUpVerification(s, { patientId: rows.teen.id, contact: { kind: "phone", value: P2 }, now: NOW })).toBe(false);
   });
 });

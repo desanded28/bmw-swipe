@@ -11,6 +11,8 @@ import { getStaffLocale, getT } from "@/i18n/server";
 import { requirePermission } from "@/lib/permissions";
 import { buildRegister, customRegisterEntries, REGISTER_COLUMNS } from "@/lib/privacy/register";
 import { resolveSettings } from "@/lib/settings";
+import { ComplianceBanner } from "@/components/privacy-admin/ComplianceBanner";
+import { gatePage } from "@/lib/privacy/gates";
 
 export async function generateMetadata(): Promise<Metadata> {
   return { title: getT(await getStaffLocale(), "privacyAdmin")("register.title") };
@@ -25,6 +27,7 @@ const PRINT_CSS = `@media print { aside, nav, header, .print\\:hidden { display:
  */
 export default async function RegisterPage({ searchParams }: { searchParams: Promise<{ lang?: string }> }) {
   const s = await requirePermission("privacy.settings");
+  const banner = await gatePage(s);
   const staffLocale = await getStaffLocale();
   const t = getT(staffLocale, "privacyAdmin");
   const requested = (await searchParams).lang;
@@ -39,6 +42,7 @@ export default async function RegisterPage({ searchParams }: { searchParams: Pro
 
   return (
     <div className="mx-auto max-w-7xl space-y-6">
+      <ComplianceBanner state={banner} />
       <style>{PRINT_CSS}</style>
       <PageHeader
         title={t("register.title")}

@@ -100,8 +100,9 @@ export default async function Overview({ searchParams }: { searchParams: Promise
   ]);
 
   // The patient's last unparsed reply, for the "needs attention" rows: message text, so only
-  // with messages.read, never for a masked (restricted) patient, and each one audited.
-  const replyIds = can(s.role, "messages.read") ? attention.filter((a) => !a.patient.masked).map((a) => a.id) : [];
+  // with messages.read, and each one audited. Never for a restricted or erased patient, whoever
+  // looks: their messages are read in the drawer, after a reason was given.
+  const replyIds = can(s.role, "messages.read") ? attention.filter((a) => !a.restricted).map((a) => a.id) : [];
   const lastInbound = replyIds.length
     ? await db
         .select({ appointmentId: messages.appointmentId, body: messages.body })

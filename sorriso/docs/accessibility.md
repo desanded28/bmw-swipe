@@ -17,6 +17,11 @@ Owner: WP1 (public site). This file is the working record behind the public acce
 > the "partially conformant" claim. The feedback address comes from `PLATFORM_ACCESSIBILITY_EMAIL`
 > (falling back to `PLATFORM_PRIVACY_EMAIL`); set it in production. When the statement is reviewed
 > again, update `PREPARED_ON` / `REVIEWED_ON` in `src/app/[locale]/(site)/legal/accessibility/page.tsx`.
+>
+> **The statement says only what was done.** `accessibility.preparation.body` states that the manual
+> keyboard and screen-reader review has not been completed yet, and `features.keyboard` / `features.zoom`
+> say "built to" rather than claiming a tested result. Change that wording (all languages) only after
+> a release row in [Results](#results) records the manual columns as passed.
 
 ## What the code guarantees
 
@@ -30,11 +35,13 @@ Owner: WP1 (public site). This file is the working record behind the public acce
 | Labels and errors | `Field` links label (`htmlFor`), hint and error (`aria-describedby`) and sets `aria-invalid`; hint and error are outside the label | `ui.test.ts` |
 | Booking steps | stepper is an `ol` labelled "Booking steps" with `aria-current="step"`; each step change moves focus to the step's `h2` (`tabIndex=-1`); never on first load | `BookingFlow.test.ts` |
 | Redundant entry (3.3.7) | the whole form (details, privacy, relation, extras, waitlist) lives in `BookingFlow` memory: back, service change and a taken slot keep it; nothing in web storage | `BookingFlow.test.ts` ("returns to the times with an alert…") |
-| Errors | submit errors are a `role="alert"` summary; focus moves to the first `aria-invalid` field (or the summary); API codes map to `errors.api.*` in the page language | `BookingFlow.test.ts` ("API errors") |
+| Errors | submit errors are a `role="alert"` summary; focus moves to the first `aria-invalid` field (or the summary); API codes map to `errors.api.*` in the page language; `notice_outdated` (the privacy notice changed while the form was open) explains why and offers a "Reload the page" button | `BookingFlow.test.ts` ("API errors") |
+| Waitlist | birth date field (`autocomplete="bday"`, shared with the booking form) required for a minor, so `birthdate_required` lands on a visible field; an empty "Until" shows, and sends, the practice's online booking horizon from "From"; the confirmation repeats the range | `BookingFlow.test.ts` ("Waitlist") |
 | Slot picker | one `role="group"` per day labelled by its header; buttons have `aria-pressed` and a full `aria-label` (weekday, date, time, practitioner, office when several); one `role="status"` region announces loading, results, empty weeks and range changes; prev/next stay focusable while loading (`aria-disabled`) | `SlotPicker.test.ts` |
 | Consistent help (3.2.6) | `ClinicHelp` (practice phone, else email) at the bottom of the booking sidebar and of the manage page | manual check below |
-| Stars | `role="img"` with a label (pass `label`, e.g. `t("rating.stars")` from `a11y`) | `ui.test.ts` |
-| Widget | dialog is `role="dialog"` + `aria-modal`, labelled; focus goes into the frame on open and back to the button on close; Tab is kept inside with sentinels; Escape closes; button/title/close localised for 8 languages | `widget.test.ts` |
+| Stars | `role="img"` with a required, localised `label` (e.g. `t("rating.stars")` from `a11y`); no unlocalised fallback | `ui.test.ts` |
+| Widget | dialog is `role="dialog"` + `aria-modal`, labelled; focus goes into the frame on open and back to the button on close; Tab is kept inside with sentinels; Escape closes, also with focus inside the cross-origin frame (the embed posts `{ source, type: "close" }` to the validated parent only; `widget.js` checks origin and source); closing hides the dialog and keeps the frame, so reopening shows what was typed; button/title/close localised for 8 languages | `widget.test.ts`, `BookingFlow.test.ts` ("Escape inside the widget's frame") |
+| Embed restriction | with allowed websites set, the frame shows the flow only if `?parent` is listed and the `Referer` vouches for it (the parent itself, or this practice's embed with the same parent); no `Referer` (`referrerpolicy="no-referrer"`) fails closed; a request without `Sec-Fetch-Dest` but with `?parent` gets the same check | `page.test.ts` (embed) |
 
 ## Contrast decisions
 
@@ -86,8 +93,10 @@ wide window.
 
 ### Waitlist (time step, "Join the waitlist")
 1. Opening the form moves focus to its heading; "Cancel" returns focus to "Join the waitlist".
-2. Names and contacts typed in the details step are already filled in, and vice versa.
-3. Errors behave as in booking; success is announced ("You're on the waitlist…").
+2. Names, contacts and the birth date typed in the details step are already filled in, and vice versa.
+3. With "Until" empty, its hint reads "Optional. If you leave it empty, we'll look until …".
+4. Choose "A minor" and submit without a birth date: the birth date field reads its error and "invalid entry", and has focus.
+5. Errors behave as in booking; success is announced ("You're on the waitlist… We'll look for times from … to …").
 
 ### Manage (`/it/a/<token>`)
 1. Title and preview are generic ("Your appointment"); the page has `noindex` and `no-referrer`.
@@ -97,9 +106,9 @@ wide window.
 5. `/it/a/<unknown>` and `/it/a/<expired>` show only a generic message (no practice, no name).
 
 ### Embed and widget
-1. On a test page with `<script src=".../widget.js" data-clinic="<demo>" data-lang="de">`, the button reads "Termin buchen"; activating it opens a dialog named "Termin buchen", focus is inside the frame, Tab cycles between the frame and "Schließen", Escape closes and focus returns to the button.
-2. Inline mode (`data-target`): the frame's title is read; the frame grows with its content.
-3. With allowed websites set in the practice's privacy settings and the widget on another site, only "Open the booking page in a new tab" is shown.
+1. On a test page with `<script src=".../widget.js" data-clinic="<demo>" data-lang="de">`, the button reads "Termin buchen"; activating it opens a dialog named "Termin buchen", focus is inside the frame, Tab cycles between the frame and "Schließen". Escape closes, both with focus on "Schließen" and with focus on a field inside the form, and focus returns to the button. Reopening shows what was typed.
+2. Inline mode (`data-target`): the frame's title is read; the frame grows with its content; Escape inside it does nothing.
+3. With allowed websites set in the practice's privacy settings and the widget on another site, only "Open the booking page in a new tab" is shown. Same for a hand-written `<iframe referrerpolicy="no-referrer" src=".../embed/<demo>?parent=<an allowed site>">` on another site.
 
 ### Message language in each locale
 For each of `it en de fr es pt ro pl`: open `/{l}/book/<demo>`, reach the details step and check
@@ -114,10 +123,16 @@ recorded per release by the tester.
 | Release | Date | Automated (WP1 tests) | Keyboard | NVDA + Firefox | VoiceOver + Safari iOS | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | WP1 branch (pre-merge) | 2026-10-14 | pass | not run | not run | not run | No browser or screen reader in the build environment. Server-rendered output checked: skip link first in `<body>`, `main#content`, stepper, labels, slot labels, metadata. |
+| Integrated tree (68af52d + WP1 review fixes) | 2026-10-14 | **fail, then pass** | not run | not run | not run | At 68af52d 15 of 23 `BookingFlow.test.ts` tests failed: the shared `PatientRelationSection` / `PrivacySection` / `BookingExtrasSection` now read the `privacy` and `catalog` namespaces, which the test's server render did not load (the book and embed pages do). The render now loads the pages' namespaces; all WP1 tests pass again. |
+
+**Open acceptance item:** the keyboard and screen-reader checklist on `/it/book/<demo>` and
+`/it/a/<token>` (NVDA + Firefox, VoiceOver + Safari iOS) has not been run. It stays open until a
+release row above records it as passed; until then the public statement says so (see the note at
+the top).
 
 | Locale | Select defaults to page language (`BookingFlow.test.ts`) | Patient row stores it | No hydration warning |
 | --- | --- | --- | --- |
-| it, en, de, fr, es, pt, ro, pl | pass (server render, also with a different `navigator.language`) | after merge (booking route, WP6/WP8) | manual, after merge |
+| it, en, de, fr, es, pt, ro, pl | pass (server render, also with a different `navigator.language`; failing at 68af52d until the render loaded `privacy`/`catalog`, see above) | after merge (booking route, WP6/WP8) | manual, after merge (not run) |
 
 WP1 tests: `src/components/ui.test.ts`, `src/components/booking/BookingFlow.test.ts`,
 `src/components/booking/SlotPicker.test.ts`, `src/app/[locale]/(site)/a/[token]/page.test.ts`,

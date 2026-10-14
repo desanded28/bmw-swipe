@@ -65,8 +65,12 @@ import { activeSubprocessors } from "./subprocessors";
 export const EXPORT_SCHEMA_VERSION = "1.0";
 export const EXPORT_SCHEMA_PATH = "/developers/export-schema";
 
-const iso = z.iso.datetime().describe("Instant, ISO 8601 in UTC");
-const day = z.iso.date().describe("Calendar date, YYYY-MM-DD");
+// The .describe() texts are for the machine-readable JSON Schema (English); the documentation page
+// shows them translated: privacyAdmin.exportSchema.descriptions, keyed by exportSchemaFields().
+const ISO_DESCRIPTION = "Instant, ISO 8601 in UTC";
+const DAY_DESCRIPTION = "Calendar date, YYYY-MM-DD";
+const iso = z.iso.datetime().describe(ISO_DESCRIPTION);
+const day = z.iso.date().describe(DAY_DESCRIPTION);
 const text = z.string().nullable();
 
 export const patientExportSchema = z
@@ -95,7 +99,7 @@ export const patientExportSchema = z
         firstName: z.string(),
         lastName: z.string(),
         email: text,
-        phone: text.describe("E.164"),
+        phone: text.describe("Mobile number in international format (E.164)"),
         birthDate: day.nullable(),
         locale: z.enum(LOCALES),
         preferredChannel: z.enum(["sms", "whatsapp", "email"]),
@@ -227,6 +231,60 @@ export type PatientExportData = z.infer<typeof patientExportSchema>;
 /** The schema as JSON Schema (draft 2020-12), for the documentation page. */
 export function patientExportJsonSchema() {
   return z.toJSONSchema(patientExportSchema, { target: "draft-2020-12", io: "output" });
+}
+
+type JsonSchema = {
+  type?: string | string[];
+  description?: string;
+  format?: string;
+  properties?: Record<string, JsonSchema>;
+  items?: JsonSchema;
+  anyOf?: JsonSchema[];
+  enum?: unknown[];
+  const?: unknown;
+};
+
+/** "string (date-time) | null", "object[]", "\"a\" | \"b\"". */
+function typeOf(s: JsonSchema): string {
+  if (s.anyOf) return s.anyOf.map(typeOf).join(" | ");
+  if (s.const !== undefined) return JSON.stringify(s.const);
+  if (s.enum) return s.enum.map((v) => JSON.stringify(v)).join(" | ");
+  if (s.type === "array") return `${s.items ? typeOf(s.items) : "any"}[]`;
+  const t = Array.isArray(s.type) ? s.type.join(" | ") : (s.type ?? "any");
+  return s.format ? `${t} (${s.format})` : t;
+}
+
+/** Descriptions shared by many fields, by their key in privacyAdmin.exportSchema.descriptions. */
+const SHARED_DESCRIPTIONS: Record<string, string> = { [ISO_DESCRIPTION]: "instant", [DAY_DESCRIPTION]: "date" };
+
+/** "accessLog[].actorRole" -> "accessLogActorRole": a field's description key. */
+const descriptionKeyOf = (path: string) => path.replace(/\[\]/g, "").replace(/\.(\w)/g, (_, c: string) => c.toUpperCase());
+
+export type ExportSchemaField = {
+  /** Dotted path, arrays as path[]. */
+  path: string;
+  type: string;
+  /** The English description in the JSON Schema ("" when none). */
+  description: string;
+  /** Its key in privacyAdmin.exportSchema.descriptions, or null when the field has none. */
+  descriptionKey: string | null;
+};
+
+/** The fields of patient.json, flattened, one row each, for the documentation page. */
+export function exportSchemaFields(): ExportSchemaField[] {
+  const out: ExportSchemaField[] = [];
+  const walk = (s: JsonSchema, prefix: string) => {
+    for (const [name, child] of Object.entries(s.properties ?? {})) {
+      const path = prefix ? `${prefix}.${name}` : name;
+      const target = child.anyOf?.find((a) => a.type !== "null") ?? child;
+      const description = child.description ?? target.description ?? "";
+      out.push({ path, type: typeOf(child), description, descriptionKey: description ? (SHARED_DESCRIPTIONS[description] ?? descriptionKeyOf(path)) : null });
+      if (target.properties) walk(target, path);
+      if (target.type === "array" && target.items?.properties) walk(target.items, `${path}[]`);
+    }
+  };
+  walk(patientExportJsonSchema() as JsonSchema, "");
+  return out;
 }
 
 export type PatientExport = { filename: string; contentType: string; body: Uint8Array };

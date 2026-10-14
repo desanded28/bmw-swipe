@@ -14,6 +14,7 @@ import { findSlots, loadAvailabilityContext, rangeForDates } from "../../src/lib
 import { createAppointment } from "../../src/lib/booking";
 import { DEFAULT_ANAMNESIS_V1, ensureDefaultTemplate, redFlagsOf } from "../../src/lib/forms";
 import { newId } from "../../src/lib/ids";
+import { logInfo } from "../../src/lib/log";
 import { addMonthsToDate } from "../../src/lib/recalls";
 import { refreshAppointmentRisk } from "../../src/lib/risk";
 import { fakePhone } from "../../src/lib/security/seed-guard";
@@ -292,7 +293,12 @@ export async function seedCare(ctx: SeedContext): Promise<void> {
     });
   }
 
-  console.log(
-    `  care: ${recallRows.length} recalls, ${upcoming.length} visits risk-scored, ${minorBooked ? 1 : 0} minor with guardian, ${next ? 1 : 0} medical history, ${twin ? 1 : 0} possible duplicate`,
-  );
+  // Counts only (F9.5: no console.*, nothing personal in logs).
+  logInfo("seed", "care demo data", {
+    recalls: recallRows.length,
+    riskScored: upcoming.length,
+    minorsWithGuardian: minorBooked ? 1 : 0,
+    medicalHistories: next ? 1 : 0,
+    possibleDuplicates: twin ? 1 : 0,
+  });
 }

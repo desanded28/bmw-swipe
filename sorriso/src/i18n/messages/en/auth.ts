@@ -79,6 +79,8 @@ export default {
     cleaning: "Professional cleaning",
     emergency: "Dental emergency",
     specialty: "General dentist",
+    /** The owner's title on their practitioner profile when they sign up as a dentist (it: "Dott."). */
+    title: "Dr.",
   },
   reset: {
     title: "Reset your password",

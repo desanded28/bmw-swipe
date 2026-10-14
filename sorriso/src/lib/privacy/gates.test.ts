@@ -10,6 +10,7 @@ import {
   canAcceptOnlineBookings,
   complianceBannerState,
   enforceDashboardGates,
+  gatePage,
   gateRedirect,
   notifySubprocessorChanges,
   pendingLegal,
@@ -127,6 +128,12 @@ describe("a new practice", () => {
     nav.path = "/dashboard/calendar";
     await expect(enforceDashboardGates(reception)).rejects.toMatchObject({ to: "/dashboard/legal?doc=staff_instructions" });
     expect(await complianceBannerState(reception)).toEqual({ kind: "awaiting_owner" });
+
+    // Page loaders gate too: a client-side navigation from the legal page to another page
+    // re-renders only the page, not the dashboard layout.
+    nav.path = "/dashboard/patients";
+    await expect(gatePage({ ...owner, org: { id: p.orgId, name: "Studio" } })).rejects.toMatchObject({ to: "/dashboard/legal" });
+    await expect(gatePage(reception)).rejects.toMatchObject({ to: "/dashboard/legal?doc=staff_instructions" });
   });
 
   it("takes bookings once the owner accepted, with the version, locale and ipHash recorded", async () => {
@@ -153,6 +160,9 @@ describe("a new practice", () => {
     expect(await pendingLegal(reception)).toMatchObject({ org: [], staffInstructions: true });
     await db.transaction((tx) => recordLegalAcceptance(tx, { orgId: p.orgId, userId: receptionId, doc: "staff_instructions", locale: "it" }));
     await expect(enforceDashboardGates(reception)).resolves.toBeUndefined();
+    // Gated pages then render, with the banner (if any) to show.
+    nav.path = "/dashboard/patients";
+    await expect(gatePage({ ...reception, org: { id: p.orgId, name: "Studio" } })).resolves.toBeNull();
   });
 
   it("stops online bookings once closure is requested", async () => {

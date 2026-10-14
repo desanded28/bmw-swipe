@@ -19,7 +19,9 @@ import { FEED_AHEAD_DAYS, FEED_PAST_DAYS, patientInitials } from "@/lib/security
  *    its token (looked up by hash) hasn't expired (12 months);
  *  - the past 7 days and the next 30;
  *  - each event is "Appointment", or "Appointment · G. S." with the practice's icsDetail
- *    'initials': never the treatment, the patient's name or any note;
+ *    'initials': never the treatment, the patient's name or any note. A patient who restricted
+ *    processing (Art. 18) or was erased is always just "Appointment": the dashboard masks them
+ *    too, and a calendar provider is a third party;
  *  - every fetch is audited (ics.feed.fetch, with the HMAC of the caller's IP) and rate-limited.
  * Anything wrong answers the same 404, so the URL reveals nothing.
  */
@@ -54,15 +56,22 @@ export async function GET(req: Request, { params }: { params: Promise<{ token: s
   if (!p) return notFound(true);
   const byFeed = await rateLimit(`ics-feed:${p.id}`, FETCHES_PER_HOUR, HOUR);
   if (!byFeed.ok) return tooMany(byFeed.retryAfterSec);
-  // A null expiry is a feed issued before expiries existed (every issue path sets one now).
-  if (!p.icsEnabled || (p.icsTokenExpiresAt && p.icsTokenExpiresAt.getTime() <= now.getTime())) return notFound();
+  // Every feed expires: one without an expiry (issued before expiries existed) is treated as expired.
+  if (!p.icsEnabled || !p.icsTokenExpiresAt || p.icsTokenExpiresAt.getTime() <= now.getTime()) return notFound();
   const [org] = await db.select().from(organizations).where(eq(organizations.id, p.orgId));
   // Feeds put appointment data into third-party calendars: off unless the practice enables them.
   const privacy = org ? getPrivacy(org) : null;
   if (!org || !privacy?.icsFeedsEnabled) return notFound();
 
   const rows = await db
-    .select({ a: appointments, firstName: patients.firstName, lastName: patients.lastName, location: locations.name })
+    .select({
+      a: appointments,
+      firstName: patients.firstName,
+      lastName: patients.lastName,
+      restrictedAt: patients.restrictedAt,
+      erasedAt: patients.erasedAt,
+      location: locations.name,
+    })
     .from(appointments)
     .innerJoin(patients, eq(patients.id, appointments.patientId))
     .innerJoin(locations, eq(locations.id, appointments.locationId))
@@ -80,12 +89,12 @@ export async function GET(req: Request, { params }: { params: Promise<{ token: s
   const t = getT(locale, "security");
   const ics = buildIcs({
     name: t("ics.calendarName", { practitioner: practitionerName(p), practice: org.name }),
-    events: rows.map(({ a, firstName, lastName, location }) => ({
+    events: rows.map(({ a, firstName, lastName, restrictedAt, erasedAt, location }) => ({
       uid: `${a.id}@sorriso`,
       start: a.startsAt,
       end: a.endsAt,
       summary:
-        privacy.icsDetail === "initials"
+        privacy.icsDetail === "initials" && !restrictedAt && !erasedAt
           ? t("ics.summaryInitials", { initials: patientInitials(firstName, lastName) })
           : t("ics.summary"),
       // Never the treatment or the patient's note: free text that may hold health data stays out of third-party calendars.

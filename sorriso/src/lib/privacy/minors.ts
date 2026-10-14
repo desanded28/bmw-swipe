@@ -28,6 +28,14 @@ import type { BookingRelationInput } from "./consent";
  * browser; src/lib/contact.ts re-exports the age helpers for server code.
  */
 
+/**
+ * Marketplace bookings for another adult. "refused" until the lead wires the held booking of
+ * src/lib/privacy/adult-confirmation.ts into src/lib/booking.ts (TODO(WP4) there); then "held":
+ * the relation check lets them through and the booking waits for the adult's own confirmation.
+ * The booking form's texts follow this switch.
+ */
+export const OTHER_ADULT_ON_MARKETPLACE = "refused" as "refused" | "held";
+
 /** Under this age a patient can't consent alone, and messages go to the guardian. */
 export const GUARDIAN_ROUTING_AGE = 14;
 /** From this age the guardian's contact no longer matches the patient's records. */
@@ -80,7 +88,7 @@ export function validateBookingRelation(
   }
 
   if (r.bookedFor === "other_adult") {
-    if (context === "marketplace") return { ok: false, code: "other_adult_must_book_themselves", field: "bookedFor" };
+    if (context === "marketplace" && OTHER_ADULT_ON_MARKETPLACE === "refused") return { ok: false, code: "other_adult_must_book_themselves", field: "bookedFor" };
     return { ok: true };
   }
 

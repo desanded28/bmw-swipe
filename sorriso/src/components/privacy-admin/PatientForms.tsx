@@ -54,11 +54,14 @@ export type PatientDetails = {
   emailOptIn: boolean;
   /** The patient opted out of these (cached flag or latest ledger row): turning them on needs a reason. */
   optedOut: { sms: boolean; email: boolean; whatsapp: boolean };
+  /** The ledger holds the patient's consent to WhatsApp. */
+  whatsappGranted: boolean;
 };
 
 /**
  * Identity and contacts. Turning a channel back on that the patient opted out of asks for a
- * reason, which is recorded with the consent row.
+ * reason, which is recorded with the consent row. Choosing WhatsApp without a consent on file
+ * asks staff to confirm the patient agreed, and how (recorded as a staff-recorded consent).
  */
 export function PatientDetailsForm({ patient, whatsappEnabled }: { patient: PatientDetails; whatsappEnabled: boolean }) {
   const t = useT("privacyAdmin");
@@ -67,7 +70,9 @@ export function PatientDetailsForm({ patient, whatsappEnabled }: { patient: Pati
   const [sms, setSms] = useState(!patient.optedOut.sms);
   const [email, setEmail] = useState(!patient.optedOut.email);
   const [channel, setChannel] = useState(patient.preferredChannel);
-  const needsReason = (sms && patient.optedOut.sms) || (email && patient.optedOut.email) || (channel === "whatsapp" && patient.optedOut.whatsapp);
+  const whatsappConsent = whatsappEnabled && channel === "whatsapp" && !patient.whatsappGranted;
+  const reEnabling = (sms && patient.optedOut.sms) || (email && patient.optedOut.email) || (whatsappConsent && patient.optedOut.whatsapp);
+  const needsReason = reEnabling || whatsappConsent;
   const reasonId = useId();
 
   return (
@@ -120,12 +125,18 @@ export function PatientDetailsForm({ patient, whatsappEnabled }: { patient: Pati
         </label>
       </fieldset>
       {needsReason ? (
-        <div className="rounded-xl bg-amber-50 p-3 ring-1 ring-amber-200">
-          <label htmlFor={reasonId} className="mb-1.5 block text-[13px] font-semibold text-amber-900">
-            {t("patient.optInReason")}
+        <div className="space-y-2 rounded-xl bg-amber-50 p-3 ring-1 ring-amber-200">
+          {whatsappConsent ? (
+            <label className="flex items-start gap-2 text-sm text-amber-900">
+              <input type="checkbox" name="whatsappAgreed" required className="mt-0.5 h-4 w-4 shrink-0 accent-brand-700" />
+              {t("patient.whatsappAgreed")}
+            </label>
+          ) : null}
+          <label htmlFor={reasonId} className="block text-[13px] font-semibold text-amber-900">
+            {reEnabling ? t("patient.optInReason") : t("patient.whatsappHow")}
           </label>
           <Textarea id={reasonId} name="optInReason" rows={2} required minLength={3} maxLength={300} />
-          <p className="mt-1 text-xs text-amber-900">{t("patient.optInReasonHint")}</p>
+          <p className="text-xs text-amber-900">{reEnabling ? t("patient.optInReasonHint") : t("patient.whatsappHowHint")}</p>
         </div>
       ) : null}
       <div className="flex flex-wrap items-center gap-3 pt-2">

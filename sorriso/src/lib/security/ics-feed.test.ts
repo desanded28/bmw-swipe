@@ -1,15 +1,19 @@
+/**
+ * The practitioner calendar feed (src/app/api/ics/practitioner/[token]/route.ts): what reaches the
+ * calendar provider, and when the URL works at all.
+ */
 import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
 import { getT } from "@/i18n/t";
-import { appointments, auditLog, organizations, practitioners } from "@/db/schema";
+import { appointments, auditLog, organizations, patients, practitioners } from "@/db/schema";
 import { createAppointment } from "@/lib/booking";
 import { sha256Hex } from "@/lib/crypto";
 import { newToken } from "@/lib/ids";
-import { patientInitials } from "@/lib/security/ics-feed";
+import { patientInitials } from "./ics-feed";
 import { zonedToUtc } from "@/lib/time";
 import { createPractice, MONDAY, NOW, TZ } from "@/test/fixtures";
-import { GET } from "./route";
+import { GET } from "@/app/api/ics/practitioner/[token]/route";
 
 const DAY = 86_400_000;
 let p: Awaited<ReturnType<typeof createPractice>>;
@@ -92,6 +96,21 @@ describe("practitioner calendar feed", () => {
     expect(patientInitials(" élodie ", "de Luca")).toBe("É. D.");
   });
 
+  it("never sends the initials of a patient who restricted processing or was erased", async () => {
+    await setPrivacy({ icsFeedsEnabled: true, icsDetail: "initials" });
+    const restricted = await appointmentAt(4, { firstName: "Zelda", lastName: "Quinto" });
+    const erased = await appointmentAt(5, { firstName: "Yuri", lastName: "Kappa" });
+    const patientOf = async (id: string) => (await db.select({ id: appointments.patientId }).from(appointments).where(eq(appointments.id, id)))[0].id;
+    await db.update(patients).set({ restrictedAt: new Date() }).where(eq(patients.id, await patientOf(restricted)));
+    await db.update(patients).set({ erasedAt: new Date() }).where(eq(patients.id, await patientOf(erased)));
+    const ics = await (await fetchFeed()).text();
+    const summaryOf = (id: string) => ics.split("BEGIN:VEVENT").find((e) => e.includes(`UID:${id}@sorriso`))?.match(/SUMMARY:(.*)/)?.[1]?.trim();
+    // Still in the agenda (the slot is taken), but as a plain "Appointment".
+    expect(summaryOf(restricted)).toBe(getT("it", "security")("ics.summary"));
+    expect(summaryOf(erased)).toBe(getT("it", "security")("ics.summary"));
+    for (const leak of ["Z. Q.", "Y. K.", "Zelda", "Kappa"]) expect(ics).not.toContain(leak);
+  });
+
   it("covers only the past 7 days and the next 30", async () => {
     await setPrivacy({ icsFeedsEnabled: true });
     const inside = [await appointmentAt(-6, { firstName: "In", lastName: "Past" }), await appointmentAt(29, { firstName: "In", lastName: "Future" })];
@@ -122,6 +141,11 @@ describe("practitioner calendar feed", () => {
     await db.update(practitioners).set({ icsTokenExpiresAt: new Date(Date.now() + DAY), icsEnabled: false }).where(eq(practitioners.id, p.drA));
     expect((await fetchFeed()).status).toBe(404);
     await db.update(practitioners).set({ icsEnabled: true }).where(eq(practitioners.id, p.drA));
+    expect((await fetchFeed()).status).toBe(200);
+    // Every feed expires: one without an expiry (issued before expiries existed) no longer works.
+    await db.update(practitioners).set({ icsTokenExpiresAt: null }).where(eq(practitioners.id, p.drA));
+    expect((await fetchFeed()).status).toBe(404);
+    await db.update(practitioners).set({ icsTokenExpiresAt: new Date(Date.now() + DAY) }).where(eq(practitioners.id, p.drA));
     expect((await fetchFeed()).status).toBe(200);
   });
 

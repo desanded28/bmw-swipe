@@ -15,6 +15,7 @@ import {
   services,
   verificationCodes,
   waitlist,
+  type Appointment,
   type AuditActorType,
   type ConsentPurpose,
   type Locale,
@@ -69,7 +70,8 @@ import type { PatientSession, VerifiedContact } from "./patient-session";
  *    contact (the one exception to org scoping, F9 rule 3), plus children whose guardian contact
  *    it is, until they turn 18. Shared family phones and mistyped emails mean a verified contact
  *    is not proof of identity: contactMatchDisclosure decides per row (details, or "a record
- *    exists" until the visitor gives that row's surname and birth date).
+ *    exists" until the visitor gives that row's surname and birth date). A record unlocked that way
+ *    stays unlocked for the rest of the session (sessionRecords; the session cookie lists it).
  * 4. Every view, export and change is audited with actor type patient_session, the session id
  *    (the sha256 of its cookie token: a pseudonym, never the contact) as actor id.
  *
@@ -109,8 +111,10 @@ export type Ticket = {
   p: OtpPurpose;
   /** Expiry, epoch ms. */
   e: number;
-  /** Manage-link step-up: the patient whose contact on file received the code. */
+  /** Manage-link step-up and adult confirmation: the patient whose contact on file received the code. */
   pid?: string;
+  /** Adult confirmation: the appointment the code confirms or declines. */
+  a?: string;
   /** Contact change: the records to update, and the session that asked. */
   ids?: string[];
   s?: string;
@@ -152,6 +156,11 @@ export type CenterRecord = {
   via: "self" | "guardian";
   /** details: show it; challenge: only "a record exists" until surname and birth date are given. */
   disclosure: "details" | "challenge";
+  /**
+   * The record has what the challenge asks (a surname and a birth date). Without them a challenge
+   * record can't be unlocked here: the page shows the practice's contact instead of the form.
+   */
+  canChallenge: boolean;
 };
 
 const orgColumns = {
@@ -205,13 +214,26 @@ export async function findRecords(contact: VerifiedContact, now: Date = new Date
   const disclosure = contactMatchDisclosure(matchRows, now);
   return tagged.flatMap((r) => {
     const d = disclosure.get(r.patient.id);
-    return d === "details" || d === "challenge" ? [{ patient: r.patient, org: r.org, via: r.via, disclosure: d }] : [];
+    return d === "details" || d === "challenge" ? [{ patient: r.patient, org: r.org, via: r.via, disclosure: d, canChallenge: challengeable(r.patient) }] : [];
   });
+}
+
+const challengeable = (p: Pick<Patient, "lastName" | "birthDate">) => Boolean(p.birthDate && p.lastName.trim());
+
+/**
+ * The records a session sees: findRecords for its contact, with the records it unlocked by the
+ * identity challenge shown in full. Needed where the contact matches two adults (spouses sharing a
+ * phone, a person with two records): contactMatchDisclosure keeps asking for the challenge there
+ * however often it is answered, so the unlock is kept with the session (patient-session.ts).
+ */
+export async function sessionRecords(session: Pick<PatientSession, "contact" | "unlocked">, now: Date = new Date(), tx: Tx = db): Promise<CenterRecord[]> {
+  const unlocked = new Set(session.unlocked);
+  return (await findRecords(session.contact, now, tx)).map((r) => (r.disclosure === "challenge" && unlocked.has(r.patient.id) ? { ...r, disclosure: "details" as const } : r));
 }
 
 /** The record behind an action, if this session may see its details. */
 export async function recordFor(session: PatientSession, patientId: string, now: Date = new Date()): Promise<CenterRecord | null> {
-  const rec = (await findRecords(session.contact, now)).find((r) => r.patient.id === patientId);
+  const rec = (await sessionRecords(session, now)).find((r) => r.patient.id === patientId);
   return rec?.disclosure === "details" ? rec : null;
 }
 
@@ -503,15 +525,18 @@ export async function auditView(session: PatientSession, records: CenterRecord[]
 
 // ---------------------------------------------------------------- the identity challenge
 
-export type ChallengeResult = { ok: true } | { ok: false; reason: "wrong" | "rate_limited" | "not_found" };
+export type ChallengeResult = { ok: true } | { ok: false; reason: "wrong" | "rate_limited" | "not_found" | "unavailable" };
 
 /** Attempts per record and contact per day: enough for typos, too few to guess a birth date. */
 const CHALLENGE_LIMIT = { max: 5, windowMs: DAY_MS };
 
 /**
  * Unlock a "challenge" record with its surname and birth date. Success proves the verified contact
- * belongs to this record, so it is recorded as verified for it (markContactVerified) and the
- * record shows in full from then on.
+ * belongs to this record, so it is recorded as verified for it (markContactVerified). The caller
+ * then keeps the unlock with the session (rememberUnlocked in patient-session.ts): where the
+ * contact matches two adults the record would otherwise ask again on the next page. A record
+ * without a birth date can't pass (unavailable, no attempt used): the page offers the practice's
+ * contact instead.
  */
 export async function answerChallenge(
   session: PatientSession,
@@ -520,9 +545,10 @@ export async function answerChallenge(
   opts: { headers?: Headers; now?: Date } = {},
 ): Promise<ChallengeResult> {
   const now = opts.now ?? new Date();
-  const rec = (await findRecords(session.contact, now)).find((r) => r.patient.id === patientId);
+  const rec = (await sessionRecords(session, now)).find((r) => r.patient.id === patientId);
   if (!rec) return { ok: false, reason: "not_found" };
   if (rec.disclosure === "details") return { ok: true };
+  if (!rec.canChallenge) return { ok: false, reason: "unavailable" };
   const limited = await rateLimit(`pc-challenge:${hmac(`${session.contactHash}:${patientId}`, "token").slice(0, 32)}`, CHALLENGE_LIMIT.max, CHALLENGE_LIMIT.windowMs, now);
   if (!limited.ok) return { ok: false, reason: "rate_limited" };
   if (!passesChallenge(rec.patient, answer)) return { ok: false, reason: "wrong" };
@@ -612,14 +638,56 @@ const sessionActing = (session: PatientSession, rec: CenterRecord): Acting => ({
   actorRelation: actingAs(rec),
 });
 
+export type LinkAppointment = Pick<Appointment, "id" | "bookedFor" | "bookedByPhone" | "bookedByEmail">;
+
 /**
- * The record behind an appointment link, as the privacy pages see it. The link goes to
- * recipientFor(patient): the guardian's contact under 14, so the guardian acts there.
+ * The record behind an appointment link, as the privacy pages see it, and in what relation its
+ * holder acts. The link reaches whoever booked (the confirmation page shows it) and the contact
+ * messages go to (recipientFor), so:
+ * - booked by the patient: the patient (or, under 14 with a guardian's contact, the guardian);
+ * - booked by a guardian for a minor: the guardian (actorRelation from the guardian's relation),
+ *   until the patient turns 18;
+ * - booked for another adult, or for a minor who is now an adult: possibly someone other than the
+ *   patient. `acting` is null: nothing is changed or granted for the patient from the link alone,
+ *   only the step-up (a code to the patient's own contact, linkStepUpContacts) opens their choices.
  */
-export function linkRecord(d: { patient: Patient; org: CenterOrg }, now: Date = new Date()): { rec: CenterRecord; acting: Acting } {
+export function linkRecord(
+  d: { patient: Patient; org: CenterOrg; appointment: Pick<Appointment, "bookedFor"> },
+  now: Date = new Date(),
+): { rec: CenterRecord; acting: Acting | null } {
   const viaGuardian = recipientFor({ ...d.patient, restrictedAt: null, erasedAt: null }, now).viaGuardian;
-  const rec: CenterRecord = { patient: d.patient, org: d.org, via: viaGuardian ? "guardian" : "self", disclosure: "details" };
+  const bookedFor = d.appointment.bookedFor;
+  const guardianBooked = bookedFor === "minor" && isMinor(d.patient, now);
+  const rec: CenterRecord = {
+    patient: d.patient,
+    org: d.org,
+    via: viaGuardian || guardianBooked ? "guardian" : "self",
+    disclosure: "details",
+    canChallenge: challengeable(d.patient),
+  };
+  if (bookedFor === "other_adult" || (bookedFor === "minor" && !guardianBooked)) return { rec, acting: null };
   return { rec, acting: { actor: { type: "patient_link", id: null }, source: "manage_link", actorRelation: actingAs(rec) } };
+}
+
+/**
+ * Where the step-up code may go: the contacts on file messages go to (the guardian's under 14),
+ * never the booker's contact when someone else booked (a booker who typed their own number as the
+ * patient's must not unlock the patient's data with it).
+ */
+export function linkStepUpContacts(d: { patient: Patient; appointment: LinkAppointment }, now: Date = new Date()): VerifiedContact[] {
+  const to = recipientFor({ ...d.patient, restrictedAt: null, erasedAt: null }, now);
+  const booker = new Set(
+    d.appointment.bookedFor === "other_adult"
+      ? [d.appointment.bookedByPhone ? contactHash("phone", d.appointment.bookedByPhone) : null, d.appointment.bookedByEmail ? contactHash("email", d.appointment.bookedByEmail) : null]
+      : [],
+  );
+  const out: VerifiedContact[] = [];
+  for (const kind of ["phone", "email"] as const) {
+    const raw = kind === "phone" ? to.phone : to.email;
+    const value = raw ? normalizeContact(kind, raw) : null;
+    if (value && !booker.has(contactHash(kind, value))) out.push({ kind, value });
+  }
+  return out;
 }
 
 /** Record one choice for a record (a new ledger row, audited as consent.record), if the options allow it. */
@@ -746,34 +814,61 @@ export async function updatePreferences(session: PatientSession, i: PreferencesI
 }
 
 /**
- * The step-up of the appointment link: a privacy-center code to a contact on file (the
- * recipient's: the guardian's under 14). The code opens a privacy-center session and, being an
- * explicit act through that contact, records it as verified for this patient.
+ * The step-up of the appointment link: a privacy-center code to a contact on file
+ * (linkStepUpContacts). The code opens a privacy-center session and, being an explicit act through
+ * that contact, records it as verified for this patient (recordStepUpVerification).
  */
 export async function requestLinkStepUp(i: {
-  rec: CenterRecord;
+  d: { patient: Patient; org: CenterOrg; appointment: LinkAppointment };
   kind: ContactKind;
   locale: Locale;
   headers: Headers;
   now?: Date;
 }): Promise<{ ok: true; ticket: string } | { ok: false; reason: "no_contact" | "rate_limited" }> {
   const now = i.now ?? new Date();
-  const to = recipientFor({ ...i.rec.patient, restrictedAt: null, erasedAt: null }, now);
-  const value = i.kind === "phone" ? to.phone : to.email;
-  const contact = value ? normalizeContact(i.kind, value) : null;
+  const contact = linkStepUpContacts(i.d, now).find((c) => c.kind === i.kind)?.value;
   if (!contact) return { ok: false, reason: "no_contact" };
   const sent = await sendOtp({
     purpose: "privacy_center",
     channel: i.kind === "phone" ? "sms" : "email",
     to: contact,
     locale: i.locale,
-    orgId: i.rec.org.id,
-    fromName: i.rec.org.name,
+    orgId: i.d.org.id,
+    fromName: i.d.org.name,
     headers: i.headers,
     now,
   });
   if (!sent.ok) return sent;
-  return { ok: true, ticket: sealTicket({ c: sent.challengeId, k: i.kind, v: contact, p: "privacy_center", pid: i.rec.patient.id }, now) };
+  return { ok: true, ticket: sealTicket({ c: sent.challengeId, k: i.kind, v: contact, p: "privacy_center", pid: i.d.patient.id }, now) };
+}
+
+/**
+ * After the step-up code: the contact is the patient's (it is on their record and its holder just
+ * proved it), so it is recorded as verified for them, audited as the new session in the same
+ * transaction. Nothing is recorded when the contact is no longer on the record.
+ */
+export async function recordStepUpVerification(
+  session: Pick<PatientSession, "id">,
+  i: { patientId: string; contact: VerifiedContact; headers?: Headers; now?: Date },
+): Promise<boolean> {
+  const now = i.now ?? new Date();
+  return db.transaction(async (tx) => {
+    const [p] = await tx.select({ orgId: patients.orgId }).from(patients).where(eq(patients.id, i.patientId));
+    if (!p || !(await markContactVerified(i.patientId, i.contact, tx, now))) return false;
+    await audit(
+      {
+        orgId: p.orgId,
+        actor: actorOf(session),
+        action: "patient.update",
+        entity: { type: "patient", id: i.patientId },
+        metadata: { change: "contact_verified", source: "manage_link_step_up", kind: i.contact.kind },
+        headers: i.headers,
+        at: now,
+      },
+      tx,
+    );
+    return true;
+  });
 }
 
 // ---------------------------------------------------------------- correcting contacts
@@ -797,7 +892,7 @@ export async function requestContactChange(
   const now = i.now ?? new Date();
   const parsed = parseContact(i.value, i.dialCode);
   if (!parsed || parsed.kind !== i.kind) return { ok: false, reason: "invalid_contact" };
-  const all = await findRecords(session.contact, now);
+  const all = await sessionRecords(session, now);
   const recs = all.filter((r) => r.disclosure === "details" && i.patientIds.includes(r.patient.id));
   if (!recs.length || recs.length !== new Set(i.patientIds).size) return { ok: false, reason: "not_found" };
   if (recs.every((r) => r.patient[fieldFor(r, i.kind)] === parsed.value)) return { ok: false, reason: "unchanged" };
@@ -831,7 +926,7 @@ export async function confirmContactChange(
   if (!check.ok) return check;
   const t = check.ticket;
   if (t.s !== session.id || !t.ids?.length) return { ok: false, reason: "invalid" };
-  const recs = (await findRecords(session.contact, now)).filter((r) => r.disclosure === "details" && t.ids!.includes(r.patient.id));
+  const recs = (await sessionRecords(session, now)).filter((r) => r.disclosure === "details" && t.ids!.includes(r.patient.id));
   if (!recs.length) return { ok: false, reason: "not_found" };
   const kind = t.k;
   const value = t.v;
@@ -873,12 +968,15 @@ export async function confirmContactChange(
   return { ok: true, renewSessionWith: renew ? { kind, value } : null };
 }
 
-/** Tell the previous contact that it was replaced (best effort, never throws). */
+/**
+ * Tell the previous contact that it was replaced (best effort, never throws). One set of whole
+ * sentences per kind of contact (contactChangedPhone, contactChangedEmail): the noun's gender
+ * decides the article and agreement in most languages, so it is never slotted into a template.
+ */
 async function notifyContactChanged(rec: CenterRecord, old: VerifiedContact, now: Date): Promise<void> {
   const locale = rec.patient.locale;
   const t = getT(locale, "privacyMessages");
   const vars = {
-    field: t(`fields.${old.kind}`),
     practice: rec.org.name,
     date: fmtDay(zonedDate(now, rec.org.timezone || DEFAULT_TIMEZONE), "long", locale),
   };
@@ -888,12 +986,12 @@ async function notifyContactChanged(rec: CenterRecord, old: VerifiedContact, now
         locale,
         brandColor: rec.org.brandColor,
         brandName: rec.org.name,
-        intro: t("contactChanged.body", vars),
+        intro: t("contactChangedEmail.body", vars),
         footerLines: [t("footer.privacyCenter"), rec.org.legalName ?? rec.org.name],
       });
-      await deliver({ orgId: rec.org.id, patientId: rec.patient.id, channel: "email", to: old.value, subject: t("contactChanged.subject"), text, html, fromName: rec.org.name, locale });
+      await deliver({ orgId: rec.org.id, patientId: rec.patient.id, channel: "email", to: old.value, subject: t("contactChangedEmail.subject"), text, html, fromName: rec.org.name, locale });
     } else {
-      await deliver({ orgId: rec.org.id, patientId: rec.patient.id, channel: "sms", to: old.value, text: t("contactChanged.sms", vars), locale });
+      await deliver({ orgId: rec.org.id, patientId: rec.patient.id, channel: "sms", to: old.value, text: t("contactChangedPhone.sms", vars), locale });
     }
   } catch (err) {
     logError("privacy-center", err, { step: "contact_changed_notice", orgId: rec.org.id });
@@ -1002,7 +1100,7 @@ async function sendRequestReceipt(
 
 /** Take down one of the session's own reviews (WP7's withdrawReview does the rest). */
 export async function withdrawOwnReview(session: PatientSession, reviewId: string, now: Date = new Date()): Promise<ActionResult> {
-  const recs = (await findRecords(session.contact, now)).filter((r) => r.disclosure === "details");
+  const recs = (await sessionRecords(session, now)).filter((r) => r.disclosure === "details");
   const mine = await listPatientReviews(recs.map((r) => r.patient.id));
   const review = mine.find((r) => r.id === reviewId);
   if (!review) return { ok: false, reason: "not_found" };

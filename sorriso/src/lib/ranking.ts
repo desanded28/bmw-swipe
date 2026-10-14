@@ -58,8 +58,10 @@ export type RankInput = {
   /** Distance from the searched point; null without one. */
   distanceKm: number | null;
   /**
-   * How many appointments the cancellation rate is based on. Below RELIABILITY_MIN_SAMPLE the
-   * rate still counts (it is 0 or the practice-wide rate) but is not shown as a reason.
+   * How many appointments the cancellation rate is based on: the practitioner's own, or the
+   * practice's when they have fewer than RELIABILITY_MIN_SAMPLE (then the rate is the
+   * practice-wide one). Below RELIABILITY_MIN_SAMPLE the rate still counts (0 when the practice
+   * has no appointments at all) but is not shown as a reason.
    */
   reliabilitySample?: number;
 };
@@ -228,42 +230,41 @@ export type ReliabilitySignal = { rate: number; sample: number };
 
 /**
  * Staff-cancellation rate over the last 180 days per practitioner. A practitioner with fewer
- * than RELIABILITY_MIN_SAMPLE appointments gets the practice-wide rate (and that sample size).
+ * than RELIABILITY_MIN_SAMPLE appointments (none included, e.g. someone who just joined) gets
+ * the practice-wide rate, over all of the practice's appointments (and that sample size), so a
+ * new practitioner neither starts with a perfect record nor drags a reliable practice down.
  * Counts only: no patient data is read.
  */
 export async function reliabilitySignals(practitionerIds: readonly string[], now: Date = new Date()): Promise<Map<string, ReliabilitySignal>> {
   const out = new Map<string, ReliabilitySignal>();
-  if (!practitionerIds.length) return out;
+  const ids = [...new Set(practitionerIds)];
+  if (!ids.length) return out;
+  const team = await db.select({ id: practitioners.id, orgId: practitioners.orgId }).from(practitioners).where(inArray(practitioners.id, ids));
+  const orgIds = [...new Set(team.map((t) => t.orgId))];
+  if (!orgIds.length) {
+    for (const id of ids) out.set(id, { rate: 0, sample: 0 });
+    return out;
+  }
   const from = new Date(now.getTime() - RELIABILITY_DAYS * DAY_MS);
   const staffCancelled = sql<number>`sum(case when ${appointments.status} = 'cancelled' and ${appointments.cancelledBy} = 'staff' then 1 else 0 end)`;
-  const rows = await db
-    .select({ practitionerId: appointments.practitionerId, orgId: appointments.orgId, total: count(), cancelled: staffCancelled })
-    .from(appointments)
-    .where(
-      and(
-        inArray(appointments.practitionerId, [...practitionerIds]),
-        gte(appointments.startsAt, from),
-        lte(appointments.startsAt, now),
-        sql`${appointments.status} <> 'requested'`,
-      ),
-    )
-    .groupBy(appointments.practitionerId, appointments.orgId);
-  const byOrg = new Map<string, { total: number; cancelled: number }>();
-  for (const r of rows) {
-    const o = byOrg.get(r.orgId) ?? { total: 0, cancelled: 0 };
-    o.total += r.total;
-    o.cancelled += Number(r.cancelled ?? 0);
-    byOrg.set(r.orgId, o);
-  }
-  const orgOf = new Map(rows.map((r) => [r.practitionerId, r.orgId]));
-  for (const id of practitionerIds) {
-    const own = rows.find((r) => r.practitionerId === id);
-    if (own && own.total >= RELIABILITY_MIN_SAMPLE) {
-      out.set(id, { rate: Number(own.cancelled ?? 0) / own.total, sample: own.total });
+  const inWindow = and(inArray(appointments.orgId, orgIds), gte(appointments.startsAt, from), lte(appointments.startsAt, now), sql`${appointments.status} <> 'requested'`);
+  const [own, byOrg] = await Promise.all([
+    db
+      .select({ practitionerId: appointments.practitionerId, total: count(), cancelled: staffCancelled })
+      .from(appointments)
+      .where(and(inWindow, inArray(appointments.practitionerId, ids)))
+      .groupBy(appointments.practitionerId),
+    db.select({ orgId: appointments.orgId, total: count(), cancelled: staffCancelled }).from(appointments).where(inWindow).groupBy(appointments.orgId),
+  ]);
+  for (const id of ids) {
+    const mine = own.find((r) => r.practitionerId === id);
+    if (mine && mine.total >= RELIABILITY_MIN_SAMPLE) {
+      out.set(id, { rate: Number(mine.cancelled ?? 0) / mine.total, sample: mine.total });
       continue;
     }
-    const org = byOrg.get(orgOf.get(id) ?? "");
-    out.set(id, org && org.total > 0 ? { rate: org.cancelled / org.total, sample: org.total } : { rate: 0, sample: 0 });
+    const orgId = team.find((t) => t.id === id)?.orgId;
+    const org = orgId ? byOrg.find((o) => o.orgId === orgId) : undefined;
+    out.set(id, org && org.total > 0 ? { rate: Number(org.cancelled ?? 0) / org.total, sample: org.total } : { rate: 0, sample: 0 });
   }
   return out;
 }

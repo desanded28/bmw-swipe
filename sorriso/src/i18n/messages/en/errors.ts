@@ -16,6 +16,8 @@ export default {
   /** A 409 between picking a time and confirming: the form goes back to the times, keeping what was typed. */
   slotTaken: "Sorry, someone has just booked that time. Please pick another one: everything you typed is kept.",
   slotsLoadFailed: "We couldn't load the available times.",
+  /** The button under api.notice_outdated: reloading is the only way to read (and post) the new notice. */
+  reload: "Reload the page",
   fields: {
     required: "Required",
     contactRequired: "Add a mobile number or an email address",
@@ -61,5 +63,7 @@ export default {
     guardian_relation_required: "Please say whether you are a parent or a legal guardian.",
     guardian_contact_required: "Please enter a phone number or an email address for the parent or guardian.",
     other_adult_must_book_themselves: "Adults book their own appointments here. You can also book directly with the practice.",
+    /** The privacy notice changed while the form was open (e.g. a release); the page still shows the old one. */
+    notice_outdated: "The privacy information has been updated since you opened this page. Please reload the page to read the new version, then send the form again.",
   },
 } as const;

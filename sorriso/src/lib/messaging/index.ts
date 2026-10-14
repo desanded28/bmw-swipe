@@ -14,7 +14,7 @@ import { logError, logInfo, redact } from "../log";
 import { isAllowed } from "../privacy/consent";
 import { resolveSettings } from "../settings";
 import { renderEmailLayout } from "./layout";
-import { sendEmail, sendSms, type Attachment, type SendResult } from "./providers";
+import { practiceSender, sendEmail, sendSms, type Attachment, type SendResult } from "./providers";
 import { fitSmsBudget, prepareSms } from "./sms-encoding";
 import { privacyFooter } from "./templates";
 import { chooseTextChannel, sendWhatsApp, whatsappVariables, type WhatsAppSkip } from "./whatsapp";
@@ -48,6 +48,12 @@ export type OutboundMessage = {
    * within 24 hours of the patient's own message.
    */
   whatsappKind?: string;
+  /**
+   * SMS only: send from this number or Messaging Service SID instead of the practice's own
+   * (organizations.inboundNumber) or the shared sender. An answer to a patient's text goes out from
+   * the number the patient wrote to, so the conversation stays in one thread.
+   */
+  sender?: string | null;
 };
 
 /** The language an email was rendered in (renderEmailLayout writes it as the html lang). */
@@ -97,10 +103,15 @@ export async function deliver(msg: OutboundMessage, tx: Tx = db): Promise<Messag
       });
     } else if (msg.channel === "sms") {
       // From the practice's own number when it has one, so replies come back to that practice.
-      const [org] = msg.orgId
-        ? await tx.select({ inboundNumber: organizations.inboundNumber }).from(organizations).where(eq(organizations.id, msg.orgId))
-        : [];
-      result = await sendSms({ to: msg.to, text: msg.text, sender: org?.inboundNumber ?? null });
+      let sender = msg.sender?.trim() || null;
+      if (!sender && msg.orgId) {
+        const [org] = await tx
+          .select({ inboundNumber: organizations.inboundNumber })
+          .from(organizations)
+          .where(eq(organizations.id, msg.orgId));
+        sender = practiceSender(org?.inboundNumber);
+      }
+      result = await sendSms({ to: msg.to, text: msg.text, sender });
     } else {
       result = await sendWhatsApp({
         to: msg.to,
@@ -110,7 +121,10 @@ export async function deliver(msg: OutboundMessage, tx: Tx = db): Promise<Messag
         text: msg.text,
       });
       if (result.status === "skipped") {
-        error = `whatsapp: no approved template for ${msg.whatsappKind ?? "?"} in ${msg.locale ?? "?"}`;
+        error =
+          result.reason === "not_configured"
+            ? "whatsapp: not configured (TWILIO_WHATSAPP_FROM)"
+            : `whatsapp: no approved template for ${msg.whatsappKind ?? "?"} in ${msg.locale ?? "?"}`;
         result = null;
       }
     }

@@ -1,8 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { organizations } from "@/db/schema";
-import { apiError, apiKeyError, checkApiKey, handleApiError, json, limitByIp, preflight } from "@/lib/api";
-import { audit } from "@/lib/audit";
+import { apiError, apiKeyError, auditApiRequest, checkApiKey, handleApiError, json, limitByIp, limitByKey, preflight, requireScope } from "@/lib/api";
 import { bookingRuleMessage, createAppointment } from "@/lib/booking";
 import { processingContextFor } from "@/lib/privacy/context";
 import { canAcceptOnlineBookings } from "@/lib/privacy/gates";
@@ -33,10 +32,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
     if (!key.ok && key.code !== "none") return apiKeyError(key);
     const partner = key.ok ? key.auth.org : null;
     if (partner && partner.id !== org.id) return apiError(403, "forbidden", "This API key belongs to another practice.");
-    if (key.ok && !key.auth.key.scopes.includes("appointments:write")) {
-      return apiError(403, "insufficient_scope", "This API key lacks the appointments:write scope.", { scope: "appointments:write" });
-    }
-    if (!partner) {
+    if (key.ok) {
+      const refused = (await limitByKey(key.auth)) ?? requireScope(key.auth, "appointments:write");
+      if (refused) {
+        await auditApiRequest(req, key.auth, "clinics.appointments", refused.status);
+        return refused;
+      }
+    } else {
       const limited = await limitByIp(req, "book", 10, 10 * 60_000);
       if (limited) return limited;
     }
@@ -93,16 +95,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
       relation: input.relation,
       fundId: input.fundId,
     });
-    if (key.ok) {
-      await audit({
-        orgId: org.id,
-        actor: { type: "api_key", id: key.auth.key.id },
-        action: "api.request",
-        entity: { type: "api_key", id: key.auth.key.id },
-        metadata: { method: "POST", route: "clinics.appointments", status: 201, appointmentId: details.appointment.id },
-        headers: req.headers,
-      });
-    }
+    if (key.ok) await auditApiRequest(req, key.auth, "clinics.appointments", 201, { appointmentId: details.appointment.id });
     return json({ appointment: publicAppointment(details) }, { status: 201 });
   } catch (err) {
     return handleApiError(err);

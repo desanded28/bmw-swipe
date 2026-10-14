@@ -237,11 +237,18 @@ export function buildRegister(
   };
 }
 
+/**
+ * Values that start like a formula but can't run as one, kept as they are so exports stay
+ * machine-readable: plain numbers, E.164 phone numbers ("+393331234567") and the masked numbers
+ * left by an erasure ("+39•••4567"). A spreadsheet reads them as a number or an error at worst.
+ */
+const INERT = /^(-?\d+(\.\d+)?|\+\d{6,15}|\+\d{2}•+\d{4})$/;
+
 /** One CSV cell: quoted when needed; formula-looking text is defused for spreadsheet apps. */
 export function csvCell(value: unknown): string {
   if (value === null || value === undefined) return "";
   let s = value instanceof Date ? value.toISOString() : typeof value === "object" ? JSON.stringify(value) : String(value);
-  if (/^[=+\-@\t\r]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s)) s = `'${s}`;
+  if (/^[=+\-@\t\r]/.test(s) && !INERT.test(s)) s = `'${s}`;
   return /[",\r\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 

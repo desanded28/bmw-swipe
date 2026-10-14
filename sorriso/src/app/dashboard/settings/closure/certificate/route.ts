@@ -5,6 +5,7 @@ import { getT } from "@/i18n/t";
 import { APP_NAME } from "@/lib/config";
 import { esc } from "@/lib/messaging/layout";
 import { loadCertificate } from "@/lib/privacy/org-closure";
+import { NONCE_HEADER } from "@/lib/security/headers";
 
 /**
  * GET /dashboard/settings/closure/certificate?c=<signed token>[&lang=it] — the certificate of
@@ -12,6 +13,9 @@ import { loadCertificate } from "@/lib/privacy/org-closure";
  * accounts no longer exist when it is opened, so it can't sit behind the dashboard's session. The
  * signed token (emailed to the owners) is the only way in; the data comes from the certificate row
  * in Sorriso's own audit chain, whose hash is printed as a seal.
+ *
+ * The dashboard's Content-Security-Policy (src/proxy.ts) forbids inline event handlers: the print
+ * button is wired by a script carrying the request's nonce, and left out when there is none.
  */
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -27,6 +31,12 @@ export async function GET(req: Request) {
     });
   }
   const day = (d: Date) => fmtDay(zonedDate(d, "Europe/Rome"), "long", locale);
+  const nonce = req.headers.get(NONCE_HEADER);
+  const print =
+    nonce && /^[A-Za-z0-9+/=]+$/.test(nonce)
+      ? `<button type="button" id="print">${esc(t("certificate.print"))}</button>
+<script nonce="${nonce}">document.getElementById("print").addEventListener("click",function(){window.print()})</script>`
+      : "";
   const rows = Object.entries(cert.tables)
     .filter(([, n]) => n > 0)
     .map(([table, n]) => `<tr><td>${esc(table)}</td><td class="n">${n}</td></tr>`)
@@ -53,7 +63,7 @@ code{word-break:break-all;font-size:12px}button{margin-top:24px;padding:8px 14px
 </dl>
 <h2>${esc(t("certificate.tables"))}</h2>
 <table><thead><tr><th>${esc(t("certificate.table"))}</th><th class="n">${esc(t("certificate.rows"))}</th></tr></thead><tbody>${rows}</tbody></table>
-<button type="button" onclick="window.print()">${esc(t("certificate.print"))}</button>
+${print}
 </body></html>`;
   return new Response(html, { headers });
 }

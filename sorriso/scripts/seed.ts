@@ -37,6 +37,7 @@ import {
 import { getAppointmentDetails, templateData } from "../src/lib/appointments";
 import { findSlots, loadAvailabilityContext, rangeForDates } from "../src/lib/availability";
 import { newId, newToken, sha256, slugify } from "../src/lib/ids";
+import { DEMO_OWNER_EMAIL, DEMO_PASSWORD, DEMO_RECEPTION_EMAIL } from "../src/lib/security/demo-accounts";
 import { demoSeedRefusal, fakePhone } from "../src/lib/security/seed-guard";
 import { issueManageToken } from "../src/lib/links";
 import { parseSpokenLanguages } from "./backfill-0001";
@@ -530,9 +531,10 @@ async function main() {
   const now = new Date();
   console.log(`Seeding demo data around ${today}…`);
 
-  const passwordHash = await hashPassword("demo1234");
-  const owner = { id: newId(), email: "demo@sorriso.dev", name: "Elisa Bianchi", passwordHash };
-  const reception = { id: newId(), email: "reception@sorriso.dev", name: "Paola Verdi", passwordHash };
+  const passwordHash = await hashPassword(DEMO_PASSWORD);
+  // Reserved .example addresses: sign-in alerts and resets a public demo sends can't reach anyone.
+  const owner = { id: newId(), email: DEMO_OWNER_EMAIL, name: "Elisa Bianchi", passwordHash };
+  const reception = { id: newId(), email: DEMO_RECEPTION_EMAIL, name: "Paola Verdi", passwordHash };
   await db.insert(users).values([owner, reception]);
 
   const seedCtx: SeedContext = {
@@ -988,9 +990,9 @@ async function main() {
   await seedCare(seedCtx);
   await seedPrivacy(seedCtx);
 
-  console.log("\nDemo logins (password: demo1234)");
-  console.log("  demo@sorriso.dev       owner of Studio Dentistico Bianchi, admin of Roma Smile Clinic");
-  console.log("  reception@sorriso.dev  front desk at Studio Dentistico Bianchi");
+  console.log(`\nDemo logins (password: ${DEMO_PASSWORD})`);
+  console.log(`  ${DEMO_OWNER_EMAIL}       owner of Studio Dentistico Bianchi, admin of Roma Smile Clinic`);
+  console.log(`  ${DEMO_RECEPTION_EMAIL}  front desk at Studio Dentistico Bianchi`);
 }
 
 main().catch((err) => {

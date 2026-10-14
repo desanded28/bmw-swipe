@@ -37,10 +37,10 @@ import {
   CENTER_REQUEST_TYPES,
   channelOptions,
   consentOptions,
-  findRecords,
   loadRecordDetails,
   maskContact,
   MAX_REQUEST_DETAILS,
+  sessionRecords,
   type CenterRecord,
   type ConsentOption,
   type RecordDetails,
@@ -87,7 +87,7 @@ export default async function PrivacyDataPage({ params }: { params: Params }) {
   const session = await getPatientSession();
   if (!session) redirect(lhref(locale, "/privacy?expired=1"));
 
-  const records = await findRecords(session.contact);
+  const records = await sessionRecords(session);
   const details = new Map<string, RecordDetails>();
   for (const r of records) if (r.disclosure === "details") details.set(r.patient.id, await loadRecordDetails(r));
   await auditView(session, records, await headers());
@@ -164,22 +164,29 @@ function ChallengeCard({ rec, ctx }: { rec: CenterRecord; ctx: Ctx }) {
         <ShieldAlert size={18} className="text-amber-600" aria-hidden /> {t("me.challenge.title", { practice: rec.org.name })}
       </h2>
       <p className="mt-1 text-sm text-slate-600">{t("me.challenge.body")}</p>
-      <ActionForm
-        action={challengeAction}
-        hidden={{ locale, patientId: rec.patient.id }}
-        submit={{ label: t("me.challenge.submit"), pending: t("verify.checking"), size: "sm" }}
-        className="mt-4"
-      >
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label={t("me.challenge.lastName")}>
-            <Input name="lastName" required autoComplete="family-name" />
-          </Field>
-          <Field label={t("me.challenge.birthDate")}>
-            <Input name="birthDate" type="date" required autoComplete="bday" />
-          </Field>
-        </div>
-      </ActionForm>
-      {contact ? <p className="mt-3 text-xs text-slate-500">{t("me.challenge.help", { contact })}</p> : null}
+      {rec.canChallenge ? (
+        <ActionForm
+          action={challengeAction}
+          hidden={{ locale, patientId: rec.patient.id }}
+          submit={{ label: t("me.challenge.submit"), pending: t("verify.checking"), size: "sm" }}
+          className="mt-4"
+        >
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label={t("me.challenge.lastName")}>
+              <Input name="lastName" required autoComplete="family-name" />
+            </Field>
+            <Field label={t("me.challenge.birthDate")}>
+              <Input name="birthDate" type="date" required autoComplete="bday" />
+            </Field>
+          </div>
+        </ActionForm>
+      ) : (
+        // Nothing to check against: no attempts to waste, the practice can help instead.
+        <p className="mt-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-900 ring-1 ring-amber-200">
+          {contact ? t("me.challenge.noBirthDate", { practice: rec.org.name, contact }) : t("me.challenge.noBirthDateNoContact", { practice: rec.org.name })}
+        </p>
+      )}
+      {contact && rec.canChallenge ? <p className="mt-3 text-xs text-slate-500">{t("me.challenge.help", { contact })}</p> : null}
     </Card>
   );
 }

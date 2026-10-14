@@ -6,9 +6,10 @@ import { db } from "@/db";
 import { locations, practitioners, rooms, timeOff } from "@/db/schema";
 import { getStaffLocale } from "@/i18n/server";
 import { getT } from "@/i18n/t";
+import { auditStaff } from "@/lib/audit";
 import { newId } from "@/lib/ids";
 import { logError } from "@/lib/log";
-import { PermissionError } from "@/lib/permissions";
+import { can, PermissionError } from "@/lib/permissions";
 import {
   afterClosureRemoved,
   cancelForClosure,
@@ -110,11 +111,15 @@ export async function deleteTimeOff(id: string): Promise<ActionResult> {
   );
 }
 
-/** The upcoming visits one closure covers, for the "Rebook N patients" drawer. */
+/**
+ * The upcoming visits one closure covers, for the "Rebook N patients" drawer. Listing patients is
+ * audited (patient.search); restricted patients are masked unless the viewer may read them.
+ */
 export async function loadClosureClashes(timeOffId: string): Promise<CareResult<ClashItem[]>> {
   try {
     const s = await staff("appointment.write");
-    const rows = await listClosureClashes(s.org.id, timeOffId);
+    const rows = await listClosureClashes(s.org.id, timeOffId, new Date(), { restricted: can(s.role, "patient.restricted.read") });
+    await auditStaff(s, "patient.search", undefined, { metadata: { view: "closure-clashes", timeOffId, rows: rows.length } });
     return {
       ok: true,
       data: rows.map((r) => ({
@@ -122,9 +127,11 @@ export async function loadClosureClashes(timeOffId: string): Promise<CareResult<
         start: r.start.toISOString(),
         timezone: r.timezone,
         patientName: r.patientName,
+        masked: r.masked,
         practitionerName: r.practitionerName,
         locationName: r.locationName,
         needsAttention: r.needsAttention,
+        offerSent: r.offerSent,
         callRequested: r.callRequested,
         reachable: r.reachable,
       })),

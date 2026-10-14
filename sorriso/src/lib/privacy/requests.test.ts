@@ -17,6 +17,8 @@ import {
   privacyRequestDueAt,
   sendDeadlineReminders,
   startPrivacyRequest,
+  splitContactSnapshot,
+  withContactSnapshot,
 } from "./requests";
 
 const TZ = "Europe/Rome";
@@ -46,6 +48,18 @@ const create = (receivedAt: Date, over: Partial<Parameters<typeof createPrivacyR
   db.transaction((tx) =>
     createPrivacyRequest(tx, { orgId, patientId, type: "access", channel: "email", requesterLocale: "de", actor: STAFF, now: receivedAt, ...over }),
   );
+
+describe("contact kept for the answer", () => {
+  it("appends the erased record's contact once, and reads it back apart from the requester's words", () => {
+    const kept = withContactSnapshot("Vorrei la cancellazione", ["a@example.org", "+393331234567"]);
+    expect(splitContactSnapshot(kept)).toEqual({ text: "Vorrei la cancellazione", contact: "a@example.org · +393331234567" });
+    // A second erasure of a merged record replaces it rather than stacking it.
+    expect(splitContactSnapshot(withContactSnapshot(kept, ["b@example.org"]))).toEqual({ text: "Vorrei la cancellazione", contact: "b@example.org" });
+    expect(splitContactSnapshot(withContactSnapshot(null, ["b@example.org"]))).toEqual({ text: null, contact: "b@example.org" });
+    expect(withContactSnapshot("x", [])).toBe("x");
+    expect(splitContactSnapshot("Solo testo")).toEqual({ text: "Solo testo", contact: null });
+  });
+});
 
 describe("deadline (Art. 12(3))", () => {
   it("is the same date next calendar month, clamped to the month's end, at the same Italian time", () => {

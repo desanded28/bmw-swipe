@@ -9,7 +9,7 @@ import { useLocale, useT } from "@/i18n/provider";
 import { addDays, minutesToHHMM, zonedToUtc } from "@/lib/time";
 import { Button, Select, cx } from "../ui";
 import { useNow } from "../useNow";
-import { AppointmentDrawer, StatusIcon, localDate, localTime, useModalDialog, useStatusLabel } from "./AppointmentDrawer";
+import { AppointmentDrawer, StatusIcon, localDate, localTime, useModalDialog, useShortStatusLabel, useStatusLabel } from "./AppointmentDrawer";
 import { AppointmentList } from "./AppointmentList";
 import { NewAppointmentDrawer, type NewAppointmentDefaults } from "./NewAppointmentDrawer";
 import { Pii, PrivacyScreenToggle } from "./PrivacyScreen";
@@ -48,6 +48,20 @@ const SNAP = 15;
 const SLOT = 30;
 /** WCAG 2.5.8 target size: no event is drawn shorter than this. */
 const MIN_EVENT_PX = 24;
+/** Events up to this height have one line: the status goes on it as a word, after the time. */
+const COMPACT_EVENT_PX = 34;
+
+/**
+ * The slot a column's keyboard tab stop is on: where the user left it, else the first working
+ * hour, else the grid's start, always snapped onto the current grid. The grid follows the day's
+ * hours, so a cursor left at 07:00 on a Monday must still land on a slot on a day that starts at
+ * 09:00 (the board is not remounted when the date changes).
+ */
+export function slotCursor(saved: number | undefined, openStart: number | undefined, gridStart: number, gridEnd: number): number {
+  const last = gridStart + Math.max(0, Math.floor((gridEnd - gridStart) / SLOT) - 1) * SLOT;
+  const wanted = Math.min(Math.max(saved ?? openStart ?? gridStart, gridStart), last);
+  return gridStart + Math.floor((wanted - gridStart) / SLOT) * SLOT;
+}
 
 function minutesOf(iso: string, tz: string) {
   const [h, m] = localTime(iso, tz).split(":").map(Number);
@@ -135,6 +149,7 @@ export function CalendarBoard(props: {
   const t = useT("calendar");
   const locale = useLocale();
   const statusLabel = useStatusLabel();
+  const shortStatus = useShortStatusLabel();
   const tz = resources.timezone;
   const router = useRouter();
   const sp = useSearchParams();
@@ -274,8 +289,7 @@ export function CalendarBoard(props: {
     };
   }
 
-  /** Where a column's keyboard cursor starts: the first working hour, else the grid's start. */
-  const cursorOf = (col: Column) => cursor[col.key] ?? Math.max(gridStart, Math.floor((col.open[0]?.start ?? gridStart) / SLOT) * SLOT);
+  const cursorOf = (col: Column) => slotCursor(cursor[col.key], col.open[0]?.start, gridStart, gridEnd);
 
   function onColumnClick(col: Column, e: React.MouseEvent<HTMLDivElement>) {
     if (!canWrite || (e.target as HTMLElement).closest("[data-event]")) return;
@@ -594,6 +608,7 @@ export function CalendarBoard(props: {
                         const color = a.practitioner.color;
                         const movable = canWrite && (a.status === "scheduled" || a.status === "requested");
                         const px = Math.max(MIN_EVENT_PX, ((end - start) / 60) * HOUR_PX - 2);
+                        const compact = px <= COMPACT_EVENT_PX;
                         const bufferEnd = a.status === "cancelled" ? end : Math.max(end, minutesOf(a.blockedUntil, tz) || 24 * 60);
                         const time = localTime(a.start, tz);
                         const status = statusLabel(a);
@@ -661,10 +676,14 @@ export function CalendarBoard(props: {
                               <span className="flex items-center gap-1 font-semibold text-slate-900" aria-hidden>
                                 <StatusIcon a={a} />
                                 <span className="truncate">
-                                  {time} <Pii>{a.patient.name}</Pii>
+                                  {time}{" "}
+                                  {/* One line only: the status as a word (icon and text, not colour alone). */}
+                                  {compact ? <span className="text-[11px] font-medium text-slate-700">{shortStatus(a)}</span> : null}
+                                  {compact ? " " : null}
+                                  <Pii>{a.patient.name}</Pii>
                                 </span>
                               </span>
-                              {px > 34 ? (
+                              {!compact ? (
                                 <span className="block truncate text-slate-700" aria-hidden>
                                   {a.service.name}
                                   {withPractitioner ? ` · ${a.practitioner.name.split(" ").slice(-1)[0]}` : ""}

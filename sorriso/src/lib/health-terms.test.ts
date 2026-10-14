@@ -11,6 +11,19 @@ describe("health-term flagger", () => {
     ["o implante falhou", "health.outcome"],
     ["implantul a eșuat", "health.outcome"],
     ["implant się nie przyjął", "health.outcome"],
+    // Verb first, as people often write it.
+    ["Mi è caduto l'impianto dopo un mese", "health.outcome"],
+    ["Si è staccato l’impianto", "health.outcome"],
+    ["Ho perso l'impianto", "health.outcome"],
+    ["I lost my implant after a month", "health.outcome"],
+    ["Mir ist das Implantat rausgefallen", "health.outcome"],
+    ["Das Implantat ist mir rausgefallen", "health.outcome"],
+    ["Mon implant est tombé", "health.outcome"],
+    ["J'ai perdu mon implant", "health.outcome"],
+    ["Se me cayó el implante", "health.outcome"],
+    ["Caiu o implante", "health.outcome"],
+    ["Mi-a căzut implantul", "health.outcome"],
+    ["Wypadł mi implant", "health.outcome"],
     ["Ho avuto un'infezione", "health.infection"],
     ["Sono diabetica e mi hanno seguita bene", "health.condition"],
     ["I'm pregnant and they were careful", "health.pregnancy"],
@@ -22,10 +35,14 @@ describe("health-term flagger", () => {
 
   it("holds phone numbers, emails and links but not prices, years or dates", () => {
     expect(reviewFlags("Chiamatemi al 333 123 4567")).toEqual(["contact.phone"]);
+    expect(reviewFlags("chiamatemi al 333 - 123 - 4567")).toEqual(["contact.phone"]);
+    expect(reviewFlags("tel. +39 (02) 1234 - 5678")).toEqual(["contact.phone"]);
+    expect(reviewFlags("tel. 02 / 1234 - 5678")).toEqual(["contact.phone"]);
     expect(reviewFlags("call +39 02 1234 5678 anytime")).toEqual(["contact.phone"]);
     expect(reviewFlags("scrivete a mario.rossi@example.com")).toEqual(["contact.email"]);
     expect(reviewFlags("see www.example.com/x")).toEqual(["contact.link"]);
     expect(reviewFlags("Pagato 1.200 € nel 2024, dal 2019-2020 sono paziente. Visita il 12/03/2024 10:30")).toEqual([]);
+    expect(reviewFlags("Visita il 12 - 03 - 2024, pagato 80 - 120 euro")).toEqual([]);
   });
 
   it("only warns about treatments and symptoms", () => {

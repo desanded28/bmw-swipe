@@ -1,11 +1,16 @@
 "use server";
 
-import { eq } from "drizzle-orm";
+import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
-import { organizations, type OrgSettings } from "@/db/schema";
+import { memberships, organizations, users, type OrgSettings } from "@/db/schema";
 import { DEFAULT_LOCALE } from "@/i18n/config";
 import { getStaffLocale, getT } from "@/i18n/server";
+import type { StaffSession } from "@/lib/auth";
+import { absoluteUrl } from "@/lib/config";
+import { logError } from "@/lib/log";
+import { sendAuthEmail, staffEmailLocale } from "@/lib/security/emails";
+import { issueAuthToken } from "@/lib/security/tokens";
 import { resolveSettings } from "@/lib/settings";
 import { fail, guard, ok, optional, str, type ActionResult } from "./_shared";
 
@@ -30,6 +35,42 @@ function website(raw: string | null): string | null | false {
 }
 
 const validEmail = (v: string | null) => !v || z.email().safeParse(v).success;
+
+/** Is this the verified sign-in address of one of the practice's owners? */
+async function isVerifiedOwnerEmail(orgId: string, email: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: users.id })
+    .from(memberships)
+    .innerJoin(users, eq(users.id, memberships.userId))
+    .where(and(eq(memberships.orgId, orgId), eq(memberships.role, "owner"), isNotNull(users.emailVerifiedAt), sql`lower(${users.email}) = ${email}`))
+    .limit(1);
+  return Boolean(row);
+}
+
+/**
+ * The practice email gates online booking (canAcceptOnlineBookings needs emailVerifiedAt) and
+ * receives patients' replies and privacy answers, so changing it drops the verification — unless
+ * the new address is the verified sign-in address of an owner. An owner whose own address is
+ * verified gets a confirmation link sent to the new address (WP6's email_verify token: confirming
+ * it marks the practice email verified when it still matches).
+ */
+async function reverifyPracticeEmail(s: StaffSession, email: string | null): Promise<"verified" | "sent" | "unverified"> {
+  if (email && (await isVerifiedOwnerEmail(s.org.id, email))) {
+    await db.update(organizations).set({ emailVerifiedAt: new Date() }).where(eq(organizations.id, s.org.id));
+    return "verified";
+  }
+  await db.update(organizations).set({ emailVerifiedAt: null }).where(eq(organizations.id, s.org.id));
+  if (!email || s.role !== "owner" || !s.auth?.emailVerified) return "unverified";
+  try {
+    const { token } = await issueAuthToken({ kind: "email_verify", userId: s.user.id, email, orgId: s.org.id });
+    const locale = staffEmailLocale(s.user, s.org);
+    await sendAuthEmail({ to: email, name: s.org.name, locale, kind: "verifyEmail", vars: { practice: s.org.name }, url: absoluteUrl(`/${locale}/verify-email/${token}`) });
+    return "sent";
+  } catch (err) {
+    logError("settings", err, { step: "practice-email-verify", orgId: s.org.id });
+    return "unverified";
+  }
+}
 
 export async function saveProfile(_prev: unknown, fd: FormData): Promise<ActionResult> {
   return guard(
@@ -64,7 +105,10 @@ export async function saveProfile(_prev: unknown, fd: FormData): Promise<ActionR
           medicalDirector: text("medicalDirector"),
         })
         .where(eq(organizations.id, s.org.id));
-      return ok(t("settings.profile.saved"));
+      if ((email ?? "") === (s.org.email ?? "").toLowerCase()) return ok(t("settings.profile.saved"));
+      const verification = await reverifyPracticeEmail(s, email);
+      if (verification === "verified") return ok(t("settings.profile.saved"));
+      return ok(verification === "sent" ? t("settings.profile.savedVerify") : t("settings.profile.savedUnverified"));
     },
     { permission: "settings.manage", audit: "settings.update" },
   );

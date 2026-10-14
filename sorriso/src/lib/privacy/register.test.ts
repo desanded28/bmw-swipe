@@ -111,4 +111,13 @@ describe("Art. 30 register", () => {
     expect(csvCell('a,"b"')).toBe('"a,""b"""');
     expect(new Set(SECURITY_CONTROLS.map((c) => c.id)).size).toBe(SECURITY_CONTROLS.length);
   });
+
+  it("keeps phone numbers intact, so exports can be re-imported (Art. 20)", () => {
+    expect(csvCell("+393331234567")).toBe("+393331234567");
+    expect(csvCell("+39•••4567")).toBe("+39•••4567");
+    // Still defused: anything that could run.
+    expect(csvCell("+1+cmd|' /C calc'!A0")).toBe("'+1+cmd|' /C calc'!A0");
+    expect(csvCell("+393331234567;=1")).toBe(`"'+393331234567;=1"`);
+    expect(csvCell("@SUM(A1)")).toBe("'@SUM(A1)");
+  });
 });

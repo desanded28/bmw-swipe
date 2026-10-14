@@ -3,8 +3,9 @@ import type { Metadata } from "next";
 import { saveLocation } from "@/app/dashboard/actions/locations";
 import { ActionForm } from "@/components/dashboard/ActionForm";
 import { RoomManager } from "@/components/dashboard/RoomManager";
+import { AdCheckedText } from "@/components/marketplace/AdCheckedText";
 import { TimeOffForm, TimeOffList } from "@/components/dashboard/TimeOff";
-import { Badge, Card, Field, Input, PageHeader, Textarea } from "@/components/ui";
+import { Badge, Card, Field, Input, PageHeader } from "@/components/ui";
 import { db } from "@/db";
 import { locations, rooms, timeOff, type Location } from "@/db/schema";
 import type { Locale } from "@/i18n/config";
@@ -55,7 +56,7 @@ function LocationFields({ l, locale }: { l?: Location; locale: Locale }) {
         </div>
       </fieldset>
       <Field label={t("locations.transit")} hint={t("locations.transitHint")} className="mt-3">
-        <Textarea name="transit" rows={2} maxLength={300} defaultValue={a.transit ?? ""} />
+        {(control) => <AdCheckedText {...control} multiline name="transit" rows={2} maxLength={300} defaultValue={a.transit ?? ""} />}
       </Field>
       <label className="mt-3 flex items-center gap-2 text-sm">
         <input type="checkbox" name="active" defaultChecked={l?.active ?? true} className="h-4 w-4 accent-brand-700" /> {t("locations.open")}

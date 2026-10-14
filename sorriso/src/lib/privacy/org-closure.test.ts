@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { appointments, auditLog, memberships, messages, organizations, patients, practitioners, users } from "@/db/schema";
 import { GET as certificateRoute } from "@/app/dashboard/settings/closure/certificate/route";
 import { createPractice } from "@/test/fixtures";
+import { audit } from "../audit";
 import { newId } from "../ids";
 import { cancelClosure, certificateToken, loadCertificate, purgeDateFor, purgeOrg, requestClosure } from "./org-closure";
 
@@ -40,10 +41,15 @@ describe("account closure", () => {
     const start = new Date("2030-02-01T09:00:00Z");
     await db.insert(appointments).values({ id: apptId, orgId: p.orgId, locationId: p.milano, practitionerId: p.drA, serviceId: p.visit, patientId, startsAt: start, endsAt: start, blockedUntil: start, source: "staff", manageToken: `h:${apptId}` });
     await db.insert(messages).values({ id: newId(), orgId: p.orgId, patientId, channel: "sms", direction: "outbound", to: "+390000", body: "x", status: "sent", provider: "dev" });
+    // The practice's access log: reasons that may name patients, ids, IP hashes.
+    await audit({ orgId: p.orgId, actor: { type: "user", id: solo }, action: "patient.restricted_access", entity: { type: "patient", id: patientId }, reason: "Il sig. B chiede copia" });
+    await audit({ orgId: p.orgId, actor: { type: "user", id: solo }, action: "patient.view", entity: { type: "patient", id: patientId } });
 
     const now = new Date("2030-03-01T10:00:00Z");
     const { counts, certificateId } = await purgeOrg(p.orgId, { now });
-    expect(counts).toMatchObject({ organizations: 1, patients: 1, appointments: 1, messages: 1, practitioners: 3, locations: 2, memberships: 2, users: 1 });
+    expect(counts).toMatchObject({ organizations: 1, patients: 1, appointments: 1, messages: 1, practitioners: 3, locations: 2, memberships: 2, users: 1, audit_log: 2 });
+    // Deleted with the rest, as the certificate and the DPA say: nothing of the chain is left.
+    expect(await db.select().from(auditLog).where(eq(auditLog.orgId, p.orgId))).toEqual([]);
     expect(await db.select().from(organizations).where(eq(organizations.id, p.orgId))).toEqual([]);
     expect(await db.select().from(practitioners).where(eq(practitioners.orgId, p.orgId))).toEqual([]);
     expect((await db.select().from(users).where(inArray(users.id, [solo, shared]))).map((u) => u.id)).toEqual([shared]);
@@ -51,7 +57,7 @@ describe("account closure", () => {
 
     expect(certificateId).toBeTruthy();
     const cert = await loadCertificate(certificateToken(certificateId!));
-    expect(cert).toMatchObject({ orgId: p.orgId, orgName: "Studio Test", tables: { patients: 1, appointments: 1 } });
+    expect(cert).toMatchObject({ orgId: p.orgId, orgName: "Studio Test", tables: { patients: 1, appointments: 1, audit_log: 2 } });
     expect(cert!.backupsExpireAt.getTime()).toBe(now.getTime() + 30 * 86_400_000);
     expect(await loadCertificate(`${certificateId}.forged`)).toBeNull();
     const [row] = await db.select().from(auditLog).where(eq(auditLog.id, certificateId!));
@@ -62,6 +68,18 @@ describe("account closure", () => {
     const html = await page.text();
     expect(html).toContain("Certificate of deletion");
     expect(html).toContain(cert!.hash);
+    // No inline handler (the dashboard CSP blocks them): without the proxy's nonce, no print button.
+    expect(html).not.toContain("onclick");
+    expect(html).not.toContain("<script");
+
+    const nonce = "bm9uY2UtdmFsdWUtMTIz";
+    const withNonce = await certificateRoute(
+      new Request(`https://sorriso.test/dashboard/settings/closure/certificate?c=${encodeURIComponent(certificateToken(certificateId!))}&lang=en`, { headers: { "x-nonce": nonce } }),
+    );
+    const printable = await withNonce.text();
+    expect(printable).toContain(`<script nonce="${nonce}">`);
+    expect(printable).toContain('id="print"');
+    expect(printable).not.toContain("onclick");
     expect((await certificateRoute(new Request("https://sorriso.test/dashboard/settings/closure/certificate?c=nope"))).status).toBe(404);
   });
 });

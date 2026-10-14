@@ -74,6 +74,11 @@ describe("dashboard review actions", () => {
     expect(await actions.replyToReview(id, "Thank you for the feedback.", true)).toMatchObject({ ok: true });
     expect(await statusOf(id)).toBe("published");
     expect(await actions.replyToReview(id, "Without confirming")).toMatchObject({ ok: false, code: "confirm_required" });
+    // The health-term flagger runs on the server too, whatever the browser checked.
+    const flagged = await actions.replyToReview(id, "Your implant failed because you smoke.", true);
+    expect(flagged).toMatchObject({ ok: false, code: "health_terms" });
+    expect(flagged.ok ? "" : flagged.error).toContain("health or contact details");
+    expect((await db.select({ reply: reviews.reply }).from(reviews).where(eq(reviews.id, id)))[0].reply).toBe("Thank you for the feedback.");
   });
 
   it("a report hides the review for moderation, and nothing a practice does can publish or remove it", async () => {

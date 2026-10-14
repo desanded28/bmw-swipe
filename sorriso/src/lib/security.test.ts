@@ -1,6 +1,8 @@
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
+import { cloneElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
+import type { MembershipRole } from "@/db/enums";
 import {
   apiKeys,
   appointments,
@@ -276,8 +278,8 @@ describe("dashboard actions and loaders across practices", () => {
       updateRoom: () => locationsA.updateRoom(b.chair1, { name: "Hijacked", active: false }),
       updatePatient: () => patientsA.updatePatient(ids.patient, null, fd({ firstName: "Hijacked", lastName: "X", phone: "+393330000002" })),
       savePractitioner: () => practitionersA.savePractitioner(b.drA, null, fd({ name: "Hijacked" })),
-      replyToReview: () => reviewsA.replyToReview(ids.review, "Hijacked"),
-      setReviewPublished: () => reviewsA.setReviewPublished(ids.review, false),
+      replyToReview: () => reviewsA.replyToReview(ids.review, "Hijacked", true),
+      reportReview: () => reviewsA.reportReview(ids.review, "defamation", "Hijacked report of another practice's review"),
       saveSchedule: () => schedulesA.saveSchedule(b.drA, []),
       saveService: () => servicesA.saveService(b.visit, null, fd({ name: "Hijacked", category: "checkup", durationMinutes: "30" })),
       addTimeOff: () => timeoffA.addTimeOff(null, fd({ scope: `practitioner:${b.drA}`, fromDate: MONDAY, toDate: MONDAY, allDay: "on" })),
@@ -307,14 +309,19 @@ describe("dashboard actions and loaders across practices", () => {
    * Actions that, on another practice's id, change nothing (the test above proves it) but still
    * answer ok: an update or delete scoped by orgId that matched no row. They should answer
    * not_found like the rest; listed here for their owners (WP2 clearAttention and
-   * removeWaitlistEntry, WP7 saveLocation, saveService, replyToReview and setReviewPublished, WP8
-   * deleteTimeOff) and to be emptied after the merge.
+   * removeWaitlistEntry, WP7 saveLocation and saveService, WP8 deleteTimeOff) and to be emptied
+   * after the merge. Each must still answer: a throw (a renamed or removed action, a crash) fails.
    */
-  const SILENT_NO_OPS = new Set(["clearAttention", "saveLocation", "replyToReview", "setReviewPublished", "saveService", "deleteTimeOff", "removeWaitlistEntry"]);
+  const SILENT_NO_OPS = new Set(["clearAttention", "saveLocation", "saveService", "deleteTimeOff", "removeWaitlistEntry"]);
+
+  it("every action answers: none throws, so each check below really ran", () => {
+    for (const [name, res] of results) expect(res, name).not.toHaveProperty("thrown");
+  });
 
   it("answers not_found or a failure to every other action on a foreign id", () => {
     expect(results.size).toBeGreaterThan(25);
     for (const [name, res] of results) {
+      expect(res, name).toHaveProperty("ok");
       if (SILENT_NO_OPS.has(name)) continue;
       expect(res, name).toMatchObject({ ok: false });
     }
@@ -345,26 +352,82 @@ describe("dashboard actions and loaders across practices", () => {
 });
 
 describe("clinical notes and reception", () => {
-  it("reception gets forbidden on patient clinical notes", async () => {
-    const { can, visiblePatient } = await import("./permissions");
-    const { guard, ok } = await import("@/app/dashboard/actions/_shared");
+  const NOTE = "clinical: penicillin allergy, on warfarin";
+
+  /** Resolve async server components in a page's element tree (client components keep their props). */
+  async function resolve(node: ReactNode): Promise<ReactNode> {
+    if (Array.isArray(node)) return Promise.all(node.map(resolve));
+    if (!isValidElement(node)) return node;
+    const el = node as ReactElement<{ children?: ReactNode }>;
+    if (typeof el.type === "function" && el.type.constructor.name === "AsyncFunction") {
+      return resolve(await (el.type as (props: unknown) => Promise<ReactNode>)(el.props));
+    }
+    if (el.props.children === undefined) return el;
+    return cloneElement(el, undefined, await resolve(el.props.children));
+  }
+
+  /** Every string in an element tree's props: what the page would render or hand to client components. */
+  function strings(node: unknown, out: string[] = [], seen = new Set<unknown>()): string[] {
+    if (typeof node === "string") out.push(node);
+    else if (Array.isArray(node)) for (const n of node) strings(n, out, seen);
+    else if (node && typeof node === "object" && !seen.has(node)) {
+      seen.add(node);
+      const values = isValidElement(node) ? [(node as ReactElement).props] : Object.values(node);
+      for (const v of values) strings(v, out, seen);
+    }
+    return out;
+  }
+
+  async function sessionAs(role: MembershipRole): Promise<StaffSession> {
     const [orgA] = await db.select().from(organizations).where(eq(organizations.id, a.orgId));
-    const reception: StaffSession = {
-      sessionId: "reception-session",
-      user: { id: "reception-user", name: "R", email: "r@example.com", isPlatformAdmin: false, locale: null },
+    return {
+      sessionId: `${role}-session`,
+      user: { id: `${role}-user`, name: role, email: `${role}@example.com`, isPlatformAdmin: false, locale: null },
       org: orgA,
-      role: "reception",
-      orgs: [{ org: orgA, role: "reception" }],
+      role,
+      orgs: [{ org: orgA, role }],
     };
-    staffState.session = reception;
-    const readNotes = vi.fn(async () => ok("read"));
-    expect(await guard(readNotes, { permission: "patient.notes.read" })).toMatchObject({ ok: false, code: "forbidden" });
-    expect(await guard(readNotes, { permission: "patient.clinical.read" })).toMatchObject({ ok: false, code: "forbidden" });
-    expect(readNotes).not.toHaveBeenCalled();
-    // Loaders hand pages a patient row with the notes removed for this role.
-    const [row] = await db.select().from(patients).where(or(eq(patients.orgId, b.orgId), eq(patients.orgId, a.orgId))).limit(1);
-    expect(visiblePatient("reception", { ...row, notes: "clinical" }).notes).toBeNull();
+  }
+
+  it("reception gets forbidden on patient clinical notes, from the real actions and loaders", async () => {
+    const { newId } = await import("./ids");
+    const patientsA = await import("@/app/dashboard/actions/patients");
+    const patientId = newId();
+    await db.insert(patients).values({ id: patientId, orgId: a.orgId, firstName: "Nora", lastName: "Clinica", phone: `+39${seq++}`, notes: NOTE });
+    const notesNow = async () => (await db.select({ notes: patients.notes }).from(patients).where(eq(patients.id, patientId)))[0].notes;
+    const fd = (values: Record<string, string>) => {
+      const f = new FormData();
+      for (const [k, v] of Object.entries(values)) f.set(k, v);
+      return f;
+    };
+    staffState.session = await sessionAs("reception");
+
+    // Writing notes: forbidden.
+    expect(await patientsA.updatePatientNotes(patientId, null, fd({ notes: "overwritten by reception" }))).toMatchObject({ ok: false, code: "forbidden" });
+    // The details form with a notes field smuggled in: the details may change, the notes don't.
+    await patientsA.updatePatient(patientId, null, fd({ firstName: "Nora", lastName: "Clinica", notes: "overwritten by reception" }));
+    expect(await notesNow()).toBe(NOTE);
+
+    // The patient lookups carry no notes.
+    const found = await patientsA.searchPatients("Nora Clinica");
+    expect(found.map((r) => r.id)).toContain(patientId);
+    const listed = await patientsA.listPatientRows("Clinica");
+    expect(listed.rows.map((r) => r.id)).toContain(patientId);
+    for (const row of [...found, ...listed.rows]) expect(row).not.toHaveProperty("notes");
+    expect(JSON.stringify([found, listed])).not.toContain("warfarin");
+
+    // The patient page: the note is nowhere in what it renders or hands to client components for
+    // reception, while a practitioner (patient.notes.read) gets it (so the check can see it at all).
+    const { default: PatientPage } = await import("@/app/dashboard/patients/[id]/page");
+    const page = async () =>
+      strings(await resolve(await PatientPage({ params: Promise.resolve({ id: patientId }), searchParams: Promise.resolve({}) }))).join("\n");
+    expect(await page()).not.toContain("warfarin");
+    staffState.session = await sessionAs("practitioner");
+    expect(await page()).toContain("warfarin");
+
     // Anamnesis answers (WP8) sit behind patient.clinical.read, which reception lacks.
+    const { can, visiblePatient } = await import("./permissions");
     expect(can("reception", "patient.clinical.read")).toBe(false);
+    expect(visiblePatient("reception", { notes: NOTE }).notes).toBeNull();
   });
 });

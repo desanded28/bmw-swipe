@@ -12,6 +12,7 @@ import { absoluteUrl, APP_URL } from "../config";
 import { signPracticeRef } from "../privacy/context";
 import { bookSlotUrl } from "../waitlist";
 import { deliver, patientEmailHeaders } from "./index";
+import { renderEmailLayout } from "./layout";
 import { smtpTransportOptions } from "./providers";
 import { asciiFallback, isGsm7, segments, withinBudget, ASCII_FALLBACK_LOCALES } from "./sms-encoding";
 import { templates, type AppointmentTemplateData, type EmailContent } from "./templates";
@@ -321,5 +322,84 @@ describe("email hygiene", () => {
 
   it("adds no unsubscribe header to mail that isn't about a patient record", () => {
     expect(patientEmailHeaders({ locale: "it" })).toEqual({ "Content-Language": "it" });
+  });
+});
+
+// ---------------------------------------------------------------- layout and templates as reviewed
+
+describe("the email layout", () => {
+  it("declares the recipient's language and renders footer links and the note", () => {
+    const { html, text } = renderEmailLayout({
+      locale: "de",
+      brandColor: "#123abc",
+      brandName: "Praxis <Müller>",
+      intro: "Ihr Termin & mehr",
+      footerLines: ["Praxis Müller", "Via Roma 1 <Bozen>"],
+      note: "Details <online>",
+      footerLinks: [
+        { label: "Datenschutz", url: "https://sorriso.test/de/c/x/privacy" },
+        { label: "Bad", url: "javascript:alert(1)" },
+      ],
+    });
+    expect(html.startsWith('<!doctype html><html lang="de"><head><meta charset="utf-8">')).toBe(true);
+    expect(html).toContain("Details &lt;online&gt;");
+    expect(html).toContain('<a href="https://sorriso.test/de/c/x/privacy" style="color:#64748b;text-decoration:underline">Datenschutz</a>');
+    expect(html).toContain('<a href="#"');
+    expect(html).not.toContain("javascript:");
+    expect(text).toContain("Datenschutz: https://sorriso.test/de/c/x/privacy");
+  });
+});
+
+/** Fixed data with characters that need escaping, for the snapshot below. */
+const reviewed: AppointmentTemplateData = {
+  locale: "it",
+  patientFirstName: "Giulia <b>",
+  clinicName: 'Studio "Rossi" & Figli',
+  clinicPhone: "+39 02 1234 5678",
+  brandColor: "#1d4ed8",
+  practitionerName: "Dr. Marco Rossi",
+  serviceName: "Igiene <professionale>",
+  start: new Date("2026-11-03T08:30:00Z"),
+  timezone: "Europe/Rome",
+  locationName: "Milano Centro",
+  address: "Via Roma 1, Milano",
+  manageUrl: "https://sorriso.test/a/tok123",
+  icsUrl: "https://sorriso.test/api/ics/appointment/tok123",
+};
+
+/**
+ * Every appointment template rendered with fixed data. The snapshot pins the output, so a change
+ * to a patient text or to the layout shows up in review.
+ */
+function renderReviewed(d: AppointmentTemplateData) {
+  return {
+    bookingConfirmation: templates.bookingConfirmation(d),
+    bookingConfirmationSms: templates.bookingConfirmationSms(d),
+    bookingRequested: templates.bookingRequested(d),
+    bookingApproved: templates.bookingApproved(d),
+    reminderEmailAsk: templates.reminderEmail(d, true),
+    reminderEmail: templates.reminderEmail(d, false),
+    reminderSmsAsk: templates.reminderSms(d, true),
+    reminderSms: templates.reminderSms(d, false),
+    cancelledEmailStaff: templates.cancelledEmail(d, "staff", "https://sorriso.test/book/x"),
+    cancelledEmailPatient: templates.cancelledEmail(d, "patient", "https://sorriso.test/book/x"),
+    cancelledSms: templates.cancelledSms(d, "https://sorriso.test/book/x"),
+    rescheduledEmail: templates.rescheduledEmail(d),
+    rescheduledSms: templates.rescheduledSms(d),
+    waitlistOfferEmail: templates.waitlistOfferEmail(d, "https://sorriso.test/book/x?slot=1"),
+    waitlistOfferSms: templates.waitlistOfferSms(d, "https://sorriso.test/book/x?slot=1"),
+    reviewRequest: templates.reviewRequest(d, "https://sorriso.test/a/tok123/review"),
+    replyConfirmed: templates.reply.confirmed(d),
+    replyCancelled: templates.reply.cancelled(d, "https://sorriso.test/book/x"),
+    replyReschedule: templates.reply.reschedule(d),
+    replyUnknown: templates.reply.unknown(d),
+    replyStop: templates.reply.stop(d.locale, d.clinicName),
+    replyNone: templates.reply.none(d.locale, d.clinicName),
+  };
+}
+
+describe("appointment templates as reviewed", () => {
+  it.each(["it", "en", "de"] as const)("%s", (locale) => {
+    expect(renderReviewed({ ...reviewed, locale })).toMatchSnapshot();
   });
 });

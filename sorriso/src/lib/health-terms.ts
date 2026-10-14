@@ -159,11 +159,12 @@ const RULES: PatternRule<HealthRule, HealthSeverity>[] = [
     patterns: ["(?:https?:\\/\\/|www\\.)[^\\s]+"],
   },
   {
-    // 9 to 15 digits, optionally grouped: phone numbers, never prices, years or dates.
+    // 9 to 15 digits, optionally grouped (up to 3 separators between digits, as in "333 - 123 -
+    // 4567" or "+39 (02) 1234"): phone numbers, never prices, years or dates.
     rule: "contact.phone",
     severity: "hold",
     raw: true,
-    patterns: ["(?<![\\p{L}\\p{N}])(?:\\+|00)?\\d(?:[\\s().\\-/]{0,2}\\d){8,16}(?![\\p{N}])"],
+    patterns: ["(?<![\\p{L}\\p{N}])(?:\\+|00)?\\d(?:[\\s().\\-/]{0,3}\\d){8,16}(?![\\p{N}])"],
     accept: (m) => digits(m) >= 9 && digits(m) <= 15 && !DATE_LIKE.test(m),
   },
   {
@@ -173,6 +174,7 @@ const RULES: PatternRule<HealthRule, HealthSeverity>[] = [
       // en
       "implants? (?:has |have |had |was |were |got )?(?:failed|failing|fell out|came out|rejected|come loose|came loose)",
       "(?:failed|failing|rejected|lost) implants?",
+      "(?:lost|rejected) (?:my |an |the |two |both |all )?implants?",
       "implant (?:failure|rejection|loss)",
       "nerve damage",
       "damaged (?:a |the |my )?nerve",
@@ -180,43 +182,52 @@ const RULES: PatternRule<HealthRule, HealthSeverity>[] = [
       // it
       "impiant[oi] (?:(?:e|sono|si e|si sono|mi e|mi sono) )?(?:fallit[oi]|saltat[oi]|cadut[oi]|rigettat[oi]|staccat[oi])",
       "impiant[oi] (?:non ha|non hanno) (?:retto|attecchito|tenuto)",
+      // verb first: "mi è caduto l'impianto", "si è staccato l'impianto", "ho perso l'impianto"
+      "(?:(?:mi |si |mi si |gli |le )?(?:e |sono )?)(?:fallit[oaie]|saltat[oaie]|cadut[oaie]|rigettat[oaie]|staccat[oaie]|uscit[oaie]) (?:l'|il |gli |i |un |due |tutti gli )?impiant[oi]",
+      "(?:ho |abbiamo |hanno )?pers[oi] (?:l'|il |gli |i |un |due )?impiant[oi]",
       "(?:rigetto|fallimento|perdita) (?:dell'|del |degli |di un )?impiant[oi]",
       "(?:danno|lesione) (?:al |del )?nervo",
       "nervo (?:lesionato|danneggiato|toccato)",
       "complicazion[ei]",
       "complicanz[ae]",
       // de
-      "implantat(?:e)? (?:ist |sind |wurde |wurden |hat |haben )?(?:verloren|gescheitert|abgesto(?:ss|ß)en|rausgefallen|herausgefallen|ausgefallen|locker)",
+      "implantat(?:e)? (?:ist |sind |wurde |wurden |hat |haben )?(?:mir |uns |ihm |ihr )?(?:verloren|gescheitert|abgesto(?:ss|ß)en|rausgefallen|herausgefallen|ausgefallen|locker)",
+      "(?:ist |sind )(?:mir |uns |ihm |ihr )?(?:das |die |ein |mein |meine )?implantat(?:e)? (?:rausgefallen|herausgefallen|ausgefallen|abgesto(?:ss|ß)en)",
       "implantat(?:verlust|versagen)",
       "nerv(?:en)?schad(?:en|igung)",
       "nerv (?:verletzt|beschadigt)",
       "komplikation(?:en)?",
       // fr
-      "implants? (?:a |ont )?(?:echoue|rate|ete rejetes?|rejetes?|tombes?|perdus?)",
+      "implants? (?:a |ont |est |sont |s'est |se sont )?(?:echoue|rate|ete rejetes?|rejetes?|tombes?|perdus?|detaches?)",
+      "(?:perdu|rejete) (?:mon |mes |l'|un |deux |les )?implants?",
       "(?:echec|rejet|perte) (?:de l'|d'un |du |des )?implants?",
       "lesion (?:du |d'un )?nerf",
       "nerf (?:touche|abime|lese)",
       "complications?",
       // es
-      "implantes? (?:ha |han |se )?(?:fallado|fallo|fallidos?|rechazados?|caido|cayo|cayeron)",
+      "implantes? (?:ha |han |se )?(?:me |le )?(?:fallado|fallo|fallidos?|rechazados?|caido|cayo|cayeron)",
+      "(?:se (?:me |le )?)?(?:cayo|cayeron|ha caido|han caido|fallo|fallaron|perdi) (?:el |los |un |mi |mis |dos )?implantes?",
       "(?:fracaso|rechazo|perdida) (?:del |de un |de los )?implantes?",
       "dano (?:en el |al |del )nervio",
       "nervio (?:danado|lesionado)",
       "complicacion(?:es)?",
       // pt
       "implantes? (?:falhou|falharam|falhado|rejeitados?|caiu|cairam|perdidos?)",
+      "(?:caiu|cairam|falhou|falharam|perdi) (?:o |os |um |meu |meus |o meu |dois )?implantes?",
       "(?:falha|perda|rejeicao) (?:do |de um |dos )?implantes?",
       "lesao (?:no |do |de um )nervo",
       "nervo (?:danificado|lesionado|lesado)",
       "complicac(?:ao|oes)",
       // ro
       "implant(?:ul|uri|urile)? (?:a |au )?(?:esuat|cazut|respins|nu a prins|nu au prins)",
+      "(?:mi-a |mi-au |a |au )?(?:cazut|esuat|pierdut) implant(?:ul|urile)?",
       "respingerea implantului",
       "lezarea nervului",
       "nerv(?:ul)? (?:lezat|afectat)",
       "complicati(?:e|i|ile)",
       // pl
       "implant(?:y)? (?:sie nie przyjal|nie przyjal sie|zostal odrzucony|wypadl|odpadl)",
+      "(?:wypadl|wypadly|odpadl|stracil(?:em|am)?) (?:mi )?implant(?:y)?",
       "nieudany implant",
       "odrzucenie implantu",
       "uszkodzeni(?:e|a) nerwu",

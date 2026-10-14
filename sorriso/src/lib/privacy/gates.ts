@@ -12,7 +12,9 @@ import { LEGAL_VERSIONS } from "./versions";
 /**
  * Compliance gates.
  *
- * Dashboard (enforceDashboardGates, called by the dashboard layout):
+ * Dashboard (enforceDashboardGates, called by the dashboard layout, and gatePage, called by page
+ * loaders — Next doesn't re-render a shared layout on client-side navigation, so the layout's
+ * check alone can be walked past by clicking a sidebar link):
  *  - owners and admins (legal.accept) are sent to /dashboard/legal until the practice has
  *    accepted the DPA (Art. 28(3): processing only under a binding contract) and the terms in
  *    their current versions; the other staff see a banner (ComplianceBanner) instead;
@@ -98,7 +100,7 @@ export function gateRedirect(path: string, role: MembershipRole, pending: Pendin
   return null;
 }
 
-export async function enforceDashboardGates(s: GateSession): Promise<void> {
+export async function enforceDashboardGates(s: GateSession, pending?: PendingLegal): Promise<void> {
   // Imported here so the retention script (which imports this module) never loads Next internals.
   const { headers } = await import("next/headers");
   const { redirect } = await import("next/navigation");
@@ -106,8 +108,19 @@ export async function enforceDashboardGates(s: GateSession): Promise<void> {
   // Without the proxy's header we can't tell the legal page from the others: redirecting could
   // loop, so the dashboard stays reachable (online bookings are still gated by canAcceptOnlineBookings).
   if (!path) return;
-  const target = gateRedirect(path, s.role, await pendingLegal(s));
+  const target = gateRedirect(path, s.role, pending ?? (await pendingLegal(s)));
   if (target) redirect(target);
+}
+
+/**
+ * For page loaders, right after requirePermission(): the same gate as the layout (the proxy sets
+ * x-pathname on every request, client-side navigations included), and the compliance banner
+ * the page shows (<ComplianceBanner state={…} />).
+ */
+export async function gatePage(s: GateSession & { org: { id: string; name: string } }): Promise<ComplianceBannerState> {
+  const pending = await pendingLegal(s);
+  await enforceDashboardGates(s, pending);
+  return complianceBannerState(s, pending);
 }
 
 /** Why online bookings are paused, empty when they are open. */
@@ -153,8 +166,8 @@ export function objectionMailto(orgName: string, version: string): string {
  * - owners and admins when the sub-processor list changed: review, accept or object;
  * - owners and admins when online booking is paused for another reason (email, closing).
  */
-export async function complianceBannerState(s: GateSession & { org: { id: string; name: string } }): Promise<ComplianceBannerState> {
-  const pending = await pendingLegal(s);
+export async function complianceBannerState(s: GateSession & { org: { id: string; name: string } }, known?: PendingLegal): Promise<ComplianceBannerState> {
+  const pending = known ?? (await pendingLegal(s));
   const acceptor = ACCEPTORS.includes(s.role);
   if (pending.org.length && !acceptor) return { kind: "awaiting_owner" };
   if (acceptor && pending.subprocessors && !pending.org.length) {

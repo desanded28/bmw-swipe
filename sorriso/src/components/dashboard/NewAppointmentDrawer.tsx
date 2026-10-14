@@ -1,13 +1,15 @@
 "use client";
 
 import { Lock, LoaderCircle, Search, UserPlus, UserX, X } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { createStaffAppointment } from "@/app/dashboard/actions/appointments";
 import { searchPatients } from "@/app/dashboard/actions/patients";
 import { useT } from "@/i18n/provider";
+import { fullName } from "@/lib/format";
 import { formatPhone } from "@/lib/phone";
-import { Badge, Button, Field, Input, Select, Textarea } from "../ui";
+import { Badge, Button, Field, Input, Select, Textarea, cx } from "../ui";
 import { DRAWER_DIALOG, SLOT_CONFLICTS, useModalDialog } from "./AppointmentDrawer";
+import { Pii } from "./PrivacyScreen";
 import type { Resources } from "./types";
 import { useRunAction } from "./useRunAction";
 
@@ -23,6 +25,33 @@ export type NewAppointmentDefaults = {
 
 /** A restricted record in the search results (WP5 masks its name and flags it). */
 const isRestrictedHit = (h: PatientHit) => "restricted" in h && Boolean((h as { restricted?: boolean }).restricted);
+
+/**
+ * A patient's name and contacts in the search results and the chosen-patient card. Under the
+ * front-desk privacy screen both are blurred until the row or card (`group/pii`) is hovered or
+ * holds keyboard focus.
+ */
+export function PatientSummary({
+  hit,
+  nameClassName,
+  badge,
+}: {
+  hit: Pick<PatientHit, "firstName" | "lastName" | "phone" | "email">;
+  nameClassName?: string;
+  /** Shown after the name (not blurred). */
+  badge?: ReactNode;
+}) {
+  const contacts = [formatPhone(hit.phone), hit.email].filter(Boolean).join(" · ");
+  return (
+    <>
+      <span className={cx("flex min-w-0 items-center gap-2", nameClassName)}>
+        <Pii className="truncate">{fullName(hit)}</Pii>
+        {badge}
+      </span>
+      {contacts ? <Pii className="block truncate text-xs text-slate-600">{contacts}</Pii> : null}
+    </>
+  );
+}
 
 /**
  * Book from the dashboard: a native modal <dialog> docked on the right. Every control has a
@@ -134,17 +163,19 @@ export function NewAppointmentDrawer({
           <fieldset>
             <legend className="mb-1.5 text-[13px] font-semibold text-slate-700">{t("newAppointment.patient")}</legend>
             {patient ? (
-              <div className="flex items-center justify-between gap-3 rounded-xl bg-brand-50 p-3 ring-1 ring-brand-200">
+              <div className="group/pii flex items-center justify-between gap-3 rounded-xl bg-brand-50 p-3 ring-1 ring-brand-200">
                 <div className="min-w-0">
-                  <p className="flex items-center gap-2 font-semibold">
-                    {patient.firstName} {patient.lastName}
-                    {isRestrictedHit(patient) ? (
-                      <Badge tone="amber">
-                        <Lock size={11} aria-hidden /> {t("newAppointment.restrictedHit")}
-                      </Badge>
-                    ) : null}
-                  </p>
-                  <p className="truncate text-xs text-slate-600">{[formatPhone(patient.phone), patient.email].filter(Boolean).join(" · ")}</p>
+                  <PatientSummary
+                    hit={patient}
+                    nameClassName="font-semibold"
+                    badge={
+                      isRestrictedHit(patient) ? (
+                        <Badge tone="amber">
+                          <Lock size={11} aria-hidden /> {t("newAppointment.restrictedHit")}
+                        </Badge>
+                      ) : null
+                    }
+                  />
                 </div>
                 <button
                   type="button"
@@ -198,12 +229,13 @@ export function NewAppointmentDrawer({
                   <ul className="mt-2 divide-y divide-slate-100 overflow-hidden rounded-xl ring-1 ring-slate-200">
                     {hits.map((h) => (
                       <li key={h.id}>
-                        <button type="button" onClick={() => setPatient(h)} className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-slate-50">
+                        <button
+                          type="button"
+                          onClick={() => setPatient(h)}
+                          className="group/pii flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-slate-50"
+                        >
                           <span className="min-w-0">
-                            <span className="block text-sm font-semibold">
-                              {h.firstName} {h.lastName}
-                            </span>
-                            <span className="block truncate text-xs text-slate-600">{[formatPhone(h.phone), h.email].filter(Boolean).join(" · ")}</span>
+                            <PatientSummary hit={h} nameClassName="text-sm font-semibold" />
                           </span>
                           {isRestrictedHit(h) ? (
                             <Badge tone="amber">

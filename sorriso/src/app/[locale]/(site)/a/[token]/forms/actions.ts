@@ -9,7 +9,7 @@ import { anamnesisStatuses, startFormSignature, submitAnamnesis, TOKEN_SHAPE, ty
 import { logError } from "@/lib/log";
 import { getCare } from "@/lib/privacy/settings";
 import { rateLimitByIp } from "@/lib/rate-limit";
-import { needsRebooking } from "@/lib/rebooking";
+import { patientRebook } from "@/lib/rebooking";
 
 /**
  * The patient's side of the medical-history form, reached with the appointment link only (no
@@ -43,7 +43,8 @@ export async function formsCardStatus(token: string): Promise<ManageCareCard | n
             canFill: care.anamnesisEnabled && upcoming,
           }
         : null,
-    rebookNeeded: !restricted && (await needsRebooking(d.appointment, now)),
+    // Only once the practice offered new times for this visit (not for every visit a closure covers).
+    rebookNeeded: !restricted && (await patientRebook(d.appointment, now)).open,
   };
 }
 

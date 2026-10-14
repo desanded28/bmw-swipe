@@ -1,3 +1,4 @@
+import { auditStaff } from "@/lib/audit";
 import { requirePermission } from "@/lib/permissions";
 import { toCsv } from "@/lib/privacy/register";
 import { loadAuditRows, parseAuditFilter } from "../query";
@@ -8,12 +9,15 @@ const COLUMNS = ["seq", "at", "actorType", "actorId", "actorName", "action", "en
 /**
  * GET /dashboard/audit/export?<filters> — the filtered access log as CSV (audit.read), with the
  * hash-chain fields so the export can be verified independently. Newest first, at most 50,000 rows.
+ * The file holds the decrypted reasons staff gave (which may name patients), so the download is
+ * itself audited: export.org with scope audit_log and the row count.
  */
 export async function GET(req: Request) {
   const s = await requirePermission("audit.read");
   const sp = Object.fromEntries(new URL(req.url).searchParams);
   const f = { ...parseAuditFilter(sp), before: null };
   const rows = await loadAuditRows(s.org.id, f, s.org.timezone, MAX_ROWS);
+  await auditStaff(s, "export.org", { type: "org", id: s.org.id }, { metadata: { scope: "audit_log", rows: rows.length } });
   const csv = toCsv(
     COLUMNS,
     rows.map(({ row, name }) => ({ ...row, at: row.at.toISOString(), actorName: name, metadata: row.metadata ? JSON.stringify(row.metadata) : null })),

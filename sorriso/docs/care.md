@@ -18,9 +18,19 @@ duplicate patients. This package also owns the booking engine (`src/lib/booking.
 | Texts | `src/i18n/messages/en/care.ts`, `careMessages.ts` (server-only) | |
 
 Dashboard actions live in `src/app/dashboard/actions/care.ts` and `timeoff.ts`; the patient pages'
-actions next to their pages. Lists of patients are audited as `patient.search`, changes as
-`patient.update` (recalls, forms, duplicate dismissals) or `appointment.update`/`.cancel`,
-merges as `patient.merge`, clinical reads as `patient.clinical.view`.
+actions next to their pages. Lists of patients are audited as `patient.search` (recalls page,
+duplicates queue, the "Rebook N patients" drawer), changes as `patient.update` (recalls, forms,
+duplicate dismissals) or `appointment.update`/`.cancel`, merges as `patient.merge`, clinical reads
+as `patient.clinical.view` **on the patient** (so they show in the patient's access log, the
+privacy center and the Art. 15 export).
+
+Restricted (Art. 18) and erased patients: every care read and write of one patient checks
+`mayReadPatient` on the server (`patient.restricted.read` plus a reason the same person gave in
+the last 15 minutes, `hasRestrictedAccess`), whatever the UI hides: the drawer's care panel, the
+medical history, the recall picker, the patient page's care panel and "mark as added to the
+clinical record". Lists mask restricted patients (placeholder name, no contacts or birth date)
+for viewers without `patient.restricted.read`: the duplicates queue, the call list (never a phone
+for a restricted patient) and the rebooking drawer.
 
 ## No-show risk
 
@@ -44,10 +54,17 @@ similarly significant effects is taken on it; L. 132/2025 on AI: transparency an
 
 Only when the practice turned on `privacy.riskBasedReminders`. Never for a patient who objected
 to `adaptive_reminders` (their `riskLevel` stays null and risk-gated reminders skip them). A patient
-who objected to `no_show_tracking` is scored without their attendance history. It is computed on
-booking and on reschedule (`refreshAppointmentRisk`), and refreshed by `runCareJobs` for visits in
-the next 7 days whose score is older than 6 hours or predates the visit's 24-hour mark. Practices
-that turn the setting off get stored values cleared.
+who objected to `no_show_tracking` is scored without their attendance history — and without
+deriving "first visit" from it: only the booking's own `isNewPatient` counts, so a withheld history
+never makes a long-standing patient look new. It is computed on booking and on reschedule
+(`refreshAppointmentRisk`), and refreshed by `runCareJobs` for visits in the next 7 days whose
+score is older than 6 hours or predates the visit's 24-hour mark, and for any later visit whose
+stored risk is older than a day. Practices that turn the setting off get the stored value of every
+future visit cleared.
+
+An objection applies at once, before any refresh: everything that reads a stored risk (the
+calendar's `loadCareFlags`, the call list) checks the objection live (`riskAllowedFor`), and the
+objection flow can clear all of the patient's future values with `clearRiskFor`.
 
 ### Factors and weights (deterministic, published)
 
@@ -88,7 +105,10 @@ dismissed: by staff · by the patient's objection to "recalls" · 180 days after
 
 - At most `care.recallMaxAttempts` messages (default 2, 0–3), 14 days apart; then the front desk
   calls ("Called" puts it back on the list after 14 days, without messages).
-- A booking marks open recalls of the same kind `booked`; cancelling that booking reopens them.
+- A booking marks open recalls of the same kind `booked`; cancelling that booking, or the visit
+  ending as a no-show (also when corrected from completed), reopens them.
+- The drawer's picker offers 3, 4, 6, 9, 12, 18 or 24 months, plus the interval in force when it is
+  another one (a service may suggest any 1–60 months; recalls keep 3–24, clamped).
 - Restricted (Art. 18), erased and merged patients are skipped; under 14, messages go to the
   guardian (`recipientFor`); `care.recallsEnabled = false` stops everything.
 - `processDueRecalls` leases each recall (like reminders), so parallel runners never double-send.
@@ -112,26 +132,37 @@ Prenota: {url}`, followed by the opt-out (`Per non ricevere più promemoria: {op
 
 1. Staff add time off (`TimeOffForm`): `addTimeOff` returns the upcoming visits the block covers
    (same scopes as availability: practitioner, office, chair, whole practice).
-2. "Rebook N patients" opens a drawer listing them. **Send offers** (`sendRebookOffers`): each
-   visit is flagged `needsAttention`, its pending reminders are cancelled (they would announce a
-   visit that can't happen), and the patient — or the guardian under 14 — gets
-   `careMessages.practiceMoved` in their language with `/a/<token>/rebook`. Discreet: date and
-   practice only.
-3. The patient sees up to three alternatives (`proposeAlternatives`): the same practitioner first
-   (same office first), then another practitioner at the same office; days closest to the original,
-   one per day first, time of day closest to the original; never busy or closed; at least two hours
-   ahead. One tap reschedules (`rescheduleAppointment` with `practiceMoved`): the practice caused
-   the move, so the patient policies (`cancelUntilHours`, minimum notice, maximum advance) don't
-   apply, but the slot is checked again. The original slot is freed and offered to the waitlist when
-   bookable (e.g. a chair closure with another chair free).
-4. **Call me instead** sets `confirmation = declined`, `confirmedVia = "rebook_call"`, and puts
-   the visit at the top of the call list.
+2. "Rebook N patients" opens a drawer listing them (a native modal `<dialog>`). **Send offers**
+   (`sendRebookOffers`): each visit is flagged `needsAttention`, its pending reminders are
+   cancelled (they would announce a visit that can't happen), the offer is recorded for the
+   visit's current start (an `appointment.update` audit row, `rebook: "offer"`), and the patient —
+   or the guardian under 14 — gets `careMessages.practiceMoved` in their language with
+   `/a/<token>/rebook`. Discreet: date and practice only. Restricted patients get no message
+   (the practice calls them).
+3. The patient sees three alternatives (`proposeAlternatives`), and up to nine with "Show more
+   times" (`?more=1`, still this assistant: every choice moves this visit, nothing is booked next
+   to it): the same practitioner first (same office first), then another practitioner at the same
+   office; days closest to the original, one per day first, time of day closest to the original;
+   never busy or closed; at least two hours ahead. One tap reschedules (`rescheduleAppointment`
+   with `practiceMoved`): the practice caused the move, so the patient policies
+   (`cancelUntilHours`, minimum notice, maximum advance) don't apply — which is why only a time the
+   assistant offers right now is accepted (`acceptAlternative` recomputes the alternatives and
+   refuses any other key as "taken"), and the slot is checked again. The original slot is freed and
+   offered to the waitlist when bookable (e.g. a chair closure with another chair free).
+4. **Call me instead** records the request for the visit's start (`rebook: "call_requested"`),
+   keeps `needsAttention`, and puts the visit at the top of the call list. The visit's
+   confirmation is left as it was: the patient declined nothing.
 5. Or staff **cancel instead**: `cancelledBy = "staff"`, `cancelReason = "practice_unavailable"`
    (WP7's reliability metric counts these); the patient gets the usual cancellation message.
 
-"Needs rebooking" is never stored: it is "a closure covers this visit", checked live. Removing the
-closure ends it and brings the reminders back (`afterClosureRemoved`); `needsAttention` stays for
-staff to clear, since the patient may have been told the visit moves.
+Staff see every visit a closure covers (`coveredByClosure`, checked live, never stored). The
+patient is told the visit must move — manage-page card, `/a/<token>/rebook`, choosing a time,
+asking for a call — only once the practice offered it (`patientRebook`): an offer recorded for
+the visit's current start, `needsAttention` still set, and a closure still covering it. So a visit
+staff force-booked into a blocked time, or one they will phone about, shows the patient nothing;
+"mark handled" (clearing `needsAttention`) withdraws an offer; a visit moved since the offer needs
+a new one. Removing the closure ends it and brings the reminders back (`afterClosureRemoved`);
+`needsAttention` stays for staff to clear, since the patient may have been told the visit moves.
 
 ## Digital medical history (anamnesis)
 
@@ -155,12 +186,22 @@ form_submissions: answers  = encryptedText("v1:…", AES-256-GCM, AAD form_submi
                   signer_name, signed_at, signed_via (otp_sms|otp_email), otp_challenge_id,
                   locale, version, template_id   ── audit: patient.update (form_submission)
       ▼
-calendar & drawer: status complete/missing → everyone with calendar.read
-                   red flag + answers      → patient.clinical.read only;
-                                             each opening audited as patient.clinical.view
+calendar:     status complete/missing → everyone with calendar.read
+              red-flag boolean        → patient.clinical.read only (not audited: one boolean)
+drawer:       which red flags         → patient.clinical.read only; each showing audited as
+                                        patient.clinical.view (view: red_flags) on the patient
+patient page: how many alerts per form → patient.clinical.read only (never which ones)
+sheet:        the answers             → patient.clinical.read only; each opening audited as
+                                        patient.clinical.view (view: answers) on the patient
+restricted patient: all of the above only after a restricted-access reason (mayReadPatient)
       ▼
 print sheet (clinical record) → "Mark as added to the clinical record" sets exported_at
 ```
+
+The sheet is a native `<dialog>` opened with `showModal()`: opened from the appointment drawer
+(itself a modal dialog) it stacks above it in the top layer, the drawer goes inert behind it, and
+Escape closes the sheet only. For printing it is re-opened as a plain dialog so a long history
+runs over several pages.
 
 - **Questions** (`DEFAULT_ANAMNESIS_V1`): anticoagulants/antiplatelets, bisphosphonates or
   denosumab, other medication, allergies (and to what), heart devices / valve replacement /
@@ -202,7 +243,8 @@ print sheet (clinical record) → "Mark as added to the clinical record" sets ex
   record, flagged.
 
 `/dashboard/patients/duplicates` lists the flagged pairs (`patient.read`; contacts only with
-`patient.contact.read`). **Merge** (`patient.write`, audited `patient.merge`) moves appointments
+`patient.contact.read`; a restricted record masked without `patient.restricted.read`, and then
+no decision on that pair). **Merge** (`patient.write`, audited `patient.merge`) moves appointments
 (with reminders and reviews), messages, recalls, forms, waitlist entries and privacy requests to the
 kept record, fills its missing contacts and birth date, adds up no-shows, and leaves the other
 record as a tombstone (`mergedIntoId`). The consent ledger is append-only and is **not** moved:

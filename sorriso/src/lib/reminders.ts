@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, isNull, like, lt, lte, or, type SQL } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, like, lt, lte, notInArray, or, type SQL } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import {
   appointments,
@@ -26,9 +26,9 @@ import {
 import { isRestricted, recipientFor } from "./contact";
 import { buildIcs } from "./ics";
 import { newId } from "./ids";
-import { logError, logInfo } from "./log";
+import { logError, logInfo, redact } from "./log";
 import { deliver } from "./messaging";
-import { deleteProviderMessage } from "./messaging/providers";
+import { canDeleteProviderCopies, deleteProviderMessage } from "./messaging/providers";
 import { templates } from "./messaging/templates";
 import { isAllowed } from "./privacy/consent";
 import { DEFAULT_PRIVACY, getPrivacy } from "./privacy/settings";
@@ -302,17 +302,19 @@ export async function processReminder(r: Reminder, now = new Date()): Promise<Ou
     try {
       outcome = await sendForReminder(r, details, now);
     } catch (err) {
+      logError("reminders", err, { step: "send", reminderId: r.id });
       outcome = { status: "retry", reason: err instanceof Error ? err.message : String(err) };
     }
   }
 
   if (outcome.status === "retry") {
     const final = r.attempts + 1 >= MAX_ATTEMPTS;
+    const error = storedError(outcome.reason);
     await db
       .update(reminders)
-      .set(final ? { status: "failed", error: outcome.reason } : { error: outcome.reason })
+      .set(final ? { status: "failed", error } : { error })
       .where(eq(reminders.id, r.id));
-    return final ? { status: "failed", reason: outcome.reason } : outcome;
+    return final ? { status: "failed", reason: error ?? undefined } : { ...outcome, reason: error ?? undefined };
   }
 
   await db
@@ -321,10 +323,20 @@ export async function processReminder(r: Reminder, now = new Date()): Promise<Ou
       status: outcome.status,
       sentAt: outcome.status === "sent" ? now : null,
       messageId: outcome.messageId ?? null,
-      error: outcome.status === "skipped" ? outcome.reason : null,
+      error: outcome.status === "skipped" ? storedError(outcome.reason) : null,
     })
     .where(eq(reminders.id, r.id));
   return outcome;
+}
+
+/**
+ * reminders.error is a plain column the dashboard shows: never an exception's raw text. A failed
+ * query's message ends with its bound values ("params: …": the recipient's number or email, names,
+ * the message text), and provider errors quote the recipient. redact() drops the former and masks
+ * the latter, as for the logs; the length is capped.
+ */
+function storedError(reason: string | undefined): string | null {
+  return reason ? redact(reason).slice(0, 300) : null;
 }
 
 /**
@@ -355,44 +367,79 @@ export async function processDueReminders(opts: { now?: Date; limit?: number; ap
 
 // ---------------------------------------------------------------- provider copies
 
+/** A copy whose deletion failed is left alone this long (in this process), so the batch moves on. */
+const FAILED_DELETE_BACKOFF_MS = 6 * 3_600_000;
+/** Consecutive failures after which a provider is left for the next run (bad credentials, outage). */
+const PROVIDER_FAILURE_LIMIT = 5;
+const MAX_REMEMBERED_FAILURES = 5_000;
+/** messageId -> when deleting its provider copy last failed. */
+const failedDeletes = new Map<string, number>();
+
 /**
  * Ask Twilio to delete its copies of texts (outbound and inbound) older than each practice's
  * privacy.retention.providerMessageDays, and mark them providerDeletedAt. Platform messages (no
- * practice: privacy-center codes) use the default. Copies Twilio can't delete yet (still being
- * delivered, credentials missing) stay unmarked and are retried on the next run. Run by the
- * reminders cron.
+ * practice: privacy-center codes) use the default. Run by the reminders cron.
+ *
+ * Oldest first. Copies that can't be deleted don't block the others:
+ * - a provider whose credentials are not set here (e.g. after leaving IE1) is not tried at all;
+ *   its copies wait, unmarked, until the credentials are back;
+ * - a provider that fails PROVIDER_FAILURE_LIMIT times in a row is left for the next run;
+ * - a copy that failed is skipped for FAILED_DELETE_BACKOFF_MS (remembered in this process; the
+ *   frozen schema has no column for attempts), and is retried after that.
+ * One error line per provider and run, not one per message.
  */
 export async function purgeProviderCopies(now = new Date(), opts: { batch?: number } = {}) {
   const batch = opts.batch ?? 200;
+  for (const [id, at] of failedDeletes) if (now.getTime() - at >= FAILED_DELETE_BACKOFF_MS) failedDeletes.delete(id);
+  const skip = [...failedDeletes.keys()];
   const orgs = await db.select({ id: organizations.id, settings: organizations.settings }).from(organizations);
   const scopes: { orgId: string | null; days: number }[] = [
     ...orgs.map((o) => ({ orgId: o.id, days: getPrivacy(o).retention.providerMessageDays })),
     { orgId: null, days: DEFAULT_PRIVACY.retention.providerMessageDays },
   ];
   const summary = { deleted: 0, failed: 0 };
+  const streak = new Map<string, number>();
+  const reported = new Set<string>();
+  const stopped = new Set<string>();
   for (const scope of scopes) {
     const cutoff = new Date(now.getTime() - scope.days * 86_400_000);
+    const due = and(
+      scope.orgId ? eq(messages.orgId, scope.orgId) : isNull(messages.orgId),
+      or(eq(messages.provider, "twilio"), like(messages.provider, "twilio:%")),
+      isNotNull(messages.providerId),
+      isNull(messages.providerDeletedAt),
+      lt(messages.createdAt, cutoff),
+    );
+    const providers = (await db.selectDistinct({ provider: messages.provider }).from(messages).where(due)).map((p) => p.provider);
+    for (const provider of providers.filter((p) => !canDeleteProviderCopies(p) && !reported.has(p))) {
+      reported.add(provider);
+      logInfo("messaging", "provider copies wait: no credentials for their region", { provider });
+    }
+    const usable = providers.filter((p) => canDeleteProviderCopies(p) && !stopped.has(p));
+    if (!usable.length) continue;
     const rows = await db
       .select({ id: messages.id, provider: messages.provider, providerId: messages.providerId })
       .from(messages)
-      .where(
-        and(
-          scope.orgId ? eq(messages.orgId, scope.orgId) : isNull(messages.orgId),
-          or(eq(messages.provider, "twilio"), like(messages.provider, "twilio:%")),
-          isNotNull(messages.providerId),
-          isNull(messages.providerDeletedAt),
-          lt(messages.createdAt, cutoff),
-        ),
-      )
+      .where(and(due, inArray(messages.provider, usable), skip.length ? notInArray(messages.id, skip) : undefined))
+      .orderBy(asc(messages.createdAt))
       .limit(batch);
     for (const m of rows) {
+      if (stopped.has(m.provider)) continue;
       try {
         await deleteProviderMessage(m.provider, m.providerId!);
         await db.update(messages).set({ providerDeletedAt: now }).where(eq(messages.id, m.id));
+        streak.set(m.provider, 0);
         summary.deleted++;
       } catch (err) {
         summary.failed++;
-        logError("messaging", err, { step: "provider-delete", messageId: m.id });
+        if (failedDeletes.size < MAX_REMEMBERED_FAILURES) failedDeletes.set(m.id, now.getTime());
+        const n = (streak.get(m.provider) ?? 0) + 1;
+        streak.set(m.provider, n);
+        if (n >= PROVIDER_FAILURE_LIMIT) stopped.add(m.provider);
+        if (!reported.has(m.provider)) {
+          reported.add(m.provider);
+          logError("messaging", err, { step: "provider-delete", provider: m.provider, messageId: m.id });
+        }
       }
     }
   }

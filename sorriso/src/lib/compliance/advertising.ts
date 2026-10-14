@@ -2,7 +2,8 @@ import { scanWith, segmentsOf, type Finding, type PatternRule } from "../health-
 
 /**
  * Health advertising rules for the texts a practice publishes on Sorriso (service names and
- * descriptions, "price includes", practitioner bios and areas of interest). Pure and
+ * descriptions, "price includes", practitioner titles, bios and areas of interest, health-fund
+ * notes and directions to an office). Pure and
  * client-safe: the dashboard forms highlight matches while typing, and the save actions run the
  * same check on the server.
  *
@@ -326,6 +327,15 @@ export function checkAdvertisingFields<K extends string>(fields: Partial<Record<
     }
   }
   return { verdict: advertisingVerdict(all), byField };
+}
+
+/** The distinct blocking matches of a checkAdvertisingFields() result, quoted, for the save error. */
+export function blockedWords(byField: Partial<Record<string, readonly AdFinding[]>>): string {
+  const words = Object.values(byField)
+    .flatMap((f) => f ?? [])
+    .filter((f) => f.severity === "block")
+    .map((f) => `"${f.text}"`);
+  return [...new Set(words)].join(", ");
 }
 
 export { segmentsOf };

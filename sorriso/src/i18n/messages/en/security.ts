@@ -128,15 +128,26 @@ export default {
     mfaOn: "Two-step on",
     mfaOff: "Two-step off",
     instructionsPending: "Staff instructions not accepted yet",
-    changeRole: "Change role of {name}",
+    changeRole: "Role of {name}",
+    changeRoleSubmit: "Change role",
+    changeRoleConfirm:
+      "Change the role of {name} to {role}? If the new role can't manage the team or API keys, the calendar links and API keys they created stop working.",
     roleChanged: "Role changed.",
     remove: "Remove",
-    removeConfirm: "Remove {name} from the practice? They'll be signed out immediately.",
+    removeConfirm:
+      "Remove {name} from the practice? They'll be signed out of it immediately, and the calendar links and API keys they created stop working.",
     removed: "Team member removed.",
+    withdrawn: {
+      feeds: p({ one: "{count} calendar link they generated was turned off.", other: "{count} calendar links they generated were turned off." }),
+      keys: p({ one: "{count} API key they created was revoked.", other: "{count} API keys they created were revoked." }),
+    },
     resetMfa: "Reset two-step",
     resetMfaConfirm:
       "Reset two-step verification for {name}? Use this only after checking their identity in person or by phone: they'll set up a new authenticator at their next login.",
     mfaResetDone: "Two-step verification reset. They were signed out everywhere.",
+    mfaResetElsewhere:
+      "This person also works for another practice (or for Sorriso), and their two-step verification protects those too. Ask them to contact Sorriso support to reset it.",
+    sharedAccount: "Also works for another practice: two-step resets go through Sorriso support.",
     lastOwner: "A practice needs at least one owner.",
     ownerOnly: "Only an owner can give or take away the owner role.",
     notSelf: "You can't change your own role or remove yourself.",

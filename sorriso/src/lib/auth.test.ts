@@ -2,12 +2,15 @@ import { and, desc, eq } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import {
+  apiKeys,
+  auditLog,
   authTokens,
   legalAcceptances,
   loginAttempts,
   memberships,
   messages,
   organizations,
+  practitioners,
   sessions,
   users,
   type MembershipRole,
@@ -35,6 +38,23 @@ const req = vi.hoisted(() => {
 });
 vi.mock("next/headers", () => ({ cookies: async () => req.jar, headers: async () => req.headers }));
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
+
+// Counts the password checks login makes (scrypt rounds against a real or the dummy hash).
+const passwordChecks = vi.hoisted(() => ({ n: 0 }));
+vi.mock("./password", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./password")>();
+  return {
+    ...original,
+    verifyPassword: (...args: Parameters<typeof original.verifyPassword>) => {
+      passwordChecks.n++;
+      return original.verifyPassword(...args);
+    },
+    verifyAgainstDummy: (...args: Parameters<typeof original.verifyAgainstDummy>) => {
+      passwordChecks.n++;
+      return original.verifyAgainstDummy(...args);
+    },
+  };
+});
 
 const staffState = vi.hoisted(() => ({ session: null as unknown }));
 vi.mock("@/lib/auth", async (importOriginal) => {
@@ -202,6 +222,21 @@ describe("session rotation and revocation", () => {
     expect(await db.select().from(sessions).where(eq(sessions.id, oldId))).toEqual([]);
     // Not a member: refused.
     expect(await auth.switchSessionOrg(switched, newId())).toBe(false);
+  });
+
+  // The real practice-switch action (WP2's actions/session.ts) still updates sessions.orgId in
+  // place; it should call switchSessionOrg(). Marked as failing until it does (CR to WP2): when
+  // this starts to pass, vitest reports it, and `.fails` comes off.
+  it.fails("the switchOrg action itself issues a new session id", async () => {
+    const u = await makeUser({ orgId: orgA, role: "reception", mfaSecret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP" });
+    await db.insert(memberships).values({ userId: u.id, orgId: orgB, role: "reception" });
+    const oldId = await auth.createSession(u.id, orgA, { mfaVerifiedAt: new Date() });
+    asClient({ "x-pathname": "/dashboard", "next-action": "abc" });
+    const { switchOrg } = await import("@/app/dashboard/actions/session");
+    expect(await redirectOf(switchOrg(orgB))).toBe("/dashboard");
+    const switched = (await auth.resolveSession(cookieToken()!))!;
+    expect(switched.org?.id).toBe(orgB);
+    expect(switched.sessionId).not.toBe(oldId);
   });
 
   it("signing in rotates: the browser's previous session is deleted", async () => {
@@ -380,6 +415,48 @@ describe("login protection", () => {
     expect(res?.error).toBe("Too many attempts. Please wait 15 minutes and try again.");
   });
 
+  it("counts parallel attempts before checking: 10 at once for one email reach at most 5 password checks", async () => {
+    const u = await makeUser({ orgId: orgA });
+    const { authenticate } = await import("./security/login");
+    passwordChecks.n = 0;
+    // Each from its own network, so only the per-email limit applies.
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
+        authenticate({ email: u.email, password: `wrong password ${i}`, headers: new Headers({ "x-forwarded-for": `198.18.0.${i + 1}` }) }),
+      ),
+    );
+    expect(passwordChecks.n).toBeLessThanOrEqual(5);
+    expect(results.filter((r) => !r.ok && r.reason === "throttled").length).toBeGreaterThanOrEqual(5);
+    // Refused attempts aren't recorded as failures (they don't extend the lock); checked ones are.
+    const failures = await db
+      .select()
+      .from(loginAttempts)
+      .where(and(eq(loginAttempts.emailHash, (await import("./security/login")).loginEmailHash(u.email)), eq(loginAttempts.success, false)));
+    expect(failures.length).toBe(passwordChecks.n);
+    // The checked ones count toward the same window: topped up to 5, even the correct password is refused.
+    for (let i = passwordChecks.n; i < 5; i++) {
+      expect(await authenticate({ email: u.email, password: "still wrong", headers: new Headers({ "x-forwarded-for": `198.18.0.${50 + i}` }) })).toEqual({
+        ok: false,
+        reason: "invalid",
+      });
+    }
+    expect(await authenticate({ email: u.email, password: PASSWORD, headers: new Headers({ "x-forwarded-for": "198.18.0.99" }) })).toEqual({
+      ok: false,
+      reason: "throttled",
+    });
+  });
+
+  it("counts parallel attempts per network too: 30 at once from one address reach at most 20 checks", async () => {
+    const { authenticate } = await import("./security/login");
+    passwordChecks.n = 0;
+    const h = new Headers({ "x-forwarded-for": "198.18.1.7" });
+    await Promise.all(
+      Array.from({ length: 30 }, (_, i) => authenticate({ email: `burst${i}-${newId(4).toLowerCase()}@example.com`, password: "nope nope nope", headers: h })),
+    );
+    expect(passwordChecks.n).toBeLessThanOrEqual(20);
+    expect(passwordChecks.n).toBeGreaterThan(0);
+  });
+
   it("records attempts with HMACs only, and signs in with the right password", async () => {
     const u = await makeUser({ orgId: orgA });
     expect(await redirectOf(actions.login(null, form({ email: u.email.toUpperCase(), password: PASSWORD, locale: "en" })))).toBe("/dashboard");
@@ -532,5 +609,175 @@ describe("invitations", () => {
     expect(await team.changeMemberRole(owner.id, "admin")).toMatchObject({ ok: false, code: "not_self" });
     expect(await team.changeMemberRole(admin.id, "owner")).toMatchObject({ ok: true });
     expect(await team.changeMemberRole(admin.id, "reception")).toMatchObject({ ok: true });
+  });
+});
+
+describe("team actions stay inside the practice", () => {
+  /** Sign in as `userId` in `orgId` with a fresh verification, as the session actions run under. */
+  async function actAs(userId: string, orgId: string, role: MembershipRole) {
+    req.store.clear();
+    await auth.createSession(userId, orgId, { mfaVerifiedAt: new Date() });
+    staffState.session = { ...(await auth.resolveSession(cookieToken()!))!, role };
+  }
+
+  it("a two-step reset is refused for someone who also works for another practice, or is a platform admin", async () => {
+    const a = await createPractice();
+    const b = await createPractice();
+    const admin = await makeUser({ orgId: a.orgId, role: "admin" });
+    // Dr. Rossi: practitioner here, owner of another practice, with MFA and a session there.
+    const rossi = await makeUser({ orgId: a.orgId, role: "practitioner", mfaSecret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP" });
+    await db.insert(memberships).values({ userId: rossi.id, orgId: b.orgId, role: "owner" });
+    await auth.createSession(rossi.id, b.orgId, { mfaVerifiedAt: new Date() });
+
+    await actAs(admin.id, a.orgId, "admin");
+    expect(await team.resetMemberMfa(rossi.id)).toMatchObject({ ok: false, code: "shared_account" });
+    const [after] = await db.select().from(users).where(eq(users.id, rossi.id));
+    expect(after.totpEnabledAt).toBeInstanceOf(Date);
+    expect((await db.select().from(sessions).where(eq(sessions.userId, rossi.id))).length).toBe(1);
+
+    const platform = await makeUser({ orgId: a.orgId, role: "reception", mfaSecret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP" });
+    await db.update(users).set({ isPlatformAdmin: true }).where(eq(users.id, platform.id));
+    expect(await team.resetMemberMfa(platform.id)).toMatchObject({ ok: false, code: "shared_account" });
+
+    // Someone who works here only: reset, and signed out.
+    const solo = await makeUser({ orgId: a.orgId, role: "reception", mfaSecret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP" });
+    expect(await team.resetMemberMfa(solo.id)).toMatchObject({ ok: true });
+    const [cleared] = await db.select().from(users).where(eq(users.id, solo.id));
+    expect(cleared.totpEnabledAt).toBeNull();
+  });
+
+  it("removing someone who works elsewhere too ends only their sessions in this practice", async () => {
+    const a = await createPractice();
+    const b = await createPractice();
+    const owner = await makeUser({ orgId: a.orgId, role: "owner" });
+    const member = await makeUser({ orgId: a.orgId, role: "reception" });
+    await db.insert(memberships).values({ userId: member.id, orgId: b.orgId, role: "owner" });
+    req.store.clear();
+    const here = await auth.createSession(member.id, a.orgId);
+    req.store.clear();
+    const there = await auth.createSession(member.id, b.orgId);
+
+    await actAs(owner.id, a.orgId, "owner");
+    expect(await team.removeMember(member.id)).toMatchObject({ ok: true });
+    const left = (await db.select().from(sessions).where(eq(sessions.userId, member.id))).map((r) => r.id);
+    expect(left).toEqual([there]);
+    expect(left).not.toContain(here);
+  });
+
+  it("removing or demoting a manager turns off the feed URLs they generated and revokes their API keys", async () => {
+    const p = await createPractice();
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, p.orgId));
+    await db
+      .update(organizations)
+      .set({ settings: { ...org.settings, privacy: { ...org.settings.privacy, icsFeedsEnabled: true } } })
+      .where(eq(organizations.id, p.orgId));
+    const owner = await makeUser({ orgId: p.orgId, role: "owner" });
+    const ics = await import("@/app/dashboard/actions/ics");
+    const keys = await import("@/app/dashboard/actions/apikeys");
+    const feedOf = async (id: string) => (await db.select().from(practitioners).where(eq(practitioners.id, id)))[0];
+    const keyOf = async (id: string) => (await db.select().from(apiKeys).where(eq(apiKeys.id, id)))[0];
+    const newKeyBy = async (userId: string) => {
+      expect(await keys.newApiKey({ name: "Partner", scopes: ["patients:read"] })).toMatchObject({ ok: true });
+      const [k] = await db.select().from(apiKeys).where(and(eq(apiKeys.orgId, p.orgId), eq(apiKeys.createdByUserId, userId)));
+      return k.id;
+    };
+
+    // X, an admin, issues Dr. A's feed and a partner key; Dr. B's feed is issued by the owner.
+    const x = await makeUser({ orgId: p.orgId, role: "admin" });
+    await actAs(x.id, p.orgId, "admin");
+    expect(await ics.rotateIcsToken(p.drA)).toMatchObject({ ok: true });
+    const xKey = await newKeyBy(x.id);
+    await actAs(owner.id, p.orgId, "owner");
+    expect(await ics.rotateIcsToken(p.drB)).toMatchObject({ ok: true });
+    const ownerKey = await newKeyBy(owner.id);
+
+    const removed = await team.removeMember(x.id);
+    expect(removed).toMatchObject({ ok: true });
+    expect(removed.ok && removed.message).toContain("1 calendar link they generated was turned off.");
+    expect(removed.ok && removed.message).toContain("1 API key they created was revoked.");
+    expect(await feedOf(p.drA)).toMatchObject({ icsEnabled: false, icsTokenHash: null });
+    expect((await keyOf(xKey)).revokedAt).toBeInstanceOf(Date);
+    // What others issued stays.
+    expect(await feedOf(p.drB)).toMatchObject({ icsEnabled: true, icsTokenHash: expect.any(String) });
+    expect((await keyOf(ownerKey)).revokedAt).toBeNull();
+    const logged = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.orgId, p.orgId), eq(auditLog.action, "apikey.revoke"), eq(auditLog.entityId, xKey)));
+    expect(logged[0]?.metadata).toMatchObject({ cause: "member_removed" });
+
+    // Y, an admin linked to Dr. C, issues Dr. C's feed (their own) and Dr. A's, plus a key; then is demoted.
+    const y = await makeUser({ orgId: p.orgId, role: "admin" });
+    await db.update(practitioners).set({ userId: y.id }).where(eq(practitioners.id, p.drC));
+    await actAs(y.id, p.orgId, "admin");
+    expect(await ics.rotateIcsToken(p.drC)).toMatchObject({ ok: true });
+    expect(await ics.rotateIcsToken(p.drA)).toMatchObject({ ok: true });
+    const yKey = await newKeyBy(y.id);
+    await actAs(owner.id, p.orgId, "owner");
+    // Owner to admin would keep both powers: here, admin to practitioner loses them.
+    expect(await team.changeMemberRole(y.id, "practitioner")).toMatchObject({ ok: true });
+    expect(await feedOf(p.drA)).toMatchObject({ icsEnabled: false, icsTokenHash: null });
+    expect(await feedOf(p.drC)).toMatchObject({ icsEnabled: true, icsTokenHash: expect.any(String) });
+    expect((await keyOf(yKey)).revokedAt).toBeInstanceOf(Date);
+  });
+});
+
+describe("my security: re-authentication and leftovers", () => {
+  const sec = () => import("@/app/dashboard/actions/security");
+
+  /** Signed in as a fresh user, verified `minutesAgo` minutes ago. */
+  async function me(minutesAgo: number, o: { role?: MembershipRole } = {}) {
+    const u = await makeUser({ orgId: orgA, role: o.role ?? "reception" });
+    req.store.clear();
+    await auth.createSession(u.id, orgA, { mfaVerifiedAt: new Date(Date.now() - minutesAgo * MIN) });
+    staffState.session = { ...(await auth.resolveSession(cookieToken()!))!, role: o.role ?? "reception" };
+    return u;
+  }
+
+  it("setting up two-step verification needs a recent verification (a stolen cookie alone can't enrol)", async () => {
+    const { startMfaEnrolment, confirmMfaEnrolmentAction } = await sec();
+    asClient({ "next-action": "abc" });
+    await me(30);
+    expect(await startMfaEnrolment()).toMatchObject({ ok: false, code: STEP_UP_REQUIRED });
+    expect(await confirmMfaEnrolmentAction("123456")).toMatchObject({ ok: false, code: STEP_UP_REQUIRED });
+
+    // Right after signing in (the password counts as the verification): straight through.
+    const u = await me(0);
+    const started = await startMfaEnrolment();
+    expect(started).toMatchObject({ ok: true });
+    const secret = (started.ok && (started.data as { secret: string }).secret) || "";
+    expect(await confirmMfaEnrolmentAction(totp(secret))).toMatchObject({ ok: true });
+    const [row] = await db.select().from(users).where(eq(users.id, u.id));
+    expect(row.totpEnabledAt).toBeInstanceOf(Date);
+  });
+
+  it("changing the password voids reset links requested before", async () => {
+    const { changePassword } = await sec();
+    const u = await me(0);
+    const { issueAuthToken } = await import("./security/tokens");
+    const { token } = await issueAuthToken({ kind: "password_reset", userId: u.id, email: u.email });
+    const next = "another long passphrase here";
+    expect(await changePassword({ current: PASSWORD, next, confirm: next })).toMatchObject({ ok: true });
+    const later = "the attacker's own passphrase";
+    expect(await actions.resetPassword(null, form({ token, password: later, confirm: later, locale: "en" }))).toMatchObject({ error: expect.any(String) });
+  });
+
+  it("audits every email confirmation, and a new confirmation link", async () => {
+    const { resendVerificationEmail } = await sec();
+    // A member who isn't the practice owner (an invited colleague whose address isn't the practice's).
+    const u = await me(0);
+    expect(await resendVerificationEmail()).toMatchObject({ ok: true });
+    const { issueAuthToken } = await import("./security/tokens");
+    const { token } = await issueAuthToken({ kind: "email_verify", userId: u.id, email: u.email });
+    await redirectOf(actions.verifyEmail(null, form({ token, locale: "en" })));
+    const rows = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.action, "settings.update"), eq(auditLog.entityType, "user"), eq(auditLog.entityId, u.id)));
+    expect(rows.map((r) => r.metadata)).toEqual([
+      expect.objectContaining({ emailVerification: "resent" }),
+      expect.objectContaining({ emailVerified: true }),
+    ]);
+    expect(rows.every((r) => r.orgId === orgA && r.actorId === u.id)).toBe(true);
   });
 });

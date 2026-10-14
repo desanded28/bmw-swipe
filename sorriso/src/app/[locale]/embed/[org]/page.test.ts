@@ -103,6 +103,44 @@ describe("/[locale]/embed/[org]", () => {
     expect(allowed.embed?.parentOrigin).toBe("https://studio.example");
   });
 
+  it("with allowed websites set, fails closed when no Referer vouches for the claimed parent", async () => {
+    const slug = await practice(["https://studio.example"]);
+    // evil.example frames us with referrerpolicy="no-referrer" and a spoofed ?parent.
+    framedBy(null);
+    const spoofed = await open(slug, { parent: "https://studio.example" });
+    expect(spoofed.flow).toBeNull();
+    expect(renderToStaticMarkup(spoofed.tree as ReactElement)).toContain("Open the booking page in a new tab");
+
+    // Another of our pages is no proof either; only this practice's embed with the same parent is.
+    framedBy("https://sorriso.test/it/c/studio");
+    expect((await open(slug, { parent: "https://studio.example" })).flow).toBeNull();
+    framedBy("https://sorriso.test/it/embed/another-practice?parent=https%3A%2F%2Fstudio.example");
+    expect((await open(slug, { parent: "https://studio.example" })).flow).toBeNull();
+    framedBy(`https://sorriso.test/it/embed/${slug}?parent=https%3A%2F%2Fevil.example`);
+    expect((await open(slug, { parent: "https://studio.example" })).flow).toBeNull();
+    // The frame switched language inside itself: the Referer is the same embed, same parent.
+    framedBy(`https://sorriso.test/it/embed/${slug}?parent=https%3A%2F%2Fstudio.example`);
+    expect((await open(slug, { parent: "https://studio.example" })).embed?.parentOrigin).toBe("https://studio.example");
+  });
+
+  it("with allowed websites set, applies the rule to browsers that send no Sec-Fetch-Dest when ?parent is given", async () => {
+    const slug = await practice(["https://studio.example"]);
+    requestHeaders = new Headers({ host: "sorriso.test" });
+    expect((await open(slug, { parent: "https://studio.example" })).flow).toBeNull();
+
+    // The listed host really framed us: the flow shows, still as a top-level page (no ref, no messages).
+    requestHeaders = new Headers({ host: "sorriso.test", referer: "https://studio.example/" });
+    const old = await open(slug, { parent: "https://studio.example" });
+    expect(old.flow).not.toBeNull();
+    expect(old.flow!.props.context).toBe("marketplace");
+    expect(old.flow!.props.practiceRef).toBeNull();
+    expect(old.embed?.parentOrigin).toBeNull();
+
+    // Without ?parent such a request is an ordinary top-level visit.
+    requestHeaders = new Headers({ host: "sorriso.test" });
+    expect((await open(slug, {})).flow).not.toBeNull();
+  });
+
   it("opened top-level, is a Sorriso page: marketplace, no messages, no practice ref", async () => {
     const slug = await practice(["https://studio.example"]);
     requestHeaders = new Headers({ "sec-fetch-dest": "document" });

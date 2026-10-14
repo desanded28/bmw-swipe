@@ -10,9 +10,9 @@ import { fmtWhen } from "@/i18n/datefmt";
 import { lhref } from "@/i18n/href";
 import { getT } from "@/i18n/server";
 import { getAppointmentDetails } from "@/lib/appointments";
-import { ADULT_CONFIRMATION_HOURS, awaitsAdultConfirmation } from "@/lib/privacy/adult-confirmation";
+import { adultConfirmationDeadline, adultContactChoices, awaitsAdultConfirmation } from "@/lib/privacy/adult-confirmation";
 import { rateLimitByIp } from "@/lib/rate-limit";
-import { confirmAdultAction, declineAdultAction } from "../actions";
+import { adultConfirmAction } from "../actions";
 
 export const dynamic = "force-dynamic";
 
@@ -27,10 +27,11 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
 }
 
 /**
- * Where an adult confirms a marketplace booking someone else made for them (critique 2): the link
- * reaches only their own contact, the page shows who booked, where and when, Sorriso's notice and
- * the Art. 9(2)(a) consent, unticked. Opening it changes nothing; confirming or cancelling is an
- * explicit POST (src/lib/privacy/adult-confirmation.ts).
+ * Where an adult confirms a marketplace booking someone else made for them (critique 2): the page
+ * shows who booked, where and when, Sorriso's notice and the Art. 9(2)(a) consent, unticked. Its
+ * address carries the appointment link, which the booker also has, so nothing can be decided here
+ * without a one-time code sent to the adult's own phone or email (never the booker's). Opening it
+ * changes nothing; confirming or cancelling is an explicit POST (src/lib/privacy/adult-confirmation.ts).
  */
 export default async function ConfirmForAdultPage({ params }: { params: Params }) {
   const { locale: raw, token } = await params;
@@ -58,7 +59,7 @@ export default async function ConfirmForAdultPage({ params }: { params: Params }
   }
 
   const tz = d.location.timezone;
-  const deadline = new Date(d.appointment.createdAt.getTime() + ADULT_CONFIRMATION_HOURS * 3_600_000);
+  const deadline = adultConfirmationDeadline(d.appointment);
   return (
     <div className="mx-auto max-w-xl px-4 py-10">
       <Card className="p-6 sm:p-8">
@@ -80,7 +81,7 @@ export default async function ConfirmForAdultPage({ params }: { params: Params }
         </p>
         <div className="mt-6">
           <ClientMessages locale={locale} ns={["privacy", "consents"]}>
-            <AdultConfirmForm token={token} confirmAction={confirmAdultAction} declineAction={declineAdultAction} />
+            <AdultConfirmForm token={token} contacts={adultContactChoices(d)} action={adultConfirmAction} />
           </ClientMessages>
         </div>
       </Card>

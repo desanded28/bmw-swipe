@@ -1,5 +1,6 @@
 import { and, asc, eq, gte, lte, sql } from "drizzle-orm";
 import { db } from "@/db";
+import { lhref } from "@/i18n/href";
 import {
   locations,
   organizations,
@@ -229,7 +230,7 @@ export async function offerFreedSlot(slot: FreedSlot, now = new Date()): Promise
       legalName: org.legalName ?? org.name,
       legalAddress: org.registeredAddress ?? address,
       privacyUrl: practiceNoticeUrl(org, patient.locale),
-      preferencesUrl: absoluteUrl("/privacy"),
+      preferencesUrl: absoluteUrl(lhref(patient.locale, "/privacy")),
       reason: "waitlist",
     };
     // The text channel through textChannelFor (WhatsApp only where enabled, consented and templated), else email.

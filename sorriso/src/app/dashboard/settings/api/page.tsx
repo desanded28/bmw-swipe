@@ -8,6 +8,7 @@ import { apiKeys, users } from "@/db/schema";
 import { fmtDay, zonedDate } from "@/i18n/datefmt";
 import { lhref } from "@/i18n/href";
 import { getStaffLocale, getT } from "@/i18n/server";
+import { apiKeyExpiry } from "@/lib/api";
 import { requirePermission } from "@/lib/permissions";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -46,9 +47,9 @@ export default async function ApiSettingsPage() {
             name: k.name,
             prefix: k.prefix,
             scopes: k.scopes,
-            status: k.revokedAt ? "revoked" : k.expiresAt && k.expiresAt.getTime() <= now ? "expired" : "active",
+            status: k.revokedAt ? "revoked" : apiKeyExpiry(k).getTime() <= now ? "expired" : "active",
             lastUsed: k.lastUsedAt ? day(k.lastUsedAt) : null,
-            expires: k.expiresAt ? fmtDay(zonedDate(k.expiresAt, org.timezone), "long", locale) : null,
+            expires: fmtDay(zonedDate(apiKeyExpiry(k), org.timezone), "long", locale),
             createdBy: creator ?? null,
             allowedIps: k.allowedIps?.length ?? 0,
           }))}

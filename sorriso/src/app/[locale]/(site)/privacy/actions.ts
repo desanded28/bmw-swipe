@@ -9,9 +9,8 @@ import { fmtDay, zonedDate } from "@/i18n/datefmt";
 import { lhref } from "@/i18n/href";
 import { getT } from "@/i18n/server";
 import { DEFAULT_TIMEZONE } from "@/lib/config";
-import { markContactVerified } from "@/lib/contact";
 import { logError } from "@/lib/log";
-import { endPatientSession, getPatientSession, replacePatientSession, startPatientSession } from "@/lib/privacy/patient-session";
+import { endPatientSession, getPatientSession, rememberUnlocked, replacePatientSession, startPatientSession } from "@/lib/privacy/patient-session";
 import {
   answerChallenge,
   CENTER_REQUEST_TYPES,
@@ -20,6 +19,7 @@ import {
   fileRequest,
   openTicket,
   parseContact,
+  recordStepUpVerification,
   requestContactChange,
   requestPrivacyCenterCode,
   setConsentChoice,
@@ -74,7 +74,8 @@ export async function requestCodeAction(_prev: PrivacyFormState, fd: FormData): 
 
 /**
  * Step 2: check the code and open the 30-minute session. A ticket from the appointment link's
- * step-up also records the contact as verified for that patient (an explicit act through it).
+ * step-up also records the contact as verified for that patient (an explicit act through it),
+ * audited as the new session.
  */
 export async function verifyCodeAction(_prev: PrivacyFormState, fd: FormData): Promise<PrivacyFormState> {
   const locale = localeOf(fd);
@@ -86,8 +87,8 @@ export async function verifyCodeAction(_prev: PrivacyFormState, fd: FormData): P
   const res = await checkTicketCode(raw, code, "privacy_center");
   if (!res.ok) return fail(t(`verify.errors.${res.reason}`));
   const h = await headers();
-  await startPatientSession(res.contact, { headers: h });
-  if (res.ticket.pid) await markContactVerified(res.ticket.pid, res.contact);
+  const session = await startPatientSession(res.contact, { headers: h });
+  if (res.ticket.pid) await recordStepUpVerification(session, { patientId: res.ticket.pid, contact: res.contact, headers: h });
   redirect(lhref(locale, "/privacy/me"));
 }
 
@@ -102,8 +103,14 @@ export async function challengeAction(_prev: PrivacyFormState, fd: FormData): Pr
   const t = getT(locale, "privacy");
   const { session, expired } = await sessionOrFail(locale);
   if (!session) return expired;
-  const r = await answerChallenge(session, str(fd, "patientId"), { lastName: str(fd, "lastName"), birthDate: str(fd, "birthDate") }, { headers: await headers() });
-  if (!r.ok) return fail(r.reason === "rate_limited" ? t("me.challenge.rateLimited") : t("me.challenge.wrong"));
+  const patientId = str(fd, "patientId");
+  const r = await answerChallenge(session, patientId, { lastName: str(fd, "lastName"), birthDate: str(fd, "birthDate") }, { headers: await headers() });
+  if (!r.ok) {
+    const key = r.reason === "rate_limited" ? "me.challenge.rateLimited" : r.reason === "unavailable" ? "me.challenge.unavailable" : "me.challenge.wrong";
+    return fail(t(key));
+  }
+  // The unlock lives with the session: where the contact matches two adults the record would ask again.
+  await rememberUnlocked(patientId);
   refresh(locale);
   return ok(t("me.choices.saved"));
 }

@@ -260,9 +260,163 @@ describe("the practice", () => {
     const heldRow = rows.find((r) => r.status === "under_review" && r.report === null && r.flags.includes("health.condition"));
     expect(heldRow?.comment).toBeNull();
   });
+
+  it("doesn't see a held edit of a once-published review, nor a removed text; sees the text its report hides", async () => {
+    const row = async (id: string) => (await practiceReviews(p.orgId)).find((r) => r.id === id)!;
+    // Published, then edited by the author into a held text: publishedAt stays, the text is new.
+    const edited = await publishedReview();
+    const secret = "My implant failed after a month, call 333 123 4567";
+    expect(await updateReview(edited.token, { ...base, comment: secret })).toMatchObject({ ok: true, status: "under_review" });
+    expect((await rowOf(edited.reviewId)).publishedAt).toBeInstanceOf(Date);
+    expect(await row(edited.reviewId)).toMatchObject({ status: "under_review", comment: null });
+
+    // Reported by the practice: the published text it is hiding stays readable for it...
+    const reported = await publishedReview("They kept me waiting for an hour.");
+    const rep = await reportAsPractice(owner, { reviewId: reported.reviewId, ground: "defamation", details: "We have the waiting-room log." });
+    expect((await row(reported.reviewId)).comment).toBe("They kept me waiting for an hour.");
+    // ...until a moderator removes it: the removed text is stored encrypted and not shown any more.
+    const reportId = (rep as { reportId: string }).reportId;
+    expect(await decideReport(adminA, { reportId, decision: "remove", reason: "States as fact a waiting time the records contradict." })).toEqual({ ok: true });
+    expect((await rowOf(reported.reviewId)).comment!.startsWith("v1:")).toBe(true);
+    expect(await row(reported.reviewId)).toMatchObject({ status: "removed", comment: null, canAppeal: false });
+  });
+
+  it("refuses a reply with health or contact details (server-side flagger) and records warn-level rules", async () => {
+    const r = await publishedReview();
+    for (const reply of ["Your implant failed because you smoke.", "Call us on 333 123 4567", "Write to dr.rossi@example.com"]) {
+      expect(await replyAsPractice(owner, { reviewId: r.reviewId, reply, confirmed: true })).toEqual({ ok: false, code: "health_terms" });
+    }
+    expect((await rowOf(r.reviewId)).reply).toBeNull();
+    expect(await db.select().from(auditLog).where(and(eq(auditLog.entityId, r.reviewId), eq(auditLog.action, "review.reply")))).toEqual([]);
+
+    expect(await replyAsPractice(owner, { reviewId: r.reviewId, reply: "Glad the check-up was not painful.", confirmed: true })).toEqual({ ok: true, removed: false });
+    const [entry] = await db.select().from(auditLog).where(and(eq(auditLog.entityId, r.reviewId), eq(auditLog.action, "review.reply")));
+    expect(entry.metadata).toMatchObject({ removed: false, flags: "health.symptom" });
+  });
+});
+
+describe("the practice's appeal is only against decisions on its own reports", () => {
+  const reason = "The review describes the author's own experience; nothing unlawful in it.";
+  const practiceMail = async () => db.select().from(messages).where(eq(messages.to, `${owner.user.id}@example.com`));
+
+  it("a review the automatic check held and a moderator published: the practice's report is a fresh one, and it is told the outcome", async () => {
+    const v = await visit();
+    const res = await submitReview(v.token, { ...base, comment: "No complications, very good", consent: true });
+    const id = (res as { reviewId: string }).reviewId;
+    expect(await decideHeldReview(adminA, { reviewId: id, decision: "keep", reason })).toEqual({ ok: true });
+    expect((await practiceReviews(p.orgId)).find((r) => r.id === id)).toMatchObject({ status: "published", canAppeal: false, report: null });
+
+    const mailsBefore = (await practiceMail()).length;
+    const first = await reportAsPractice(owner, { reviewId: id, ground: "defamation", details: "This never happened." });
+    expect(first).toMatchObject({ ok: true, appeal: false });
+    expect((await rowOf(id)).status).toBe("under_review");
+    const reportId = (first as { reportId: string }).reportId;
+    expect(await decideReport(adminA, { reportId, decision: "keep", reason })).toEqual({ ok: true });
+    expect((await practiceMail()).length).toBe(mailsBefore + 1);
+    // Now the practice can appeal (the decision on its own report kept the review).
+    expect((await practiceReviews(p.orgId)).find((r) => r.id === id)).toMatchObject({ canAppeal: true, report: { id: reportId, byPractice: true, decision: "keep", decisionReason: reason } });
+    expect(await reportAsPractice(owner, { reviewId: id, ground: "defamation", details: "We disagree." })).toMatchObject({ ok: true, appeal: true });
+  });
+
+  it("a notice from the public: doesn't block the practice's report while open, and its decision isn't the practice's to appeal", async () => {
+    const r = await publishedReview();
+    const notice = { ground: "offensive" as const, explanation: "Rude.", name: "Bea", email: "bea.notifier@example.com", locale: "en" as const };
+    const n1 = await submitPublicNotice({ reviewId: r.reviewId, ...notice });
+    // While the notice is open the practice can still report (and its report hides the review).
+    const rep = await reportAsPractice(owner, { reviewId: r.reviewId, ground: "defamation", details: "False statements." });
+    expect(rep).toMatchObject({ ok: true, appeal: false });
+    expect((await rowOf(r.reviewId)).status).toBe("under_review");
+    expect(await decideReport(adminA, { reportId: (rep as { reportId: string }).reportId, decision: "keep", reason })).toEqual({ ok: true });
+    expect(await decideReport(adminA, { reportId: (n1 as { reportId: string }).reportId, decision: "keep", reason })).toEqual({ ok: true });
+
+    // A second review: only a notice, decided "keep". The practice's next report is fresh, not an appeal of the notice.
+    const other = await publishedReview();
+    const n2 = await submitPublicNotice({ reviewId: other.reviewId, ...notice });
+    expect(await decideReport(adminA, { reportId: (n2 as { reportId: string }).reportId, decision: "keep", reason })).toEqual({ ok: true });
+    expect((await practiceReviews(p.orgId)).find((x) => x.id === other.reviewId)).toMatchObject({ canAppeal: false, report: null });
+    const notifierMails = async () => (await db.select().from(messages).where(eq(messages.to, notice.email))).length;
+    const before = await notifierMails();
+    const fresh = await reportAsPractice(owner, { reviewId: other.reviewId, ground: "defamation", details: "False statements." });
+    expect(fresh).toMatchObject({ ok: true, appeal: false });
+    expect((await rowOf(other.reviewId)).status).toBe("under_review");
+    expect(await decideReport(adminA, { reportId: (fresh as { reportId: string }).reportId, decision: "remove", reason })).toEqual({ ok: true });
+    expect(await notifierMails()).toBe(before); // the notifier isn't told about the practice's report
+  });
+
+  it("with a notice and the practice's report open together, neither decision undoes the other", async () => {
+    const notice = { ground: "offensive" as const, explanation: "Rude.", name: "Dee", email: "dee@example.com", locale: "en" as const };
+    // Keeping on the notice doesn't publish what the practice's open report is hiding.
+    const r = await publishedReview();
+    const n = await submitPublicNotice({ reviewId: r.reviewId, ...notice });
+    const rep = await reportAsPractice(owner, { reviewId: r.reviewId, ground: "defamation", details: "False statements." });
+    expect(await decideReport(adminA, { reportId: (n as { reportId: string }).reportId, decision: "keep", reason })).toEqual({ ok: true });
+    expect((await rowOf(r.reviewId)).status).toBe("under_review");
+    expect(await decideReport(adminA, { reportId: (rep as { reportId: string }).reportId, decision: "keep", reason })).toEqual({ ok: true });
+    expect((await rowOf(r.reviewId)).status).toBe("published");
+
+    // A removal on a notice isn't undone by the practice's pending appeal of an older "keep".
+    const s2 = await publishedReview();
+    const first = await reportAsPractice(owner, { reviewId: s2.reviewId, ground: "defamation", details: "False statements." });
+    expect(await decideReport(adminA, { reportId: (first as { reportId: string }).reportId, decision: "keep", reason })).toEqual({ ok: true });
+    const appeal = await reportAsPractice(owner, { reviewId: s2.reviewId, ground: "defamation", details: "We disagree." });
+    expect(appeal).toMatchObject({ ok: true, appeal: true });
+    const n2 = await submitPublicNotice({ reviewId: s2.reviewId, ...notice });
+    expect(await decideReport(adminA, { reportId: (n2 as { reportId: string }).reportId, decision: "remove", reason })).toEqual({ ok: true });
+    expect((await rowOf(s2.reviewId)).status).toBe("removed");
+    expect(await decideReport(adminB, { reportId: (appeal as { reportId: string }).reportId, decision: "keep", reason })).toEqual({ ok: true });
+    expect((await rowOf(s2.reviewId)).status).toBe("removed");
+  });
+
+  it("a decision in the practice's favour (removed) offers no appeal to the practice", async () => {
+    const r = await publishedReview();
+    const rep = await reportAsPractice(owner, { reviewId: r.reviewId, ground: "defamation", details: "False statements." });
+    expect(await decideReport(adminA, { reportId: (rep as { reportId: string }).reportId, decision: "remove", reason })).toEqual({ ok: true });
+    expect((await practiceReviews(p.orgId)).find((x) => x.id === r.reviewId)).toMatchObject({ status: "removed", canAppeal: false });
+    expect(await reportAsPractice(owner, { reviewId: r.reviewId, ground: "other", details: "Appeal in our favour?" })).toEqual({ ok: false, code: "not_found" });
+    expect((await rowOf(r.reviewId)).status).toBe("removed");
+  });
+});
+
+describe("statements of reasons", () => {
+  it("are stored encrypted on the report and the removed review, and read back in plain text", async () => {
+    const r = await publishedReview();
+    const rep = await reportAsPractice(owner, { reviewId: r.reviewId, ground: "offensive", details: "Mentions a patient by name." });
+    const reportId = (rep as { reportId: string }).reportId;
+    const reason = "Removed: the review names another patient and describes their HIV status.";
+    expect(await decideReport(adminA, { reportId, decision: "remove", reason })).toEqual({ ok: true });
+    const [stored] = await db.select().from(reviewReports).where(eq(reviewReports.id, reportId));
+    expect(stored.decisionReason!.startsWith("v1:")).toBe(true);
+    expect(stored.decisionReason).not.toContain("HIV");
+    const review = await rowOf(r.reviewId);
+    expect(review.removedReason!.startsWith("v1:")).toBe(true);
+
+    expect((await practiceReviews(p.orgId)).find((x) => x.id === r.reviewId)?.report?.decisionReason).toBe(reason);
+    const view = await authorModerationView(reviewLinkToken(reportId, new Date(Date.now() + 86_400_000)));
+    expect(view?.report.decisionReason).toBe(reason);
+    expect(view?.review.removedReason).toBe(reason);
+  });
 });
 
 describe("moderation with the author", () => {
+  it("tells the author the review is hidden only when it is", async () => {
+    const lastBody = async (patientId: string) => {
+      const rows = await db.select().from(messages).where(eq(messages.patientId, patientId));
+      return rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]?.body ?? "";
+    };
+    const byNotice = await publishedReview();
+    await db.update(patients).set({ preferredChannel: "email" }).where(eq(patients.id, byNotice.patientId));
+    const n = await submitPublicNotice({ reviewId: byNotice.reviewId, ground: "offensive", explanation: "Rude.", name: "Cy", email: "cy@example.com", locale: "en" });
+    expect(await askAuthor(adminA, (n as { reportId: string }).reportId)).toEqual({ ok: true, sent: true });
+    expect(await lastBody(byNotice.patientId)).toContain("stays published");
+    expect(await lastBody(byNotice.patientId)).not.toContain("is hidden");
+
+    const byPractice = await publishedReview();
+    await db.update(patients).set({ preferredChannel: "email" }).where(eq(patients.id, byPractice.patientId));
+    const rep = await reportAsPractice(owner, { reviewId: byPractice.reviewId, ground: "defamation", details: "False statements." });
+    expect(await askAuthor(adminA, (rep as { reportId: string }).reportId)).toEqual({ ok: true, sent: true });
+    expect(await lastBody(byPractice.patientId)).toContain("is hidden");
+  });
+
   it("asks the author, who replies through the signed link within 7 days", async () => {
     const r = await publishedReview();
     const rep = await reportAsPractice(owner, { reviewId: r.reviewId, ground: "not_about_visit", details: "Not our patient." });

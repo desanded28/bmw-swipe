@@ -8,6 +8,7 @@ import { DEFAULT_LOCALE, isLocale, type Locale } from "@/i18n/config";
 import { getStaffLocale, getT } from "@/i18n/server";
 import { auditStaff } from "@/lib/audit";
 import type { StaffSession } from "@/lib/auth";
+import { isMessagingServiceSid, isPlatformSender, senderKey } from "@/lib/messaging/providers";
 import { normalizePhone } from "@/lib/phone";
 import { processDueReminders } from "@/lib/reminders";
 import { fail, guard, ok, updateSettings, type ActionResult } from "./_shared";
@@ -70,11 +71,31 @@ export async function saveReminderSettings(input: {
   );
 }
 
-/** Process this practice's due reminders now (never another practice's). */
+/**
+ * Process this practice's due reminders now (never another practice's). It reads patients'
+ * contacts and sends them messages, so the run is on the access log with its counts. The audit
+ * list has no reminders action yet (requested as "reminders.run"); appointment.update on the
+ * practice is the closest.
+ */
 export async function runRemindersNow(): Promise<ActionResult> {
   return guard(
     async (s) => {
       const summary = await processDueReminders({ orgId: s.org.id });
+      await auditStaff(
+        s,
+        "appointment.update",
+        { type: "org", id: s.org.id },
+        {
+          metadata: {
+            job: "reminders.run",
+            due: summary.due,
+            sent: summary.sent,
+            skipped: summary.skipped,
+            failed: summary.failed,
+            retry: summary.retry,
+          },
+        },
+      );
       const t = await staffT(s);
       return ok(t("actions.ran", { count: summary.due, sent: summary.sent, skipped: summary.skipped, failed: summary.failed }));
     },
@@ -82,12 +103,13 @@ export async function runRemindersNow(): Promise<ActionResult> {
   );
 }
 
-const MESSAGING_SERVICE_SID = /^MG[0-9a-fA-F]{32}$/;
-
 /**
  * The number (E.164) or Twilio Messaging Service SID on which this practice receives replies
  * (organizations.inboundNumber): replies arriving there are matched to this practice only
- * (src/lib/inbound.ts). Owners only. An empty value clears it.
+ * (src/lib/inbound.ts), and its SMS go out from it. Owners only. An empty value clears it.
+ * Never one of the platform's shared senders (TWILIO_FROM, TWILIO_MESSAGING_SERVICE_SID,
+ * TWILIO_WHATSAPP_FROM, TWILIO_SHARED_SENDERS): every practice's patients reply to those, and the
+ * practice claiming one would receive them all.
  */
 export async function saveInboundNumber(value: string): Promise<ActionResult> {
   return guard(async (s) => {
@@ -96,8 +118,9 @@ export async function saveInboundNumber(value: string): Promise<ActionResult> {
     const raw = value.trim();
     let next: string | null = null;
     if (raw) {
-      next = MESSAGING_SERVICE_SID.test(raw) ? raw : raw.startsWith("+") || raw.startsWith("00") ? normalizePhone(raw) : null;
+      next = isMessagingServiceSid(raw) ? senderKey(raw) : raw.startsWith("+") || raw.startsWith("00") ? normalizePhone(raw) : null;
       if (!next) return fail(t("actions.inboundInvalid"), "invalid");
+      if (isPlatformSender(next)) return fail(t("actions.inboundShared"), "shared");
       const [taken] = await db
         .select({ id: organizations.id })
         .from(organizations)

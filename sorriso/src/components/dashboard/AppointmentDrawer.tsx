@@ -38,7 +38,7 @@ import {
 } from "@/app/dashboard/actions/appointments";
 import { issuePatientLink } from "@/app/dashboard/actions/links";
 import { CHANNELS, type Channel } from "@/db/enums";
-import { fmtDay, zonedDate, zonedTime } from "@/i18n/datefmt";
+import { fmtDay, fmtWhen, zonedDate, zonedTime } from "@/i18n/datefmt";
 import { useLocale, useT } from "@/i18n/provider";
 import { formatPhone } from "@/lib/phone";
 import { Badge, Button, Field, Input, Select, Textarea, cx } from "../ui";
@@ -46,7 +46,7 @@ import { useNow } from "../useNow";
 import { Pii } from "./PrivacyScreen";
 import { AppointmentCarePanel } from "./slots/AppointmentCarePanel";
 import { useToast } from "./Toast";
-import { toCareAppointment, type ApptDetailDTO, type ApptListDTO, type Resources } from "./types";
+import { toCareAppointment, type ApptDetailDTO, type ApptListDTO, type RestrictedAccess, type Resources, type ThreadMessage } from "./types";
 import { useRunAction } from "./useRunAction";
 
 export const localDate = zonedDate;
@@ -92,6 +92,12 @@ export function useStatusLabel() {
       }
     }
   };
+}
+
+/** One word for the status, shown on events too short for the full label ("Confirmed", "Request"...). */
+export function useShortStatusLabel() {
+  const t = useT("calendar");
+  return (a: StatusFields): string => t(`event.statusShort.${statusKind(a)}`);
 }
 
 /** The status icon (shape differs per status, so it never relies on colour alone). */
@@ -239,7 +245,12 @@ export function AppointmentDrawer({
   const started = now !== null && Date.parse(appt.start) <= now;
   const live = appt.status === "scheduled" || appt.status === "requested";
   const canWrite = detail?.access.write ?? true;
-  const restricted = detail?.access.restricted ?? (appt.patient.masked ? "placeholder" : "open");
+  // Until the server answers, a restricted record is "loading" (the list row can't tell whether a
+  // reason was given recently) and an unrestricted one "open"; only the detail unlocks patient data.
+  const restricted: RestrictedAccess | "loading" =
+    detail?.access.restricted ?? (appt.restricted ? (appt.patient.masked ? "placeholder" : "loading") : "open");
+  /** The server said the record is open: the care panel, reminders and patient links may load. */
+  const unlocked = detail?.access.restricted === "open";
   const noteValue = note ?? savedNote ?? "";
   const channelName = tc(`channels.${appt.patient.preferredChannel}`);
   const care = toCareAppointment(appt);
@@ -309,7 +320,7 @@ export function AppointmentDrawer({
             {appt.processingContext === "marketplace" ? <Badge tone="brand">{t("drawer.marketplace")}</Badge> : null}
           </div>
 
-          {restricted !== "open" ? (
+          {restricted === "placeholder" || restricted === "needs_reason" ? (
             <div className="rounded-xl bg-amber-50 p-4 text-sm text-amber-950 ring-1 ring-amber-200">
               <p className="flex items-center gap-2 font-semibold">
                 <Lock size={15} aria-hidden /> {t("drawer.restricted.title")}
@@ -328,7 +339,7 @@ export function AppointmentDrawer({
             </div>
           ) : null}
 
-          {restricted === "open" ? (
+          {restricted === "open" || restricted === "loading" ? (
             <section aria-label={t("drawer.contacts")} className="space-y-2">
               {!detail && !loadError ? (
                 <p className="flex items-center gap-2 text-sm text-slate-500" role="status">
@@ -396,7 +407,7 @@ export function AppointmentDrawer({
             </p>
           ) : null}
 
-          {restricted === "open" ? <AppointmentCarePanel appt={care} canManage={detail?.access.manageCare ?? false} /> : null}
+          {unlocked ? <AppointmentCarePanel appt={care} canManage={detail.access.manageCare} /> : null}
 
           {canWrite ? (
             <section aria-label={t("drawer.actions")} className="flex flex-wrap gap-2">
@@ -440,7 +451,8 @@ export function AppointmentDrawer({
                   {appt.status === "completed" ? t("drawer.changeToNoShow") : t("drawer.changeToCompleted")}
                 </Button>
               ) : null}
-              {appt.status === "scheduled" && upcoming && restricted === "open" ? (
+              {/* No messages go to a restricted or erased patient at all (the reminder engine skips them). */}
+              {appt.status === "scheduled" && upcoming && unlocked && !appt.restricted ? (
                 <div role="group" aria-label={t("drawer.sendReminder")} className="flex flex-wrap items-center gap-1.5">
                   <span className="flex items-center gap-1 text-xs font-semibold text-slate-600">
                     <BellRing size={14} aria-hidden /> {t("drawer.sendReminder")}
@@ -502,50 +514,12 @@ export function AppointmentDrawer({
           ) : null}
 
           {detail?.messages ? (
-            <section aria-labelledby={`${titleId}-messages`}>
-              <h3 id={`${titleId}-messages`} className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-600">
-                {t("drawer.messages")}
-              </h3>
-              {detail.messages.length === 0 ? (
-                <p className="text-sm text-slate-500">{t("drawer.noMessages")}</p>
-              ) : (
-                <ol className="space-y-2">
-                  {detail.messages.map((m) => {
-                    const when = `${fmtDay(zonedDate(m.createdAt, tz), "short", locale)} ${zonedTime(m.createdAt, tz)}`;
-                    const channel = tc(`channels.${m.channel}`);
-                    const statusKey = `drawer.messageStatus.${m.status}` as const;
-                    const meta =
-                      m.direction === "inbound"
-                        ? m.intent
-                          ? t("drawer.replyIntentMeta", { channel, intent: t(`drawer.intents.${m.intent}`), when })
-                          : t("drawer.replyMeta", { channel, when })
-                        : t("drawer.messageMeta", {
-                            channel,
-                            status: t.has(statusKey) ? t(statusKey) : m.status,
-                            when,
-                          });
-                    return (
-                      <li key={m.id} className={cx("flex", m.direction === "inbound" ? "justify-start" : "justify-end")}>
-                        <div
-                          className={cx(
-                            "max-w-[88%] rounded-2xl px-3 py-2 text-[13px] [overflow-wrap:anywhere]",
-                            m.direction === "inbound" ? "rounded-bl-sm bg-slate-100" : "rounded-br-sm bg-brand-50 text-brand-950 ring-1 ring-brand-100",
-                          )}
-                        >
-                          <p className="mb-0.5 text-[11px] font-semibold text-slate-600">{meta}</p>
-                          {m.subject ? <p className="font-semibold">{m.subject}</p> : <p className="whitespace-pre-line">{m.body}</p>}
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ol>
-              )}
-            </section>
+            <MessageThread messages={detail.messages} tz={tz} headingId={`${titleId}-messages`} />
           ) : detail && restricted === "open" ? (
             <p className="text-sm text-slate-500">{t("drawer.messagesHidden")}</p>
           ) : null}
 
-          {canWrite && restricted === "open" && appt.status !== "cancelled" ? (
+          {canWrite && unlocked && appt.status !== "cancelled" ? (
             <div className="flex flex-wrap gap-x-4 gap-y-2">
               <button type="button" className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-ink" onClick={() => patientLink("open")}>
                 <ExternalLink size={13} aria-hidden /> {t("drawer.patientPage")}
@@ -606,6 +580,57 @@ function Contacts({ c }: { c: NonNullable<ApptDetailDTO["contacts"]> }) {
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The appointment's messages, oldest first. Personal patient links in the texts arrive already
+ * replaced by a placeholder (loadAppointmentDetail); times use the staff locale's date pattern.
+ */
+export function MessageThread({ messages, tz, headingId }: { messages: ThreadMessage[]; tz: string; headingId: string }) {
+  const t = useT("calendar");
+  const tc = useT("common");
+  const locale = useLocale();
+  return (
+    <section aria-labelledby={headingId}>
+      <h3 id={headingId} className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-600">
+        {t("drawer.messages")}
+      </h3>
+      {messages.length === 0 ? (
+        <p className="text-sm text-slate-500">{t("drawer.noMessages")}</p>
+      ) : (
+        <ol className="space-y-2">
+          {messages.map((m) => {
+            const when = fmtWhen(m.createdAt, tz, locale, "short");
+            const channel = tc(`channels.${m.channel}`);
+            const statusKey = `drawer.messageStatus.${m.status}` as const;
+            const meta =
+              m.direction === "inbound"
+                ? m.intent
+                  ? t("drawer.replyIntentMeta", { channel, intent: t(`drawer.intents.${m.intent}`), when })
+                  : t("drawer.replyMeta", { channel, when })
+                : t("drawer.messageMeta", {
+                    channel,
+                    status: t.has(statusKey) ? t(statusKey) : m.status,
+                    when,
+                  });
+            return (
+              <li key={m.id} className={cx("flex", m.direction === "inbound" ? "justify-start" : "justify-end")}>
+                <div
+                  className={cx(
+                    "max-w-[88%] rounded-2xl px-3 py-2 text-[13px] [overflow-wrap:anywhere]",
+                    m.direction === "inbound" ? "rounded-bl-sm bg-slate-100" : "rounded-br-sm bg-brand-50 text-brand-950 ring-1 ring-brand-100",
+                  )}
+                >
+                  <p className="mb-0.5 text-[11px] font-semibold text-slate-600">{meta}</p>
+                  {m.subject ? <p className="font-semibold">{m.subject}</p> : <p className="whitespace-pre-line">{m.body}</p>}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </section>
   );
 }
 

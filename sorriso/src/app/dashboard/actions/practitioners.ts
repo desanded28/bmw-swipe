@@ -9,7 +9,7 @@ import { DEFAULT_LOCALE, type Locale } from "@/i18n/config";
 import { getStaffLocale, getT } from "@/i18n/server";
 import { auditStaff } from "@/lib/audit";
 import type { StaffSession } from "@/lib/auth";
-import { checkAdvertisingFields } from "@/lib/compliance/advertising";
+import { blockedWords, checkAdvertisingFields } from "@/lib/compliance/advertising";
 import { isReservedSlug } from "@/lib/directory";
 import { newId, slugify } from "@/lib/ids";
 import { fail, guard, ok, optional, str, type ActionResult } from "./_shared";
@@ -64,7 +64,8 @@ export async function savePractitioner(id: string | null, _prev: unknown, fd: Fo
       const values = {
         title: str(fd, "title").slice(0, 20),
         name: name.slice(0, 120),
-        specialty: (str(fd, "specialty") || "Dentist").slice(0, 120),
+        // Practice-written "areas of interest"; empty is fine: pages show a translated default.
+        specialty: str(fd, "specialty").slice(0, 120),
         bio: optional(fd, "bio")?.slice(0, 2000) ?? null,
         // Deprecated free text, kept in step for old readers; spokenLanguages is what counts.
         languages: spokenLanguages.join(", ") || "it",
@@ -82,13 +83,7 @@ export async function savePractitioner(id: string | null, _prev: unknown, fd: Fo
 
       // Health advertising rules (L. 145/2018 c. 525): promotional wording blocks the save.
       const ads = checkAdvertisingFields({ title: values.title, specialty: values.specialty, bio: values.bio });
-      if (ads.verdict === "block") {
-        const words = Object.values(ads.byField)
-          .flat()
-          .filter((f) => f?.severity === "block")
-          .map((f) => `"${f!.text}"`);
-        return fail(t("profile.advertisingBlocked", { words: [...new Set(words)].join(", ") }), "advertising");
-      }
+      if (ads.verdict === "block") return fail(t("profile.advertisingBlocked", { words: blockedWords(ads.byField) }), "advertising");
 
       const serviceIds = fd.getAll("serviceIds").map(String);
       const orgServices = await db.select({ id: services.id }).from(services).where(eq(services.orgId, s.org.id));

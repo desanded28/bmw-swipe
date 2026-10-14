@@ -113,6 +113,41 @@ describe("partner API keys", () => {
     expect((await list(call("/api/v1/partner/appointments", secret, { ip: "2001:db8:1::7" }))).status).toBe(200);
   });
 
+  it("a spoofed x-vercel-forwarded-for or x-real-ip doesn't pass the allow-list off Vercel", async () => {
+    const secret = await key(["appointments:read"], { allowedIps: ["203.0.113.5"] });
+    for (const spoof of ["x-vercel-forwarded-for", "x-real-ip"]) {
+      const req = call("/api/v1/partner/appointments", secret, { ip: "198.51.100.1" });
+      req.headers.set(spoof, "203.0.113.5");
+      expect((await list(req)).status).toBe(403);
+    }
+  });
+
+  it("a key without an expiry (issued before expiries existed) stops 12 months after creation", async () => {
+    const { sha256, newId } = await import("@/lib/ids");
+    const legacy = async (createdAt: Date) => {
+      const secret = `sk_legacy_${newId(16)}`;
+      await db.insert(apiKeys).values({ id: newId(), orgId: p.orgId, name: "Legacy", prefix: secret.slice(0, 10), keyHash: sha256(secret), createdAt, expiresAt: null });
+      return secret;
+    };
+    const DAY = 86_400_000;
+    expect((await list(call("/api/v1/partner/appointments", await legacy(new Date(Date.now() - 30 * DAY))))).status).toBe(200);
+    expect((await list(call("/api/v1/partner/appointments", await legacy(new Date(Date.now() - 370 * DAY))))).status).toBe(401);
+  });
+
+  it("refuses the formerly published demo key even if a database still holds it", async () => {
+    const { sha256, newId } = await import("@/lib/ids");
+    const published = "sk_demo_studio_bianchi_local_only";
+    await db.insert(apiKeys).values({
+      id: newId(),
+      orgId: p.orgId,
+      name: "Old demo",
+      prefix: published.slice(0, 10),
+      keyHash: sha256(published),
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    expect((await list(call("/api/v1/partner/appointments", published))).status).toBe(401);
+  });
+
   it("keys always expire: 12 months by default", async () => {
     const created = await createApiKey(p.orgId, "Default");
     const months = (created.expiresAt.getTime() - Date.now()) / (30.44 * 86_400_000);

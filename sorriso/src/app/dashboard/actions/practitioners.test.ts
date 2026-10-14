@@ -55,6 +55,16 @@ beforeEach(async () => {
     .where(eq(practitioners.id, p.drA));
 });
 
+describe("profile fields", () => {
+  it("stores an empty 'areas of interest' as empty (pages show a translated default), never an English word", async () => {
+    await signIn("user-owner", "owner");
+    expect(await savePractitioner(p.drA, null, form({ specialty: "" }))).toMatchObject({ ok: true });
+    expect((await row()).specialty).toBe("");
+    await savePractitioner(p.drA, null, form({}));
+    expect((await row()).specialty).toBe("Conservative dentistry");
+  });
+});
+
 describe("public profile approval", () => {
   it("only the practitioner or the owner can approve", async () => {
     await signIn("user-admin", "admin");

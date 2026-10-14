@@ -1,6 +1,6 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { db, type Tx } from "@/db";
-import { LOCALES, type Locale, type NoticeKind } from "@/db/enums";
+import { LOCALES, type Locale, type NoticeKind, type ProcessingContext } from "@/db/enums";
 import { noticeVersions, organizations, type Organization, type RetentionSettings } from "@/db/schema";
 import { LOCALE_COOKIE } from "@/i18n/config";
 import { fmtDay, zonedDate } from "@/i18n/datefmt";
@@ -10,6 +10,7 @@ import type { Translator } from "@/i18n/types";
 import { absoluteUrl, APP_NAME, DEFAULT_TIMEZONE } from "../config";
 import { sha256Hex } from "../crypto";
 import { newId } from "../ids";
+import { logError } from "../log";
 import { resolveSettings } from "../settings";
 import { PATIENT_SESSION_COOKIE_NAMES } from "./patient-session";
 import { PLATFORM_RETENTION } from "./retention";
@@ -107,9 +108,13 @@ export const COOKIES = {
 /**
  * Keys Sorriso's pages keep in the browser's localStorage or sessionStorage (per-viewer
  * conveniences only). A package that adds one adds it here, with its purpose under
- * legalPatient.cookies.storageItems, so the cookie notice lists it. None today.
+ * legalPatient.cookies.storageItems, so the cookie notice lists it (notices.test.ts greps src for
+ * storage keys and fails on one missing here).
  */
-export const BROWSER_STORAGE: readonly { key: string; purpose: string }[] = [];
+export const BROWSER_STORAGE = [
+  /** src/components/dashboard/PrivacyScreen.tsx: the staff dashboard's privacy screen, on or off. */
+  { key: "sorriso.dashboard.privacyScreen", purpose: "dashboardPrivacyScreen" },
+] as const satisfies readonly { key: string; purpose: string }[];
 
 // ---------------------------------------------------------------- building
 
@@ -435,9 +440,7 @@ function cookieNotice(t: T): NoticeSection[] {
     {
       id: "storage",
       title: t("sections.storage"),
-      body: BROWSER_STORAGE.length
-        ? list(BROWSER_STORAGE.map((s) => t("cookies.storageItem", { key: s.key, purpose: s.purpose })))
-        : t("cookies.storageNone"),
+      body: paragraphs(t("cookies.storageIntro"), list(BROWSER_STORAGE.map((s) => t("cookies.storageItem", { key: s.key, purpose: t(`cookies.storageItems.${s.purpose}`) })))),
     },
     {
       id: "third-parties",
@@ -635,6 +638,42 @@ export async function recordPracticeNotices(org: NoticeOrg, opts: { now?: Date; 
     for (const locale of LOCALES) {
       await recordNoticeVersion(buildNotice(kind, { org, locale }), { kind, orgId: org.id, locale }, opts);
     }
+  }
+}
+
+/**
+ * Record the notices a booking shows, in the language it was made in: the practice's (and
+ * Sorriso's on the marketplace). Called when a booking is made, so the wording in force at that
+ * moment is on record even when the practice changed its settings and nobody has opened the
+ * notice page since (the page would otherwise record it late, on its first view). Best effort:
+ * never throws, a booking must not fail on it. Usually a cache hit.
+ */
+export async function recordBookingNotices(i: { orgId: string; locale: Locale; context: ProcessingContext; now?: Date }): Promise<void> {
+  try {
+    const [org] = await db
+      .select({
+        id: organizations.id,
+        slug: organizations.slug,
+        name: organizations.name,
+        legalName: organizations.legalName,
+        vatNumber: organizations.vatNumber,
+        registeredAddress: organizations.registeredAddress,
+        privacyEmail: organizations.privacyEmail,
+        dpoName: organizations.dpoName,
+        dpoEmail: organizations.dpoEmail,
+        email: organizations.email,
+        phone: organizations.phone,
+        settings: organizations.settings,
+      })
+      .from(organizations)
+      .where(eq(organizations.id, i.orgId));
+    if (!org) return;
+    await recordNoticeVersion(buildNotice("practice_patient", { org, locale: i.locale }), { kind: "practice_patient", orgId: org.id, locale: i.locale }, { now: i.now });
+    if (i.context === "marketplace") {
+      await recordNoticeVersion(buildNotice("platform_patient", { locale: i.locale }), { kind: "platform_patient", orgId: null, locale: i.locale }, { now: i.now });
+    }
+  } catch (err) {
+    logError("notices", err, { step: "booking_notices", orgId: i.orgId });
   }
 }
 

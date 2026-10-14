@@ -75,7 +75,9 @@ export default async function PractitionerPage({ params, searchParams }: { param
   const practiceRef = verifyPracticeRef(clinic.org.id, ref) ? ref! : null;
   const context = processingContextFor({ source: "online", viaApiKey: false, embedded: false, practiceRef, orgId: clinic.org.id });
   const name = practitionerName(p);
-  const specialty = localizedText(p.specialty, profile.specialtyI18n, locale, contentLocale);
+  const ownSpecialty = localizedText(p.specialty, profile.specialtyI18n, locale, contentLocale);
+  // Left empty by the practice: a default in the page's language (not the practice's text).
+  const specialty = ownSpecialty.text.trim() ? ownSpecialty : { text: t("profile.defaultSpecialty"), lang: locale };
   const bio = p.bio ? localizedText(p.bio, profile.bioI18n, locale, contentLocale) : null;
   const average = p.rating ? formatDecimal(p.rating.average, locale, 1) : null;
 

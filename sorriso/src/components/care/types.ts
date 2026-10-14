@@ -10,6 +10,17 @@ import type { AnamnesisStatus } from "../dashboard/slots/contracts";
 /** The recall intervals a clinician can pick after a visit (months). src/lib/recalls.ts uses the same list. */
 export const RECALL_INTERVALS = [3, 4, 6, 9, 12, 18, 24] as const;
 
+/**
+ * The picker's options: RECALL_INTERVALS plus the interval currently set when the list lacks it
+ * (services may suggest any 1–60 months; recalls store 3–24), in order.
+ */
+export function recallOptions(current: string | number | null | undefined): number[] {
+  const n = Number(current);
+  const list: number[] = [...RECALL_INTERVALS];
+  if (!Number.isInteger(n) || n < RECALL_INTERVALS[0] || n > RECALL_INTERVALS[RECALL_INTERVALS.length - 1] || list.includes(n)) return list;
+  return [...list, n].sort((a, b) => a - b);
+}
+
 /** Results of the care actions: data on success, a localised error otherwise. */
 export type CareResult<T> = { ok: true; data: T; message?: string } | { ok: false; error: string; code?: string };
 
@@ -32,7 +43,8 @@ export type AppointmentCareData = {
     /** The practice collects it online and the visit is upcoming. */
     canInvite: boolean;
   };
-  rebook: { needed: boolean; callRequested: boolean };
+  /** needed: a closure covers the visit; offerSent: the patient was offered new times for it. */
+  rebook: { needed: boolean; offerSent: boolean; callRequested: boolean };
 };
 
 /** A signed medical history, for the clinical team (loadAnamnesis). */
@@ -57,10 +69,13 @@ export type ClashItem = {
   id: string;
   start: string;
   timezone: string;
+  /** Empty when `masked` (a restricted patient the viewer may not see): show a placeholder. */
   patientName: string;
+  masked: boolean;
   practitionerName: string;
   locationName: string;
   needsAttention: boolean;
+  offerSent: boolean;
   callRequested: boolean;
   reachable: boolean;
 };
@@ -79,7 +94,9 @@ export type PatientCareData = {
   minor: boolean;
   viaGuardian: boolean;
   guardian: { name: string | null; relation: "parent" | "legal_guardian" | null; phone: string | null; email: string | null } | null;
-  submissions: { id: string; signedAt: string; signerName: string | null; exportedAt: string | null; redFlags: string[] | null }[];
-  duplicate: { ofName: string | null; flaggedBy: number } | null;
+  /** alerts: how many medical alerts the form raised (never which); null without patient.clinical.read. */
+  submissions: { id: string; signedAt: string; signerName: string | null; exportedAt: string | null; alerts: number | null }[];
+  /** ofRestricted: the other record is restricted and the viewer may not see its name (ofName is null). */
+  duplicate: { ofName: string | null; ofRestricted: boolean; flaggedBy: number } | null;
   canReadClinical: boolean;
 };

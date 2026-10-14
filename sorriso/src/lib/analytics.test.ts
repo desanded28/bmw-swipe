@@ -15,7 +15,7 @@ import { addDays, todayIn, zonedToUtc } from "./time";
  * the CSV route and loadAnalytics() all see the same window.
  */
 
-const state = vi.hoisted(() => ({ session: null as unknown, rankInput: null as unknown }));
+const state = vi.hoisted(() => ({ session: null as unknown, rankInput: null as unknown, analytics: null as unknown }));
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
 vi.mock("next/headers", () => ({
   cookies: async () => ({ get: () => undefined, set: () => {}, delete: () => {} }),
@@ -39,6 +39,16 @@ vi.mock("@/lib/ranking", async (importOriginal) => {
   return { ...original, buildRankInputs: async () => (state.rankInput ? [state.rankInput as RankInput] : []) };
 });
 
+// The page test below swaps in figures the fixture can't reach (thousands, a fractional median).
+vi.mock("@/lib/analytics", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./analytics")>();
+  return {
+    ...original,
+    loadAnalytics: (...args: Parameters<typeof original.loadAnalytics>) =>
+      state.analytics ? Promise.resolve(state.analytics as Awaited<ReturnType<typeof original.loadAnalytics>>) : original.loadAnalytics(...args),
+  };
+});
+
 const { analyticsCsv, loadAnalytics } = await import("./analytics");
 const { scoreResult } = await import("./ranking");
 
@@ -48,10 +58,10 @@ let org: typeof organizations.$inferSelect;
 const today = todayIn(TZ);
 const HOUR = 3_600_000;
 
-async function signIn(role: MembershipRole) {
+async function signIn(role: MembershipRole, locale: "en" | "de" = "en") {
   state.session = {
     sessionId: "s1",
-    user: { id: `user-${role}`, name: "Test", email: "t@example.org", isPlatformAdmin: false, locale: "en" },
+    user: { id: `user-${role}`, name: "Test", email: "t@example.org", isPlatformAdmin: false, locale },
     org,
     role,
     orgs: [{ org, role }],
@@ -351,5 +361,42 @@ describe("/dashboard/analytics", () => {
     await signIn("owner");
     const page = await AnalyticsPage({ searchParams: Promise.resolve({ months: "24", by: "partOfDay" }) });
     expect(page).toBeTruthy();
+  });
+
+  it("prints counts and the median lead time with the staff locale's separators", async () => {
+    const { default: AnalyticsPage } = await import("@/app/dashboard/analytics/page");
+    const real = await loadAnalytics(org, { months: 24 });
+    state.analytics = {
+      ...real,
+      outcomes: { ...real.outcomes, total: { ...real.outcomes.total, noShows: 1250, completed: 10750 } },
+      leadTime: { ...real.leadTime, medianDays: 3.5, bookings: 2400 },
+      waitlist: { ...real.waitlist, entries: 1234 },
+      funnel: { ...real.funnel, impressions: 12500 },
+    };
+    try {
+      await signIn("owner", "de");
+      // What the page hands on (HTML or RSC payload): every element's props, without the components.
+      const seen = new WeakSet<object>();
+      const json = JSON.stringify(await AnalyticsPage({ searchParams: Promise.resolve({ months: "24" }) }), (key, value) => {
+        if (key === "type" || key === "_owner" || key === "_store") return undefined;
+        if (value && typeof value === "object") {
+          if (seen.has(value)) return undefined;
+          seen.add(value);
+        }
+        return value;
+      });
+      const t = getT("de", "analytics");
+      expect(json).toContain(t("kpi.leadTimeValue", { count: 3.5 }));
+      expect(t("kpi.leadTimeValue", { count: 3.5 })).toContain("3,5");
+      expect(json).toContain(t("kpi.noShowHint", { noShows: "1.250", visits: "12.000" }));
+      expect(json).toContain(t("chart.bar", { label: t("funnel.impressions"), value: "12.500" }));
+      const w = real.waitlist;
+      expect(json).toContain(
+        t("sections.waitlistDetail", { entries: "1.234", booked: w.booked, removed: w.removed, expired: w.expired, waiting: w.waiting }),
+      );
+      expect(json).not.toMatch(/"(12500|1234|1250 )/);
+    } finally {
+      state.analytics = null;
+    }
   });
 });

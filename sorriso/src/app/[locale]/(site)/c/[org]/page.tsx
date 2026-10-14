@@ -152,7 +152,9 @@ export default async function ClinicPage({ params, searchParams }: { params: Par
                 <ul className="grid gap-3 sm:grid-cols-2">
                   {team.map((p) => {
                     const pAverage = p.rating ? formatDecimal(p.rating.average, locale, 1) : null;
-                    const specialty = localizedText(p.specialty, p.profile?.specialtyI18n, locale, contentLocale);
+                    const own = localizedText(p.specialty, p.profile?.specialtyI18n, locale, contentLocale);
+                    // Left empty by the practice: a default in the page's language (not the practice's text).
+                    const specialty = own.text.trim() ? own : { text: t("profile.defaultSpecialty"), lang: locale };
                     return (
                       <li key={p.id} className="flex gap-3 rounded-xl p-3 ring-1 ring-slate-200">
                         <Avatar name={p.name} color={p.color} size={48} />

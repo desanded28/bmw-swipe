@@ -10,10 +10,19 @@
  * SMS texts: straight quotes only, short (GSM-7 budget).
  */
 export default {
-  moderationRequest: {
+  /** The review is hidden while the moderators check it (the practice reported it). */
+  moderationRequestHidden: {
     subject: "Your review of {practice} was reported",
     body:
       "Your review of {practice} was reported to Sorriso's moderators and is hidden while they check it. You can tell us your side until {date}: we read it before deciding. You can also delete your review.",
+    cta: "Reply to the moderators",
+    sms: "Sorriso: your review of {practice} was reported. You can reply until {date}: {url}",
+  },
+  /** The review stays published while the moderators check it (a notice from the public, an appeal). */
+  moderationRequestVisible: {
+    subject: "Your review of {practice} was reported",
+    body:
+      "Your review of {practice} was reported to Sorriso's moderators. It stays published while they check it. You can tell us your side until {date}: we read it before deciding. You can also delete your review.",
     cta: "Reply to the moderators",
     sms: "Sorriso: your review of {practice} was reported. You can reply until {date}: {url}",
   },
@@ -66,6 +75,7 @@ export default {
       "Sorriso's moderators reviewed your report about a review of {practice} and decided to remove it. Reasons: {reason}",
     appeal: "You can appeal once from the Reviews page of your dashboard. After that, you can turn to a certified out-of-court dispute settlement body or a court.",
     final: "This was the decision on an appeal and is final on Sorriso. You can still turn to a certified out-of-court dispute settlement body or a court.",
+    authorMayAppeal: "The author of the review can appeal this decision once; if they do, a different moderator decides and we will email you the outcome.",
     open: "Open the Reviews page",
     footer: "Sorriso moderation · you receive this email because your practice reported a review.",
   },

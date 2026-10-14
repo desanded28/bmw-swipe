@@ -6,13 +6,16 @@ import { FUND_MODES, type FundMode } from "@/db/enums";
 import { funds, orgFunds, services } from "@/db/schema";
 import { DEFAULT_LOCALE, type Locale } from "@/i18n/config";
 import { getStaffLocale, getT } from "@/i18n/server";
+import { blockedWords, checkAdvertisingFields } from "@/lib/compliance/advertising";
 import { fail, guard, ok, optional, str, type ActionResult } from "./_shared";
 
 /**
  * The health funds and insurers a practice works with (org_funds), as the practice declares them
  * (WP7): direct billing or reimbursement, all treatments or some. They are shown on the practice
  * page, used by the fund filter in search, and offered in the booking form (appointments.fundId,
- * kept only when the practice lists that fund for that treatment).
+ * kept only when the practice lists that fund for that treatment). The notes are public text: they
+ * go through the health-advertising check (Law 145/2018) like service and profile texts, so
+ * promotional wording ("sconto", "gratis") blocks the save.
  */
 
 /** The staff member's language. Outside a request (tests, scripts) the default: never fails the action. */
@@ -50,11 +53,13 @@ export async function saveOrgFunds(_prev: unknown, fd: FormData): Promise<Action
         if (note && note.length > NOTE_MAX) return fail(t("funds.noteTooLong"));
         rows.push({ orgId: s.org.id, fundId: id, mode, serviceIds, note });
       }
+      const ads = checkAdvertisingFields(Object.fromEntries(rows.map((r) => [r.fundId, r.note])));
+      if (ads.verdict === "block") return fail(t("advertising.blocked", { words: blockedWords(ads.byField) }), "advertising");
       await db.transaction(async (tx) => {
         await tx.delete(orgFunds).where(eq(orgFunds.orgId, s.org.id));
         if (rows.length) await tx.insert(orgFunds).values(rows);
       });
-      return ok(t("funds.saved"));
+      return ok(ads.verdict === "warn" ? t("funds.savedWithWarnings") : t("funds.saved"));
     },
     { permission: "catalog.manage", audit: "settings.update" },
   );

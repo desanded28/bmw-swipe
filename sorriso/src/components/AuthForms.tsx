@@ -17,6 +17,7 @@ import {
 import { lhref } from "@/i18n/href";
 import { useLocale, useT } from "@/i18n/provider";
 import { rich } from "@/i18n/rich";
+import { DEMO_OWNER_EMAIL, DEMO_PASSWORD } from "@/lib/security/demo-accounts";
 import { Button, Field, Input } from "./ui";
 
 /** Public account forms (login, second step, signup, password reset, email confirmation, invitations). */
@@ -43,7 +44,11 @@ function LocaleInput() {
   return <input type="hidden" name="locale" value={locale} />;
 }
 
-/** A password input with a show/hide toggle. */
+/**
+ * A password input with a show/hide toggle. Always used through Field's render-function form
+ * (`{(control) => <PasswordInput {...control} … />}`), so the input gets the label's id and the
+ * hint and error via aria-describedby, and the toggle stays outside the <label>.
+ */
 function PasswordInput(props: ComponentProps<"input">) {
   const t = useT("auth");
   const [shown, setShown] = useState(false);
@@ -92,11 +97,11 @@ export function LoginForm({ demo, next }: { demo: boolean; next?: string }) {
           type="email"
           autoComplete="username"
           required
-          defaultValue={state?.values?.email ?? (demo ? "demo@sorriso.dev" : "")}
+          defaultValue={state?.values?.email ?? (demo ? DEMO_OWNER_EMAIL : "")}
         />
       </Field>
       <Field label={t("fields.password")}>
-        <PasswordInput name="password" autoComplete="current-password" required defaultValue={demo ? "demo1234" : ""} />
+        {(control) => <PasswordInput {...control} name="password" autoComplete="current-password" required defaultValue={demo ? DEMO_PASSWORD : ""} />}
       </Field>
       <div className="text-right text-sm">
         <Link href={lhref(locale, "/reset-password")} className="font-semibold text-brand-700 hover:underline">
@@ -112,13 +117,12 @@ export function LoginForm({ demo, next }: { demo: boolean; next?: string }) {
 export function MfaForm({ next }: { next?: string }) {
   const t = useT("auth");
   const [state, action, pending] = useActionState<FormState, FormData>(verifyMfaLogin, null);
-  const hintId = useId();
   return (
     <div className="space-y-4">
       <form action={action} className="space-y-4">
         <LocaleInput />
         {next ? <input type="hidden" name="next" value={next} /> : null}
-        <Field label={t("mfa.code")} hint={<span id={hintId}>{t("mfa.codeHint")}</span>}>
+        <Field label={t("mfa.code")} hint={t("mfa.codeHint")}>
           <Input
             name="code"
             autoComplete="one-time-code"
@@ -127,7 +131,6 @@ export function MfaForm({ next }: { next?: string }) {
             required
             autoFocus
             maxLength={16}
-            aria-describedby={hintId}
             className="text-center font-mono text-lg tracking-[0.3em]"
           />
         </Field>
@@ -150,8 +153,10 @@ export function SignupForm() {
   const t = useT("auth");
   const locale = useLocale();
   const [state, action, pending] = useActionState<FormState, FormData>(signup, null);
+  const consentErrorId = useId();
   const v = state?.values ?? {};
   const e = state?.fieldErrors ?? {};
+  const consentError = e.acceptTerms ?? e.acceptDpa;
   if (state?.done) {
     return (
       <Sent title={t("signup.sentTitle")}>
@@ -181,7 +186,7 @@ export function SignupForm() {
         </Field>
       </div>
       <Field label={t("fields.password")} hint={t("fields.passwordHint")} error={e.password}>
-        <PasswordInput name="password" required minLength={12} maxLength={128} autoComplete="new-password" aria-invalid={invalid(state, "password")} />
+        {(control) => <PasswordInput {...control} name="password" required minLength={12} maxLength={128} autoComplete="new-password" />}
       </Field>
       <hr className="border-slate-100" />
       <Field label={t("signup.practiceName")} error={e.practiceName}>
@@ -204,14 +209,32 @@ export function SignupForm() {
       </label>
       <fieldset className="space-y-3 rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200">
         <label className="flex items-start gap-2.5 text-sm text-slate-700">
-          <input type="checkbox" name="acceptTerms" required className="mt-0.5 h-4 w-4 shrink-0 accent-brand-700" aria-invalid={invalid(state, "acceptTerms")} />
+          <input
+            type="checkbox"
+            name="acceptTerms"
+            required
+            className="mt-0.5 h-4 w-4 shrink-0 accent-brand-700"
+            aria-invalid={invalid(state, "acceptTerms")}
+            aria-describedby={consentError ? consentErrorId : undefined}
+          />
           <span>{rich(t("signup.acceptTerms"), { terms: legal("/legal/terms") })}</span>
         </label>
         <label className="flex items-start gap-2.5 text-sm text-slate-700">
-          <input type="checkbox" name="acceptDpa" required className="mt-0.5 h-4 w-4 shrink-0 accent-brand-700" aria-invalid={invalid(state, "acceptDpa")} />
+          <input
+            type="checkbox"
+            name="acceptDpa"
+            required
+            className="mt-0.5 h-4 w-4 shrink-0 accent-brand-700"
+            aria-invalid={invalid(state, "acceptDpa")}
+            aria-describedby={consentError ? consentErrorId : undefined}
+          />
           <span>{rich(t("signup.acceptDpa"), { dpa: legal("/legal/dpa"), subprocessors: legal("/legal/subprocessors") })}</span>
         </label>
-        {e.acceptTerms || e.acceptDpa ? <p className="text-xs font-medium text-red-600">{e.acceptTerms ?? e.acceptDpa}</p> : null}
+        {consentError ? (
+          <p id={consentErrorId} className="text-xs font-medium text-red-600">
+            {consentError}
+          </p>
+        ) : null}
       </fieldset>
       <FormError state={state} />
       <Submit pending={pending}>{t("signup.submit")}</Submit>
@@ -258,10 +281,10 @@ export function ResetPasswordForm({ token }: { token: string }) {
       <LocaleInput />
       <input type="hidden" name="token" value={token} />
       <Field label={t("fields.newPassword")} hint={t("fields.passwordHint")} error={e.password}>
-        <PasswordInput name="password" required minLength={12} maxLength={128} autoComplete="new-password" aria-invalid={invalid(state, "password")} />
+        {(control) => <PasswordInput {...control} name="password" required minLength={12} maxLength={128} autoComplete="new-password" />}
       </Field>
       <Field label={t("fields.confirmPassword")} error={e.confirm}>
-        <PasswordInput name="confirm" required autoComplete="new-password" aria-invalid={invalid(state, "confirm")} />
+        {(control) => <PasswordInput {...control} name="confirm" required autoComplete="new-password" />}
       </Field>
       <FormError state={state} />
       <Submit pending={pending}>{t("reset.submitNew")}</Submit>
@@ -294,6 +317,7 @@ export function VerifyEmailForm({ token }: { token: string }) {
 export function InviteForm({ token, newAccount, acceptLabel }: { token: string; newAccount: boolean; acceptLabel: string }) {
   const t = useT("auth");
   const [state, action, pending] = useActionState<FormState, FormData>(acceptInvite, null);
+  const instructionsErrorId = useId();
   const e = state?.fieldErrors ?? {};
   return (
     <form action={action} className="space-y-4" noValidate>
@@ -305,15 +329,26 @@ export function InviteForm({ token, newAccount, acceptLabel }: { token: string; 
             <Input name="name" required autoComplete="name" defaultValue={state?.values?.name} aria-invalid={invalid(state, "name")} />
           </Field>
           <Field label={t("fields.password")} hint={t("fields.passwordHint")} error={e.password}>
-            <PasswordInput name="password" required minLength={12} maxLength={128} autoComplete="new-password" aria-invalid={invalid(state, "password")} />
+            {(control) => <PasswordInput {...control} name="password" required minLength={12} maxLength={128} autoComplete="new-password" />}
           </Field>
         </>
       ) : null}
       <label className="flex items-start gap-2.5 rounded-xl bg-slate-50 p-4 text-sm font-medium text-slate-800 ring-1 ring-slate-200">
-        <input type="checkbox" name="acceptInstructions" required className="mt-0.5 h-4 w-4 shrink-0 accent-brand-700" aria-invalid={invalid(state, "acceptInstructions")} />
+        <input
+          type="checkbox"
+          name="acceptInstructions"
+          required
+          className="mt-0.5 h-4 w-4 shrink-0 accent-brand-700"
+          aria-invalid={invalid(state, "acceptInstructions")}
+          aria-describedby={e.acceptInstructions ? instructionsErrorId : undefined}
+        />
         <span>{acceptLabel}</span>
       </label>
-      {e.acceptInstructions ? <p className="text-xs font-medium text-red-600">{e.acceptInstructions}</p> : null}
+      {e.acceptInstructions ? (
+        <p id={instructionsErrorId} className="text-xs font-medium text-red-600">
+          {e.acceptInstructions}
+        </p>
+      ) : null}
       <FormError state={state} />
       <Submit pending={pending}>{t("invite.submit")}</Submit>
     </form>

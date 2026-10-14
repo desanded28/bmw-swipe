@@ -10,6 +10,8 @@ import { can, requirePermission } from "@/lib/permissions";
 import { buildNotice } from "@/lib/privacy/notices";
 import { RETENTION_LIMITS, SESSION_HOURS_LIMITS } from "@/lib/privacy/settings";
 import { resolveSettings } from "@/lib/settings";
+import { ComplianceBanner } from "@/components/privacy-admin/ComplianceBanner";
+import { gatePage } from "@/lib/privacy/gates";
 
 export async function generateMetadata(): Promise<Metadata> {
   return { title: getT(await getStaffLocale(), "privacyAdmin")("settingsPrivacy.title") };
@@ -24,6 +26,7 @@ export async function generateMetadata(): Promise<Metadata> {
  */
 export default async function PrivacySettingsPage({ searchParams }: { searchParams: Promise<{ notice?: string }> }) {
   const s = await requirePermission("privacy.settings");
+  const banner = await gatePage(s);
   await requireStepUp();
   const locale = await getStaffLocale();
   const t = getT(locale, "privacyAdmin");
@@ -40,6 +43,7 @@ export default async function PrivacySettingsPage({ searchParams }: { searchPara
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
+      <ComplianceBanner state={banner} />
       <PageHeader title={t("settingsPrivacy.title")} description={t("settingsPrivacy.description")} />
       <nav className="flex flex-wrap gap-2" aria-label={t("settingsPrivacy.title")}>
         {links.map((l) => (

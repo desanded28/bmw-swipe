@@ -56,15 +56,21 @@ literals keep compiling.
   are shown only once the **Albo** registration is verified. Everything else is "Areas of
   interest" (the `specialty` text). Changing the Albo province/number or the specialisations
   clears `alboVerifiedAt`.
+- An empty "Areas of interest" is stored empty (never an English default); WP7's pages and cards
+  show `marketplace.profile.defaultSpecialty` ("Dentist", translated) instead, without a `lang`
+  attribute since it is not the practice's text. The title has no default either (the field shows
+  "Dr." as a placeholder only).
 - **Albo verification queue**: `/dashboard/platform/practitioners` (platform admins). The
   moderator looks the registration up in the public FNOMCeO register (opened by hand: no
   automated requests) and confirms it (`alboVerifiedAt`, `alboVerifiedByUserId`). Public badge:
   "Registered with the Albo degli Odontoiatri of {province}: verified on {date}" (the number itself
   is not published).
 - `PractitionerForm` keeps its props (`practitioner?`, `services`, `offered`) and reads the viewer
-  from the session. **WP6's `team/[id]` renders it only with `team.manage`**: please also render it
-  when `p.userId === s.user.id`, so practitioners can approve their profile and remove themselves
-  (for them it shows the preview, approval and opt-out only).
+  from the session. **Integration blocker: WP6's `team/[id]` renders it only with `team.manage`**,
+  which the `practitioner` role lacks, so today a dentist logged in with their own account can't
+  reach "Remove me from the marketplace" or approve their profile (the server actions allow them).
+  WP6 must also render it when `p.userId === s.user.id` (for them it shows the preview, approval
+  and opt-out only). WP7 owns no dashboard route where a self-service page could live.
 - New practitioners never get a slug from `RESERVED_PRACTITIONER_SLUGS` (e.g. `privacy`, shadowed
   by WP4's `/c/<org>/privacy`).
 
@@ -78,7 +84,7 @@ literals keep compiling.
 | soonest slot for the searched treatment | 30% | 1 within a day, 0.5 at ~3 days, 0 without a slot |
 | Bayesian rating `(C·m + Σ) / (C + n)`, C = 5, m = platform mean | 30% | `(score − 1) / 4` |
 | location (city match, or distance 2–30 km) | 15% | 1 / linear / 0 |
-| reliability `1 − staff-cancellation rate (180 days)` | 15% | rate per practitioner, practice-wide below 10 appointments |
+| reliability `1 − staff-cancellation rate (180 days)` | 15% | rate per practitioner; below 10 appointments (none included) the rate over all of the practice's appointments |
 | profile completeness (6 items) | 10% | share of items |
 
 - **Ties** rotate daily: ordered by an FNV-1a hash of `(Rome calendar day, practitioner id)`.
@@ -158,8 +164,11 @@ text }[]` over per-language lists (all 8 applied to every text):
 - **warn** (saved with a warning): suggestive words ("indolore", "rivoluzionario"), "specialist"
   titles, the plain "prima e dopo", "promozione", percentages.
 
-`saveService` (name, description, includes) and `savePractitioner` (title, areas of interest,
-bio) refuse on block (code `advertising`) and warn on warn; the forms highlight the matches live.
+`saveService` (name, description, includes), `savePractitioner` (title, areas of interest, bio),
+`saveOrgFunds` (each fund's note) and `saveLocation` (directions) refuse on block (code
+`advertising`) and save with a warning on warn; the forms highlight the matches live
+(`marketplace/AdCheckedText` for the fund notes and directions). Office and practice names are
+not checked (surnames such as "Migliore" would be refused).
 
 ## Reviews
 
@@ -193,8 +202,8 @@ listed practitioners. The deprecated `published` column is still written, never 
   treatment names and symptoms → **warn** (a reminder while typing). Names of third parties can't
   be detected by patterns (critique 53): moderation and reports cover them. A held comment is
   stored **encrypted** (`encrypt(…, "reviews.comment")`) until a moderator publishes it.
-- **Edit / delete** while the visit link is valid (re-checked on edit; a reported review stays
-  hidden). After that, the privacy center (WP4) calls `withdrawReview(id, actor)`, which clears
+- **Edit / delete** while the visit link is valid (re-checked on edit; a review the practice
+  reported stays hidden, and any text not published at once is stored encrypted). After that, the privacy center (WP4) calls `withdrawReview(id, actor)`, which clears
   the text and the reply, closes open reports, withdraws `review_publication` in the ledger and
   audits `review.withdraw`. `listPatientReviews(patientIds)` returns decrypted texts for WP4.
 - Service names are never shown on reviews (the queries don't even select them).
@@ -206,21 +215,39 @@ listed practitioners. The deprecated `published` column is still written, never 
 - **Reply**: only under published reviews; a just-in-time warning (professional secrecy), the
   health-term check run on the reply with highlights, neutral templates **in the review's
   language**, and a required confirmation ("no information about the patient's health or
-  treatment"); audited `review.reply`.
+  treatment"); audited `review.reply`. The server runs the flagger again (`replyAsPractice`): a
+  reply with health or contact details ("hold" findings) is refused (`health_terms`) and the
+  editor disables "Publish" meanwhile; treatment names and symptoms ("warn") pass and their rule
+  ids go into the audit metadata (`flags`).
 - **Report** (ground + explanation, encrypted): hides the review (`under_review`) until a moderator
-  decides; audited `review.report`. Within 6 months of a decision, the practice's next report is
-  its **one appeal** (the review stays as decided meanwhile); after that the decision is final.
+  decides; audited `review.report`. It can be filed while a notice from the public is open (two
+  reports, decided separately: "keep" on one doesn't publish what the practice's other open
+  report hides, and a removed review comes back only through an appeal of the decision that
+  removed it, see `decisionApplies`; the decision is still recorded and sent). Within 6 months of a decision **on its own report that kept the
+  review**, the practice's next report is its **one appeal** (the review stays published
+  meanwhile); after an appeal (by either side) the decision is final. Decisions on notices from the
+  public or on the automatic check are not the practice's to appeal: its next report is a fresh one
+  (hidden, the author asked, the practice told the outcome). A removal on its own report offers it
+  no appeal (the author can appeal it).
+- **What the practice sees** (`practiceReviews`): a comment only while the stored text is the public
+  one (published, or the published text its own report is hiding); never a held text (also after
+  an edit of a once-published review) nor a removed one. Only its own reports and their appeals,
+  with their decisions and reasons; nothing about notices from the public or the automatic check.
 
 ### Moderation (`/dashboard/platform/reviews`, platform admins)
 
-1. **Ask the author** (`askAuthor`): message `reviewEmails.moderationRequest` through the
-   patient's channel (guardian routing, opt-outs, restriction respected) with a **signed link**
+1. **Ask the author** (`askAuthor`): message `reviewEmails.moderationRequestHidden` (the practice's
+   report hides the review) or `moderationRequestVisible` (a notice or an appeal: it stays
+   published), chosen from the review's status, through the patient's channel (guardian routing, opt-outs, restriction respected) with a **signed link**
    (`reviewLinkToken`: report id + expiry + HMAC) to `/{locale}/a/<token>/review/respond`, valid
    7 days. It works after the visit link has expired. The author's reply is stored encrypted.
 2. **Decide** keep or remove with a **statement of reasons** (≥ 20 characters), sent to the author
-   (`decisionKept` / `decisionRemoved`, with the appeal link valid 6 months), to the reporting
-   staff member or the practice (`practice.*`), and to a member of the public who sent a notice
-   (`notice.*`). Audited `review.moderate` with the reason (encrypted in the audit log).
+   (`decisionKept` / `decisionRemoved`, with the appeal link valid 6 months), to the practice when
+   the report or appeal being decided is its own or the author appealed the decision on its report
+   (`practice.*`: the staff member who reported, else the practice's address), and to a member of
+   the public whose notice it was (`notice.*`). Audited `review.moderate` with the reason
+   (encrypted in the audit log). The reason is stored encrypted (`review_reports.decision_reason`,
+   and `reviews.removed_reason` on a removal): it often describes the health detail at issue.
 3. **Appeal** once per decision (practice: through `reportReview`; author: the signed link,
    against a removal). A **different moderator** must decide it; the outcome is final on Sorriso
    (`finalKept` / `finalRemoved`), with the out-of-court bodies and courts mentioned.
@@ -246,12 +273,14 @@ dedicated actions for the last two), `settings.update` (funds), `platform.access
 
 - Sorriso is **controller** for: review publication (consent `review_publication`, org_id NULL),
   the moderation of reviews and notices, profile statistics and ranking signals.
-- Encrypted free text outside `encryptedText` columns (the schema is frozen): held review comments,
-  report details and author replies use `encrypt()` with the AADs `reviews.comment`,
-  `review_reports.details`, `review_reports.patient_response`. `decrypt()` passes plaintext
-  through, so readers can always call it. **WP5's exports** (`csv/reviews.csv`, `review_reports`)
-  should decrypt those three columns; `scripts/encrypt-existing.ts` key rotation should include
-  them.
+- Encrypted free text outside `encryptedText` columns (the schema is frozen): held and removed
+  review comments, report details, author replies and the moderators' statements of reasons use
+  `encrypt()` with the AADs `reviews.comment`, `review_reports.details`,
+  `review_reports.patient_response`, `review_reports.decision_reason` and `reviews.removed_reason`
+  (readers: `readComment`, `readReportDetails`, `readAuthorResponse`, `readDecisionReason`,
+  `readRemovedReason` in `src/lib/reviews.ts`). `decrypt()` passes plaintext through, so readers
+  can always call it. **WP5's exports** (`csv/reviews.csv`, `review_reports`) should decrypt those
+  five columns; `scripts/encrypt-existing.ts` key rotation should include them.
 - Retention to define (WP5): `review_reports` (suggested: 6 months after the final decision, the
   appeal window), removed reviews' text (same), `profile_stats` (24 months).
 - No third-party requests on page load (map click-to-load, OSM links only); no cookies.
@@ -266,16 +295,21 @@ the practice and one notice from the public (flagship practice); two weeks of pr
 
 ## Requests to other packages
 
-- **WP6** `team/[id]`: render `<PractitionerForm>` also for the linked practitioner (see above);
-  CSP `frame-src https://www.openstreetmap.org`.
-- **WP6** `src/lib/security.test.ts` and the lead's `actions/_shared.test.ts`: `setReviewPublished`
-  no longer exists (acceptance: only `replyToReview` and `reportReview`); use
-  `reportReview(id, "other", "…")` instead.
+- **WP6** `team/[id]` (**integration blocker**): render `<PractitionerForm>` also for the linked
+  practitioner (see above); CSP `frame-src https://www.openstreetmap.org`.
+- **WP6** `src/lib/security.test.ts` and the lead's `actions/_shared.test.ts` (**merge blocker**:
+  typecheck and 4 tests fail until then): `setReviewPublished` no longer exists (acceptance: only
+  `replyToReview` and `reportReview`); use `reportReview(id, "defamation", "details…")` instead.
+- **WP1** `BookingFlow` (`time.practitionerOption`) and `a/[token]/page.tsx`, **WP6**
+  `team/page.tsx` and `team/[id]/page.tsx`: `practitioner.specialty` may now be empty; fall back to
+  `marketplace.profile.defaultSpecialty`.
 - **WP1** `sitemap.ts`: also require `profileApprovedAt IS NOT NULL` (use `listedPractitioner()`),
   otherwise it lists practitioners whose page is a 404. `BookingFlow.test.ts`: add `"catalog"` (and
   `"privacy"`) to the test's namespaces, as the booking pages do.
-- **WP5**: decrypt the encrypted review columns in exports; retention keys above; Sorriso-controller
-  processing in `roles.ts`.
+- **WP5**: decrypt the encrypted review columns in exports (now five, with
+  `review_reports.decision_reason` and `reviews.removed_reason`); retention keys above;
+  Sorriso-controller processing in `roles.ts`. **WP6** `scripts/encrypt-existing.ts`: include the
+  five columns (with their AADs) in key rotation.
 - **Lead**: dedicated audit actions `practitioner.marketplace.opt_out` and
   `practitioner.albo.verify` (currently recorded as `practitioner.profile.approve`); FISDE,
   Casagit, Allianz in the funds data.

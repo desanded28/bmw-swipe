@@ -65,12 +65,15 @@ export default {
     heading: "Waitlist: tell us when you could come",
     from: "From",
     until: "Until",
+    /** The hint under an empty "Until": the end date that is sent instead ({date} as far ahead as the practice books online). */
+    untilDefault: "Optional. If you leave it empty, we'll look until {date}.",
     partOfDay: "Time of day",
     any: "Any time",
     mornings: "Mornings",
     afternoons: "Afternoons",
     submit: "Notify me",
     done: "You're on the waitlist. If a matching time frees up we'll message you straight away: the first to book gets it.",
+    doneRange: "We'll look for times from {from} to {to}.",
   },
   details: {
     heading: "Your details",

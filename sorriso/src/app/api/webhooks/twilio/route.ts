@@ -6,9 +6,11 @@ import { twiml, verifyTwilioWebhook, webhookChannel } from "@/lib/twilio";
 /**
  * Twilio inbound webhook for SMS and WhatsApp replies.
  * Configure your Twilio number / WhatsApp sender "A message comes in" → POST {APP_URL}/api/webhooks/twilio
- * We answer inline with TwiML (no extra API call, no extra latency). The reply is matched to one
- * practice: the one whose own number (organizations.inboundNumber) received it, else the one that
- * last texted this number on the shared sender (src/lib/inbound.ts).
+ * The reply is matched to one practice: the one whose own number (organizations.inboundNumber)
+ * received it, else the one that last texted this number from the shared sender
+ * (src/lib/inbound.ts). The automatic answer is sent through the Messages API, not as an inline
+ * TwiML <Message>: an inline answer's Twilio copy has a SID we never learn, so it could never be
+ * deleted after privacy.retention.providerMessageDays. The TwiML response is therefore empty.
  */
 export async function POST(req: Request) {
   const form = await req.formData();
@@ -19,7 +21,7 @@ export async function POST(req: Request) {
   if (!check.ok) return new Response("Invalid signature", { status: check.status });
 
   try {
-    const result = await handleInboundMessage({
+    await handleInboundMessage({
       channel,
       from: params.From ?? "",
       to: params.To ?? null,
@@ -28,7 +30,7 @@ export async function POST(req: Request) {
       providerId: params.MessageSid ?? null,
       replyMode: "return",
     });
-    return twiml(result.reply);
+    return twiml(null);
   } catch (err) {
     // Never echo the error (it may quote the message); Twilio retries on 5xx.
     logError("twilio-webhook", err, { channel });

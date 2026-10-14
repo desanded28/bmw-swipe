@@ -14,6 +14,8 @@ import { requirePermission } from "@/lib/permissions";
 import { RETENTION_LIMITS } from "@/lib/privacy/settings";
 import { monthsAgo } from "@/lib/privacy/retention";
 import { filterQuery, loadAuditRows, parseAuditFilter } from "./query";
+import { ComplianceBanner } from "@/components/privacy-admin/ComplianceBanner";
+import { gatePage } from "@/lib/privacy/gates";
 
 export async function generateMetadata(): Promise<Metadata> {
   return { title: getT(await getStaffLocale(), "privacyAdmin")("audit.title") };
@@ -27,6 +29,7 @@ const PAGE = 100;
  */
 export default async function AuditLogPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const s = await requirePermission("audit.read");
+  const banner = await gatePage(s);
   const locale = await getStaffLocale();
   const t = getT(locale, "privacyAdmin");
   const tz = s.org.timezone;
@@ -55,6 +58,7 @@ export default async function AuditLogPage({ searchParams }: { searchParams: Pro
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
+      <ComplianceBanner state={banner} />
       <PageHeader
         title={t("audit.title")}
         description={t("audit.description")}

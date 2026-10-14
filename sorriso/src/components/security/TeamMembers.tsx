@@ -16,6 +16,8 @@ export type MemberRow = {
   mfa: boolean;
   instructionsAccepted: boolean;
   you: boolean;
+  /** Also a member of another practice, or a platform admin: no two-step reset from here. */
+  sharedAccount?: boolean;
 };
 export type InviteRow = { id: string; email: string; role: MembershipRole; expires: string };
 
@@ -39,66 +41,9 @@ export function TeamMembers({
   return (
     <div className="space-y-6">
       <ul className="divide-y divide-slate-100">
-        {members.map((m) => {
-          const editable = canManage && !m.you && (isOwner || m.role !== "owner");
-          return (
-            <li key={m.userId} className="flex flex-wrap items-center gap-3 py-3 text-sm">
-              <div className="min-w-0 flex-1">
-                <p className="flex flex-wrap items-center gap-2 font-semibold">
-                  {m.name}
-                  {m.you ? <Badge tone="brand">{t("team.you")}</Badge> : null}
-                </p>
-                <p className="truncate text-xs text-slate-500">{m.email}</p>
-                <p className="mt-1 flex flex-wrap gap-1.5">
-                  <Badge tone={m.mfa ? "green" : "amber"}>
-                    {m.mfa ? <ShieldCheck size={12} aria-hidden /> : <ShieldOff size={12} aria-hidden />}
-                    {t(m.mfa ? "team.mfaOn" : "team.mfaOff")}
-                  </Badge>
-                  {!m.instructionsAccepted ? <Badge tone="amber">{t("team.instructionsPending")}</Badge> : null}
-                </p>
-              </div>
-              {editable ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <Select
-                    aria-label={t("team.changeRole", { name: m.name })}
-                    value={m.role}
-                    disabled={pending}
-                    className="h-8 w-auto py-1 text-[13px]"
-                    onChange={(e) => run(() => changeMemberRole(m.userId, e.target.value as MembershipRole))}
-                  >
-                    {roles.map((r) => (
-                      <option key={r} value={r}>
-                        {tc(`roles.${r}`)}
-                      </option>
-                    ))}
-                  </Select>
-                  {m.mfa ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      disabled={pending}
-                      onClick={() => window.confirm(t("team.resetMfaConfirm", { name: m.name })) && run(() => resetMemberMfa(m.userId))}
-                    >
-                      {t("team.resetMfa")}
-                    </Button>
-                  ) : null}
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="danger"
-                    disabled={pending}
-                    onClick={() => window.confirm(t("team.removeConfirm", { name: m.name })) && run(() => removeMember(m.userId))}
-                  >
-                    <UserMinus size={14} aria-hidden /> {t("team.remove")}
-                  </Button>
-                </div>
-              ) : (
-                <Badge tone={m.role === "owner" ? "brand" : "slate"}>{tc(`roles.${m.role}`)}</Badge>
-              )}
-            </li>
-          );
-        })}
+        {members.map((m) => (
+          <Member key={m.userId} m={m} roles={roles} editable={canManage && !m.you && (isOwner || m.role !== "owner")} />
+        ))}
       </ul>
 
       {canManage && invites.length ? (
@@ -130,6 +75,95 @@ export function TeamMembers({
 
       {canManage ? <InviteForm roles={roles} /> : null}
     </div>
+  );
+}
+
+/**
+ * One member. Picking a role in the list changes nothing by itself: the "Change role" button
+ * applies it after a confirmation (arrowing through a closed select fires a change per option,
+ * and a role change must never happen on input alone, WCAG 3.2.2).
+ */
+function Member({ m, roles, editable }: { m: MemberRow; roles: readonly MembershipRole[]; editable: boolean }) {
+  const t = useT("security");
+  const tc = useT("common");
+  const { run, pending } = useSecureAction();
+  const [role, setRole] = useState<MembershipRole>(m.role);
+  const selectId = `role-${m.userId}`;
+  return (
+    <li className="flex flex-wrap items-center gap-3 py-3 text-sm">
+      <div className="min-w-0 flex-1">
+        <p className="flex flex-wrap items-center gap-2 font-semibold">
+          {m.name}
+          {m.you ? <Badge tone="brand">{t("team.you")}</Badge> : null}
+        </p>
+        <p className="truncate text-xs text-slate-500">{m.email}</p>
+        <p className="mt-1 flex flex-wrap gap-1.5">
+          <Badge tone={m.mfa ? "green" : "amber"}>
+            {m.mfa ? <ShieldCheck size={12} aria-hidden /> : <ShieldOff size={12} aria-hidden />}
+            {t(m.mfa ? "team.mfaOn" : "team.mfaOff")}
+          </Badge>
+          {!m.instructionsAccepted ? <Badge tone="amber">{t("team.instructionsPending")}</Badge> : null}
+        </p>
+        {editable && m.mfa && m.sharedAccount ? <p className="mt-1 text-xs text-slate-500">{t("team.sharedAccount")}</p> : null}
+      </div>
+      {editable ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor={selectId} className="sr-only">
+            {t("team.changeRole", { name: m.name })}
+          </label>
+          <Select
+            id={selectId}
+            value={role}
+            disabled={pending}
+            className="h-8 w-auto py-1 text-[13px]"
+            onChange={(e) => setRole(e.target.value as MembershipRole)}
+          >
+            {roles.map((r) => (
+              <option key={r} value={r}>
+                {tc(`roles.${r}`)}
+              </option>
+            ))}
+          </Select>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={pending || role === m.role}
+            onClick={() =>
+              window.confirm(t("team.changeRoleConfirm", { name: m.name, role: tc(`roles.${role}`) })) &&
+              run(
+                () => changeMemberRole(m.userId, role),
+                (r) => !r.ok && setRole(m.role),
+              )
+            }
+          >
+            {t("team.changeRoleSubmit")}
+          </Button>
+          {m.mfa && !m.sharedAccount ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={pending}
+              onClick={() => window.confirm(t("team.resetMfaConfirm", { name: m.name })) && run(() => resetMemberMfa(m.userId))}
+            >
+              {t("team.resetMfa")}
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            size="sm"
+            variant="danger"
+            disabled={pending}
+            onClick={() => window.confirm(t("team.removeConfirm", { name: m.name })) && run(() => removeMember(m.userId))}
+          >
+            <UserMinus size={14} aria-hidden /> {t("team.remove")}
+          </Button>
+        </div>
+      ) : (
+        <Badge tone={m.role === "owner" ? "brand" : "slate"}>{tc(`roles.${m.role}`)}</Badge>
+      )}
+    </li>
   );
 }
 

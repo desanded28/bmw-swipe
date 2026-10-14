@@ -34,6 +34,8 @@ async function messageFor(code: PracticeReviewError): Promise<string> {
       return t("reply.tooLong");
     case "confirm_required":
       return t("reply.confirmRequired");
+    case "health_terms":
+      return t("reply.healthTerms");
     case "already":
       return t("reportForm.already");
     case "final":
@@ -46,7 +48,8 @@ async function messageFor(code: PracticeReviewError): Promise<string> {
 /**
  * Publish, change or (with an empty text) remove the practice's public reply. `confirmed` is the
  * staff member's statement that the reply reveals nothing about the patient's health or
- * treatment: without it nothing is published.
+ * treatment: without it nothing is published. A reply with health or contact details is refused
+ * (health_terms) whatever the browser checked.
  */
 export async function replyToReview(id: string, reply: string, confirmed: boolean = false): Promise<ActionResult> {
   return guard(

@@ -3,11 +3,14 @@
 import { BellPlus, CheckCircle2, LoaderCircle } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { ProcessingContext } from "@/db/enums";
+import type { Locale } from "@/i18n/config";
+import { fmtDay } from "@/i18n/datefmt";
 import { rich } from "@/i18n/rich";
 import { useLocale, useT } from "@/i18n/provider";
 import type { PublicClinic } from "@/lib/directory";
 import { normalizePhone } from "@/lib/phone";
 import { noticeVersionFor } from "@/lib/privacy/booking-rules";
+import { addDays, isDateString } from "@/lib/time";
 import { Button, Field, Input, Select } from "../ui";
 import {
   INITIAL_PRIVACY,
@@ -17,7 +20,15 @@ import {
   type BookingPrivacyState,
   type RelationState,
 } from "./contracts";
-import { DIAL_CODES, apiErrorText, apiFieldErrors, focusFirstInvalid, type DetailsForm } from "./DetailsStep";
+import {
+  DIAL_CODES,
+  NoticeOutdatedReload,
+  apiErrorText,
+  apiFieldErrors,
+  focusFirstInvalid,
+  type ApiError,
+  type DetailsForm,
+} from "./DetailsStep";
 import { PatientRelationSection } from "./PatientRelationSection";
 import { PrivacySection } from "./PrivacySection";
 
@@ -26,6 +37,7 @@ export type WaitlistState = {
   open: boolean;
   done: boolean;
   earliestDate: string;
+  /** "" = open-ended: as far ahead as the practice books online (waitlistRange). */
   latestDate: string;
   partOfDay: "any" | "morning" | "afternoon";
   /** Its own choices: a consent ticked for the booking is not reused for the waitlist. */
@@ -44,6 +56,63 @@ export function initialWaitlist(today: string): WaitlistState {
     privacy: INITIAL_PRIVACY,
     relation: INITIAL_RELATION,
     relationAsked: false,
+  };
+}
+
+/**
+ * The dates the waitlist entry covers. The API needs an end date and matches a freed time only
+ * inside the range, so an empty "Until" is sent as the practice's online booking horizon counted
+ * from "From" (never as "From" itself, which would wait for that single day only). The form shows
+ * this end date to the patient before and after sending.
+ */
+export function waitlistRange(
+  value: Pick<WaitlistState, "earliestDate" | "latestDate">,
+  maxAdvanceDays: number,
+): { earliestDate: string; latestDate: string } {
+  const latest = value.latestDate || (isDateString(value.earliestDate) ? addDays(value.earliestDate, Math.max(1, maxAdvanceDays)) : "");
+  return { earliestDate: value.earliestDate, latestDate: latest };
+}
+
+/** The body of POST /api/v1/clinics/:slug/waitlist (pure, unit-tested). */
+export function waitlistBody(i: {
+  clinic: PublicClinic;
+  serviceId: string;
+  practitionerId: string;
+  locationId: string;
+  context: ProcessingContext;
+  practiceRef?: string | null;
+  contact: DetailsForm;
+  value: WaitlistState;
+  /** The page language: the language of the privacy notice the patient read. */
+  locale: Locale;
+}) {
+  const { contact, value } = i;
+  return {
+    serviceId: i.serviceId,
+    practitionerId: i.practitionerId || null,
+    locationId: i.locationId || null,
+    ...waitlistRange(value, i.clinic.booking.maxAdvanceDays),
+    partOfDay: value.partOfDay,
+    patient: {
+      firstName: contact.firstName,
+      lastName: contact.lastName,
+      phone: contact.phone.trim() || null,
+      phoneCountry: contact.phoneCountry,
+      email: contact.email.trim() || null,
+      // The same field as the booking form's: required for a minor, optional otherwise.
+      birthDate: contact.birthDate || null,
+      locale: contact.locale,
+    },
+    privacy: privacyPayload(value.privacy, {
+      clinic: i.clinic,
+      context: i.context,
+      preferredChannel: "sms",
+      noticeVersion: noticeVersionFor(i.context),
+      locale: i.locale,
+    }),
+    relation: value.relationAsked ? relationPayload(value.relation) : undefined,
+    practiceRef: i.practiceRef ?? null,
+    website: contact.website,
   };
 }
 
@@ -87,7 +156,8 @@ export function WaitlistOffer({
   const alertRef = useRef<HTMLDivElement>(null);
   const [sending, setSending] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [alert, setAlert] = useState<{ text: string; n: number } | null>(null);
+  /** The error summary; `reload` when the privacy notice changed since the page was loaded. */
+  const [alert, setAlert] = useState<{ text: string; n: number; reload?: boolean } | null>(null);
   /** What to focus after the next render: the form heading on open, the opener on close, an invalid field. */
   const [focus, setFocus] = useState<{ what: "heading" | "opener" | "invalid"; n: number } | null>(null);
   const ids = { heading: `${uid}-heading`, opener: `${uid}-opener` };
@@ -99,16 +169,25 @@ export function WaitlistOffer({
   }, [focus, ids.heading, ids.opener]);
 
   const request = (what: "heading" | "opener" | "invalid") => setFocus((f) => ({ what, n: (f?.n ?? 0) + 1 }));
-  const fail = (text: string) => {
-    setAlert((a) => ({ text, n: (a?.n ?? 0) + 1 }));
+  const fail = (text: string, reload = false) => {
+    setAlert((a) => ({ text, n: (a?.n ?? 0) + 1, reload }));
     request("invalid");
   };
+  const range = waitlistRange(value, clinic.booking.maxAdvanceDays);
+  const day = (d: string) => fmtDay(d, "medium", locale);
+  const minor = value.relation.bookedFor === "minor";
 
   if (value.done)
     return (
-      <p role="status" className="mt-5 flex gap-2 rounded-xl bg-brand-50 p-4 text-sm font-medium text-brand-800 ring-1 ring-brand-200">
-        <CheckCircle2 size={18} className="shrink-0" aria-hidden /> {t("waitlist.done")}
-      </p>
+      <div role="status" className="mt-5 flex gap-2 rounded-xl bg-brand-50 p-4 text-sm font-medium text-brand-800 ring-1 ring-brand-200">
+        <CheckCircle2 size={18} className="shrink-0" aria-hidden />
+        <p>
+          {t("waitlist.done")}
+          {range.latestDate ? (
+            <span className="mt-1 block font-normal">{t("waitlist.doneRange", { from: day(range.earliestDate), to: day(range.latestDate) })}</span>
+          ) : null}
+        </p>
+      </div>
     );
 
   if (!value.open)
@@ -142,8 +221,11 @@ export function WaitlistOffer({
     if (!contact.phone.trim() && !contact.email.trim()) errs.phone = te("fields.contactRequired");
     else if (contact.phone.trim() && !normalizePhone(contact.phone, contact.phoneCountry)) errs.phone = te("fields.invalidPhone");
     if (contact.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact.email.trim())) errs.email = te("fields.invalidEmail");
-    if (!value.earliestDate) errs.earliestDate = te("fields.invalidDate");
-    if (value.latestDate && value.latestDate < value.earliestDate) errs.latestDate = te("fields.dateOrder");
+    if (contact.birthDate && !isDateString(contact.birthDate)) errs.birthDate = te("fields.invalidDate");
+    else if (minor && !contact.birthDate) errs.birthDate = te("api.birthdate_required");
+    if (!isDateString(value.earliestDate)) errs.earliestDate = te("fields.invalidDate");
+    if (value.latestDate && !isDateString(value.latestDate)) errs.latestDate = te("fields.invalidDate");
+    else if (value.latestDate && value.latestDate < value.earliestDate) errs.latestDate = te("fields.dateOrder");
     if (context === "marketplace" && !value.privacy.platformConsent) errs.platformConsent = te("fields.consentRequired");
     setErrors(errs);
     const count = Object.keys(errs).length;
@@ -155,39 +237,17 @@ export function WaitlistOffer({
       const res = await fetch(`/api/v1/clinics/${clinic.org.slug}/waitlist`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          serviceId,
-          practitionerId: practitionerId || null,
-          locationId: locationId || null,
-          earliestDate: value.earliestDate,
-          latestDate: value.latestDate || value.earliestDate,
-          partOfDay: value.partOfDay,
-          patient: {
-            firstName: contact.firstName,
-            lastName: contact.lastName,
-            phone: contact.phone.trim() || null,
-            phoneCountry: contact.phoneCountry,
-            email: contact.email.trim() || null,
-            locale: contact.locale,
-          },
-          privacy: privacyPayload(value.privacy, {
-            clinic,
-            context,
-            preferredChannel: "sms",
-            noticeVersion: noticeVersionFor(context),
-            locale,
-          }),
-          relation: value.relationAsked ? relationPayload(value.relation) : undefined,
-          practiceRef: practiceRef ?? null,
-          website: contact.website,
-        }),
+        body: JSON.stringify(
+          waitlistBody({ clinic, serviceId, practitionerId, locationId, context, practiceRef, contact, value, locale }),
+        ),
       });
       if (!res.ok) {
-        const json = (await res.json().catch(() => null)) as { error?: Parameters<typeof apiFieldErrors>[1] } | null;
+        const json = (await res.json().catch(() => null)) as { error?: ApiError } | null;
         const fields = apiFieldErrors(te, json?.error);
         const n = Object.keys(fields).length;
         setErrors(fields);
-        return fail(n ? te("checkFields", { count: n }) : apiErrorText(te, json?.error?.code));
+        const code = json?.error?.code;
+        return fail(n ? te("checkFields", { count: n }) : apiErrorText(te, code), code === "notice_outdated");
       }
       onChange({ done: true });
     } catch {
@@ -202,18 +262,21 @@ export function WaitlistOffer({
       <h3 id={ids.heading} tabIndex={-1} className="text-sm font-semibold">
         {t("waitlist.heading")}
       </h3>
-      {/* The waitlist form asks no birth date yet: WP4 adds it with the minor variant. */}
       <PatientRelationSection
         value={value.relation}
         onChange={(relation) => onChange({ relation, relationAsked: true })}
-        birthDate=""
+        birthDate={contact.birthDate}
         errors={errors}
       />
       <div className="grid gap-3 sm:grid-cols-3">
         <Field label={t("waitlist.from")} error={errors.earliestDate}>
           <Input type="date" min={today} value={value.earliestDate} onChange={(e) => onChange({ earliestDate: e.target.value })} required />
         </Field>
-        <Field label={t("waitlist.until")} hint={tc("words.optional")} error={errors.latestDate}>
+        <Field
+          label={t("waitlist.until")}
+          hint={!value.latestDate && range.latestDate ? t("waitlist.untilDefault", { date: day(range.latestDate) }) : tc("words.optional")}
+          error={errors.latestDate}
+        >
           <Input
             type="date"
             min={value.earliestDate || today}
@@ -261,9 +324,22 @@ export function WaitlistOffer({
           )}
         </Field>
       </div>
-      <Field label={t("details.email")} hint={tc("words.optional")} error={errors.email}>
-        <Input type="email" autoComplete="email" value={contact.email} onChange={(e) => onContactChange({ email: e.target.value })} />
-      </Field>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label={t("details.email")} hint={tc("words.optional")} error={errors.email}>
+          <Input type="email" autoComplete="email" value={contact.email} onChange={(e) => onContactChange({ email: e.target.value })} />
+        </Field>
+        {/* Shared with the booking form; a minor's birth date is required (the API answers birthdate_required). */}
+        <Field label={t("details.birthDate")} hint={minor ? undefined : tc("words.optional")} error={errors.birthDate}>
+          <Input
+            type="date"
+            autoComplete="bday"
+            max={today}
+            value={contact.birthDate}
+            onChange={(e) => onContactChange({ birthDate: e.target.value })}
+            aria-required={minor || undefined}
+          />
+        </Field>
+      </div>
       <PrivacySection
         clinic={clinic}
         context={context}
@@ -277,6 +353,7 @@ export function WaitlistOffer({
       {alert ? (
         <div key={alert.n} ref={alertRef} role="alert" tabIndex={-1} className="rounded-lg bg-red-50 p-3 text-sm font-medium text-red-700">
           {alert.text}
+          {alert.reload ? <NoticeOutdatedReload /> : null}
         </div>
       ) : null}
       <div className="flex gap-2">

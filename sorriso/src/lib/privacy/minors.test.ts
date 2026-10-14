@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BookingRelationInput } from "./consent";
-import { ageBand, noticeKindFor, relationFormIssue, validateBookingRelation } from "./minors";
+import { ageBand, noticeKindFor, OTHER_ADULT_ON_MARKETPLACE, relationFormIssue, validateBookingRelation } from "./minors";
 
 // 9:00 in Rome on 4 March 2030.
 const AT = new Date("2030-03-04T08:00:00Z");
@@ -68,6 +68,8 @@ describe("validateBookingRelation", () => {
       field: "bookedFor",
     });
     expect(validateBookingRelation({ bookedFor: "other_adult" }, "1980-01-01", AT, "practice", AT)).toEqual({ ok: true });
+    // Until the held booking (adult-confirmation.ts) is wired into booking.ts.
+    expect(OTHER_ADULT_ON_MARKETPLACE).toBe("refused");
   });
 });
 

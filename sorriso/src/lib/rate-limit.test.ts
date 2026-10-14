@@ -11,16 +11,61 @@ beforeAll(migrateOnce);
 const MIN = 60_000;
 
 describe("clientIp", () => {
-  it("prefers the platform header, then x-real-ip, then the last x-forwarded-for hop", () => {
-    expect(clientIp(new Headers({ "x-vercel-forwarded-for": "203.0.113.7", "x-real-ip": "198.51.100.1", "x-forwarded-for": "1.1.1.1" }))).toBe(
-      "203.0.113.7",
-    );
-    expect(clientIp(new Headers({ "x-real-ip": "198.51.100.1", "x-forwarded-for": "1.1.1.1" }))).toBe("198.51.100.1");
-    // The client can prepend anything; only the hop our proxy appended is trusted.
-    expect(clientIp(new Headers({ "x-forwarded-for": "6.6.6.6, 10.0.0.1, 203.0.113.9" }))).toBe("203.0.113.9");
-    expect(clientIp(new Headers({ "x-forwarded-for": "2001:db8::1" }))).toBe("2001:db8::1");
-    expect(clientIp(new Headers())).toBe("local");
-    expect(clientIp(new Headers({ "x-real-ip": "<script>" }))).toBe("local");
+  const withEnv = (env: Record<string, string | undefined>, fn: () => void) => {
+    const before = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+    const set = (vals: Record<string, string | undefined>) => {
+      for (const [k, v] of Object.entries(vals)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    };
+    set(env);
+    try {
+      fn();
+    } finally {
+      set(before);
+    }
+  };
+
+  it("self-hosted: the last x-forwarded-for hop (the one our proxy appended), whatever else the client sends", () => {
+    withEnv({ VERCEL: undefined, TRUSTED_IP_HEADER: undefined }, () => {
+      // Headers a proxy that doesn't know them passes through untouched: not believed.
+      expect(clientIp(new Headers({ "x-vercel-forwarded-for": "203.0.113.7", "x-real-ip": "198.51.100.1", "x-forwarded-for": "1.1.1.1" }))).toBe(
+        "1.1.1.1",
+      );
+      expect(clientIp(new Headers({ "x-real-ip": "198.51.100.1", "x-forwarded-for": "1.1.1.1" }))).toBe("1.1.1.1");
+      // The client can prepend anything; only the hop our proxy appended is trusted.
+      expect(clientIp(new Headers({ "x-forwarded-for": "6.6.6.6, 10.0.0.1, 203.0.113.9" }))).toBe("203.0.113.9");
+      expect(clientIp(new Headers({ "x-forwarded-for": "2001:db8::1" }))).toBe("2001:db8::1");
+      // No x-forwarded-for at all (never under Next, which fills it in): x-real-ip.
+      expect(clientIp(new Headers({ "x-real-ip": "198.51.100.1" }))).toBe("198.51.100.1");
+      expect(clientIp(new Headers())).toBe("local");
+      expect(clientIp(new Headers({ "x-real-ip": "<script>" }))).toBe("local");
+    });
+  });
+
+  it("on Vercel: x-vercel-forwarded-for, which the platform's edge overwrites", () => {
+    withEnv({ VERCEL: "1", TRUSTED_IP_HEADER: undefined }, () => {
+      expect(clientIp(new Headers({ "x-vercel-forwarded-for": "203.0.113.7", "x-real-ip": "198.51.100.1", "x-forwarded-for": "1.1.1.1" }))).toBe(
+        "203.0.113.7",
+      );
+      expect(clientIp(new Headers({ "x-real-ip": "198.51.100.1", "x-forwarded-for": "1.1.1.1" }))).toBe("1.1.1.1");
+    });
+  });
+
+  it("TRUSTED_IP_HEADER names the one header to believe", () => {
+    withEnv({ VERCEL: undefined, TRUSTED_IP_HEADER: "X-Real-IP" }, () => {
+      expect(clientIp(new Headers({ "x-real-ip": "198.51.100.1", "x-forwarded-for": "1.1.1.1", "x-vercel-forwarded-for": "203.0.113.7" }))).toBe(
+        "198.51.100.1",
+      );
+      expect(clientIp(new Headers({ "x-forwarded-for": "1.1.1.1" }))).toBe("local");
+    });
+    withEnv({ VERCEL: "1", TRUSTED_IP_HEADER: "cf-connecting-ip" }, () => {
+      expect(clientIp(new Headers({ "cf-connecting-ip": "2001:db8::5", "x-vercel-forwarded-for": "203.0.113.7" }))).toBe("2001:db8::5");
+    });
+    withEnv({ VERCEL: undefined, TRUSTED_IP_HEADER: "x-forwarded-for" }, () => {
+      expect(clientIp(new Headers({ "x-forwarded-for": "6.6.6.6, 203.0.113.9", "x-real-ip": "198.51.100.1" }))).toBe("203.0.113.9");
+    });
   });
 });
 

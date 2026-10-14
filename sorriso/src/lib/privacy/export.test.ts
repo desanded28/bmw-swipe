@@ -10,12 +10,14 @@ import { recordConsent } from "./consent";
 import {
   buildPatientExport,
   EXPORT_SCHEMA_VERSION,
+  exportSchemaFields,
   ORG_EXPORT_TABLES,
   orgExportStream,
   patientExportJsonSchema,
   patientExportSchema,
 } from "./export";
 import { fhirUuid } from "./fhir";
+import privacyAdmin from "@/i18n/messages/en/privacyAdmin";
 
 // The dashboard route's session and step-up come from WP6's modules: drive them from the test.
 const auth = vi.hoisted(() => ({ session: null as unknown, stepUp: "ok" as "ok" | "required" | "redirect" }));
@@ -144,6 +146,21 @@ describe("buildPatientExport", () => {
     const schema = patientExportJsonSchema() as { properties: Record<string, unknown>; required: string[] };
     expect(Object.keys(schema.properties)).toEqual(expect.arrayContaining(["patient", "appointments", "consents", "accessLog"]));
     expect(schema.required).toContain("patient");
+  });
+
+  it("has a translatable description for every described field of the documentation page", () => {
+    const fields = exportSchemaFields();
+    const described = fields.filter((f) => f.description);
+    expect(described.length).toBeGreaterThan(20);
+    const keys = privacyAdmin.exportSchema.descriptions as Record<string, string>;
+    for (const f of described) {
+      expect(f.descriptionKey, f.path).toBeTruthy();
+      expect(keys[f.descriptionKey!], `privacyAdmin.exportSchema.descriptions.${f.descriptionKey} (${f.path})`).toBeDefined();
+    }
+    // Shared descriptions (every date and instant) use one key each.
+    expect(fields.find((f) => f.path === "generatedAt")?.descriptionKey).toBe("instant");
+    expect(fields.find((f) => f.path === "patient.birthDate")?.descriptionKey).toBe("date");
+    expect(fields.find((f) => f.path === "accessLog[].actorRole")?.descriptionKey).toBe("accessLogActorRole");
   });
 });
 

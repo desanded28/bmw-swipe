@@ -33,7 +33,7 @@ export function RebookChooser({
   clinic: string;
   options: RebookOption[];
   callRequested: boolean;
-  /** The practice's booking page for this treatment, when it can be booked online. */
+  /** This page with more offered times (every choice still moves this visit), when there may be more. */
   moreTimesHref: string | null;
 }) {
   const t = useT("care");
@@ -133,10 +133,11 @@ export function RebookChooser({
         </h2>
         {options.length ? (
           <ul className="space-y-3">
-            {options.map((o) => (
+            {options.map((o, i) => (
               <li key={o.key}>
                 <Card className="flex flex-wrap items-center justify-between gap-3 p-4">
-                  <div className="min-w-0">
+                  {/* The button's name is its visible text; the time, practitioner and office describe it. */}
+                  <div id={`${uid}-o${i}`} className="min-w-0">
                     <p className="flex items-center gap-2 font-bold">
                       <CalendarCheck size={18} className="shrink-0 text-brand-700" aria-hidden /> {o.when}
                     </p>
@@ -152,7 +153,7 @@ export function RebookChooser({
                     className="w-full sm:w-auto"
                     disabled={Boolean(busy)}
                     onClick={() => choose(o.key)}
-                    aria-label={t("rebook.chooseLabel", { when: o.when, practitioner: o.practitioner })}
+                    aria-describedby={`${uid}-o${i}`}
                   >
                     {busy === o.key ? <LoaderCircle size={16} className="animate-spin" aria-hidden /> : null}
                     {busy === o.key ? t("rebook.choosing") : t("rebook.choose")}
