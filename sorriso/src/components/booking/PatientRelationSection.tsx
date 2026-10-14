@@ -4,7 +4,7 @@ import { Baby, Info, User, Users } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { BOOKED_FOR, GUARDIAN_RELATIONS, type BookedFor } from "@/db/enums";
 import { useT } from "@/i18n/provider";
-import { ageBand, relationFormIssue } from "@/lib/privacy/minors";
+import { ageBand, OTHER_ADULT_ON_MARKETPLACE, relationFormIssue } from "@/lib/privacy/minors";
 import { Field, Input, cx } from "../ui";
 import type { PatientRelationSectionProps, RelationState } from "./contracts";
 
@@ -22,15 +22,18 @@ type LocalField = "guardian.name" | "guardian.phone" | "guardian.email" | "booke
  *   legal guardian gives their name, relation and the contact the child's messages go to.
  * - Another adult: the patient fields below are the adult's own; here the booker gives their name
  *   and, optionally, a contact. It is stored with the appointment only (booked_by_*), never as the
- *   patient's contact. On Sorriso's search pages the server refuses it: only the adult can give
- *   the Art. 9 consent (other_adult_must_book_themselves).
+ *   patient's contact. On Sorriso's search pages only the adult can give the Art. 9 consent, so
+ *   (otherAdultNote, explained up front when the form passes `context` and `variant`) a booking is
+ *   held until they confirm it at their own contact (OTHER_ADULT_ON_MARKETPLACE "held"; without one
+ *   of their own the server answers other_adult_contact_required), and a waitlist entry, which has
+ *   no hold, is refused (other_adult_must_book_themselves, shown on the group).
  *
  * "Me" is preselected and reported once on mount (PatientRelationSectionProps: a section that
  * preselects an answer must report it), so the server checks the under-14 rule for every booking.
  * Fields are checked as they are left (required name, a contact, the email's shape); the server's
  * answers arrive in `errors` and win.
  */
-export function PatientRelationSection({ value, onChange, birthDate, errors }: PatientRelationSectionProps) {
+export function PatientRelationSection({ value, onChange, birthDate, errors, context, variant }: PatientRelationSectionProps) {
   const t = useT("privacy");
   const te = useT("errors");
   const id = useId();
@@ -66,6 +69,7 @@ export function PatientRelationSection({ value, onChange, birthDate, errors }: P
   };
   const err = (f: LocalField) => errors[f] ?? (touched[f] ? local[f] : undefined);
   const groupError = errors.bookedFor;
+  const otherNote = otherAdultNote(context, variant, Boolean(groupError));
 
   return (
     <fieldset className="space-y-3">
@@ -196,7 +200,7 @@ export function PatientRelationSection({ value, onChange, birthDate, errors }: P
         {value.bookedFor === "other_adult" ? (
           <div className="space-y-3 rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200/70">
             <Note>{t("relation.other.intro")}</Note>
-            {groupError ? <Note tone="amber">{t("relation.other.marketplace")}</Note> : null}
+            {otherNote ? <Note tone={otherNote.tone}>{t(otherNote.key)}</Note> : null}
             <p className="text-[13px] font-semibold text-slate-700">{t("relation.other.heading")}</p>
             <div className="grid gap-3 sm:grid-cols-3">
               <Field label={t("relation.other.name")} error={err("bookedBy.name")}>
@@ -227,6 +231,28 @@ export function PatientRelationSection({ value, onChange, birthDate, errors }: P
       </div>
     </fieldset>
   );
+}
+
+/**
+ * What "Another adult" means where the form is: on Sorriso's search pages a booking is held for the
+ * adult's own confirmation (OTHER_ADULT_ON_MARKETPLACE "held") and a waitlist entry is refused;
+ * through the practice's own channels nothing more is needed. A form that doesn't pass `context`
+ * learns of the refusal only from the server's error on the group, which now only the waitlist
+ * (or the "refused" setting) gives.
+ */
+function otherAdultNote(
+  context: PatientRelationSectionProps["context"],
+  variant: PatientRelationSectionProps["variant"],
+  refusedByServer: boolean,
+): { key: "relation.other.marketplaceHeld" | "relation.other.marketplace" | "relation.other.marketplaceWaitlist"; tone: "slate" | "amber" } | null {
+  const held = OTHER_ADULT_ON_MARKETPLACE === "held";
+  if (context === "marketplace") {
+    if (variant === "waitlist") return { key: "relation.other.marketplaceWaitlist", tone: "amber" };
+    return held ? { key: "relation.other.marketplaceHeld", tone: "slate" } : { key: "relation.other.marketplace", tone: "amber" };
+  }
+  // The practice's own channels never refuse (or hold) a booking for another adult.
+  if (context !== undefined || !refusedByServer) return null;
+  return { key: held || variant === "waitlist" ? "relation.other.marketplaceWaitlist" : "relation.other.marketplace", tone: "amber" };
 }
 
 function Note({ children, tone = "slate" }: { children: React.ReactNode; tone?: "slate" | "amber" }) {

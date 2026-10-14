@@ -7,10 +7,11 @@ import { I18nProvider } from "@/i18n/provider";
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { getMessages } from "@/i18n/t";
 import type { PublicClinic } from "@/lib/directory";
-import { INITIAL_PRIVACY, INITIAL_RELATION, type PrivacySectionProps, type RelationState } from "../booking/contracts";
+import { INITIAL_PRIVACY, INITIAL_RELATION, type PatientRelationSectionProps, type PrivacySectionProps, type RelationState } from "../booking/contracts";
 import { ManagePrivacyCard } from "../booking/ManagePrivacyCard";
 import { PatientRelationSection } from "../booking/PatientRelationSection";
 import { PrivacySection } from "../booking/PrivacySection";
+import { OTHER_ADULT_ON_MARKETPLACE } from "@/lib/privacy/minors";
 
 /** The booking-form sections (WP4) as the book and embed pages render them: with the privacy and consents namespaces. */
 function render(node: ReactElement, locale: Locale = "en") {
@@ -88,7 +89,15 @@ describe("PrivacySection", () => {
   });
 
   it("adds the Art. 14 line when booking for another adult", () => {
-    expect(render(privacy({ relation: { ...INITIAL_RELATION, bookedFor: "other_adult" } }))).toContain("Art. 14 GDPR");
+    const forOther = { ...INITIAL_RELATION, bookedFor: "other_adult" as const };
+    // A booking sends them the practice's notice (sendBookedForYouNotice or the confirmation request).
+    const booking = render(privacy({ relation: forOther }));
+    expect(booking).toContain("Art. 14 GDPR");
+    expect(booking).toContain("we send them a message about this booking");
+    // A waitlist entry sends them nothing yet: the booker is asked to tell them.
+    const waitlist = render(privacy({ relation: forOther, variant: "waitlist" }));
+    expect(waitlist).toContain("Art. 14 GDPR");
+    expect(waitlist).not.toContain("we send them a message");
   });
 
   it("asks someone booking for another adult for no consent at all, and says why", () => {
@@ -101,17 +110,24 @@ describe("PrivacySection", () => {
     expect(checkboxes(whatsapp)).toHaveLength(0);
     expect(whatsapp).toContain("WhatsApp can&#x27;t be chosen for someone else");
     expect(whatsapp).not.toContain("Meta");
-    // On the marketplace, no Art. 9 box: only the patient can give it.
+    // On the marketplace, no Art. 9 box: only the patient can give it. A booking is held for them.
+    expect(OTHER_ADULT_ON_MARKETPLACE).toBe("held");
     const marketplace = render(privacy({ relation: forOther, context: "marketplace", errors: { platformConsent: "Please consent" } }));
     expect(checkboxes(marketplace)).toHaveLength(0);
-    expect(marketplace).toContain("adults book for themselves here");
+    expect(marketplace).toContain("They will get a message asking them to confirm this booking");
+    expect(marketplace).not.toContain("adults book for themselves here");
     expect(marketplace).toMatch(/role="alert"/);
     expect(marketplace).not.toContain("Please consent");
+    // The waitlist has no hold: there an adult joins for themselves.
+    const waitlist = render(privacy({ relation: forOther, context: "marketplace", variant: "waitlist" }));
+    expect(checkboxes(waitlist)).toHaveLength(0);
+    expect(waitlist).toContain("adults join the waiting list for themselves here");
+    expect(waitlist).not.toContain("They will get a message asking them to confirm");
   });
 });
 
-const relation = (value: RelationState, birthDate = "", errors: Record<string, string> = {}) =>
-  render(h(PatientRelationSection, { value, onChange: () => {}, birthDate, errors }));
+const relation = (value: RelationState, birthDate = "", errors: Record<string, string> = {}, where: Pick<PatientRelationSectionProps, "context" | "variant"> = {}) =>
+  render(h(PatientRelationSection, { value, onChange: () => {}, birthDate, errors, ...where }));
 
 describe("PatientRelationSection", () => {
   it("asks who the appointment is for, with Me preselected", () => {
@@ -136,10 +152,27 @@ describe("PatientRelationSection", () => {
   });
 
   it("asks who is booking for another adult, and shows the server's refusal on the group", () => {
-    const html = relation({ ...INITIAL_RELATION, bookedFor: "other_adult" }, "", { bookedFor: "Adults book their own appointments here." });
+    const forOther = { ...INITIAL_RELATION, bookedFor: "other_adult" as const };
+    const html = relation(forOther, "", { bookedFor: "Adults join the waiting list themselves here." });
     expect(html).toContain("Who is booking");
     expect(html).toMatch(/role="radiogroup"[^>]*aria-invalid="true"/);
-    expect(html).toContain("On Sorriso&#x27;s search pages, adults book for themselves.");
+    // Without a context, only the waitlist refuses now (bookings are held for the adult).
+    expect(html).toContain("adults join the waiting list for themselves");
+    // Through the practice's own channels: nothing more to explain.
+    expect(relation(forOther, "", {}, { context: "practice", variant: "booking" })).not.toContain("On Sorriso");
+  });
+
+  it("explains another adult up front on Sorriso's search pages: a booking is held for them, the waitlist refuses", () => {
+    const forOther = { ...INITIAL_RELATION, bookedFor: "other_adult" as const };
+    const booking = relation(forOther, "", {}, { context: "marketplace", variant: "booking" });
+    expect(booking).toContain("On Sorriso, they confirm this booking themselves");
+    expect(booking).toContain("not yours");
+    expect(booking).not.toMatch(/adults (book|join the waiting list) for themselves/);
+    const waitlist = relation(forOther, "", {}, { context: "marketplace", variant: "waitlist" });
+    expect(waitlist).toContain("adults join the waiting list for themselves");
+    expect(waitlist).not.toContain("they confirm this booking themselves");
+    // Nothing of this for the patient themselves.
+    expect(relation(INITIAL_RELATION, "", {}, { context: "marketplace", variant: "booking" })).not.toContain("On Sorriso");
   });
 });
 

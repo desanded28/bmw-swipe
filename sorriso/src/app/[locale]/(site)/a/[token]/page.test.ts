@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ManageAppointment } from "@/components/booking/ManageAppointment";
 import { db } from "@/db";
-import { appointments, auditLog, organizations, patients } from "@/db/schema";
+import { appointments, auditLog, organizations, patients, practitioners } from "@/db/schema";
 import { LOCALES } from "@/i18n/config";
 import { newId } from "@/lib/ids";
 import { issueManageToken } from "@/lib/links";
@@ -74,6 +74,14 @@ function findElement(node: ReactNode, type: unknown): ReactElement<Record<string
   return findElement((node.props as { children?: ReactNode }).children, type);
 }
 
+/** Every text in a server component's element tree (without rendering components). */
+function texts(node: ReactNode): string[] {
+  if (Array.isArray(node)) return node.flatMap(texts);
+  if (typeof node === "string" || typeof node === "number") return [String(node)];
+  if (!isValidElement(node)) return [];
+  return texts((node.props as { children?: ReactNode }).children);
+}
+
 describe("/[locale]/a/[token]", () => {
   it("shows a generic page for an unknown token, with nothing about any practice or patient", async () => {
     await createPractice();
@@ -137,5 +145,17 @@ describe("/[locale]/a/[token]", () => {
     const languages = meta.alternates?.languages as Record<string, string>;
     expect(Object.keys(languages).sort()).toEqual([...LOCALES, "x-default"].sort());
     expect(languages["x-default"]).toBe(`/a/${token}`);
+  });
+
+  it("names a practitioner whose specialty was left empty with the default specialty, in the page's language", async () => {
+    const { token, orgId } = await appointmentWithToken();
+    const shown = async () => texts(await open(token, "en"));
+    expect(await shown()).toContain("Dentist");
+    await db.update(practitioners).set({ specialty: "Orthodontist" }).where(eq(practitioners.orgId, orgId));
+    expect(await shown()).toContain("Orthodontist");
+    await db.update(practitioners).set({ specialty: " " }).where(eq(practitioners.orgId, orgId));
+    const after = await shown();
+    expect(after).not.toContain("Orthodontist");
+    expect(after).toContain("Dentist"); // marketplace.profile.defaultSpecialty
   });
 });

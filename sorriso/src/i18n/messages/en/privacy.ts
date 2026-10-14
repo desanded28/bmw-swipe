@@ -26,8 +26,13 @@ export default {
         "Sorriso forwards your booking to the practice and handles reminders and changes as an independent controller, with your consent below.",
       basis: "This is needed for the care you ask for (Art. 6(1)(b) and 9(2)(h) GDPR). Optional choices need your consent, which you can withdraw at any time.",
       rights: "You can see, correct, download or delete your data at any time in the <link>privacy center</link>.",
+      // Art. 14: sendBookedForYouNotice (practice channels) or the confirmation request (marketplace)
+      // goes to the patient's own contact, never to one that is also the booker's.
       otherAdult:
-        "You are booking for someone else: please tell them about this booking and point them to the practice's privacy notice below (Art. 14 GDPR).",
+        "You are booking for someone else: we send them a message about this booking with the practice's privacy notice (Art. 14 GDPR), at the mobile number or email you give as theirs. Please tell them about it too.",
+      // The waitlist sends them nothing until a time is offered.
+      otherAdultWaitlist:
+        "You are asking for someone else: please tell them about this request and point them to the practice's privacy notice below (Art. 14 GDPR).",
       guardian: "As parent or guardian, you make these choices for the child.",
     },
     links: {
@@ -47,11 +52,15 @@ export default {
       choices:
         "Only they can give consent for themselves, so no choices are asked of you here. They can make their own later, through the link in their messages or in the privacy center.",
       whatsapp: "WhatsApp can't be chosen for someone else, because it needs their own consent: please choose SMS or email. They can switch to WhatsApp themselves later.",
-      // Marketplace bookings for another adult are refused until the confirmation flow is wired (OTHER_ADULT_ON_MARKETPLACE in minors.ts).
+      // Marketplace bookings for another adult are held for that adult's own confirmation
+      // (OTHER_ADULT_ON_MARKETPLACE "held" in minors.ts): marketplaceHeld. marketplaceRefused is the
+      // text for the "refused" setting. The waitlist has no hold and always refuses: marketplaceWaitlist.
       marketplaceRefused:
         "On Sorriso, only the patient can agree to how Sorriso handles their booking, so adults book for themselves here. Ask them to book, or book with the practice directly on its own website or by phone.",
       marketplaceHeld:
         "They will get a message asking them to confirm this booking and give their own consent to Sorriso. If they don't confirm within 48 hours, the booking is cancelled.",
+      marketplaceWaitlist:
+        "On Sorriso, only the patient can agree to how Sorriso handles their request, so adults join the waiting list for themselves here. Ask them to join it, or contact the practice directly on its own website or by phone.",
     },
   },
   relation: {
@@ -92,8 +101,13 @@ export default {
       phone: "Your mobile number",
       email: "Your email",
       hint: "Kept with this appointment only, never as the patient's contact.",
+      // On Sorriso's search pages (context marketplace), see OTHER_ADULT_ON_MARKETPLACE in minors.ts.
+      marketplaceHeld:
+        "On Sorriso, they confirm this booking themselves. Enter their own mobile number or email below, not yours: that's where we ask them to confirm.",
       marketplace:
         "On Sorriso's search pages, adults book for themselves. You can also book with the practice directly, on its own website or by phone.",
+      marketplaceWaitlist:
+        "On Sorriso's search pages, adults join the waiting list for themselves. You can also contact the practice directly, on its own website or by phone.",
     },
     errors: {
       nameRequired: "Enter a name",

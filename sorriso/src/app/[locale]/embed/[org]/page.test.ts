@@ -1,10 +1,12 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { BookingFlow, type EmbedMessaging } from "@/components/booking/BookingFlow";
+import { BookingFlow, type BookingLabels, type EmbedMessaging } from "@/components/booking/BookingFlow";
 import { db } from "@/db";
-import { organizations, type StoredOrgSettings } from "@/db/schema";
+import { organizations, practitioners, services, type StoredOrgSettings } from "@/db/schema";
+import { formatMoney } from "@/i18n/number";
+import { getT } from "@/i18n/t";
 import { createPractice } from "@/test/fixtures";
 
 let requestHeaders = new Headers();
@@ -156,5 +158,23 @@ describe("/[locale]/embed/[org]", () => {
     const meta = await generateMetadata({ params: Promise.resolve({ locale: "pt", org: slug }) });
     expect(meta.robots).toMatchObject({ index: false, follow: false });
     expect(Object.keys(meta.alternates?.languages ?? {})).toHaveLength(9);
+  });
+
+  it("hands the flow prices with their price type, the default specialty and the query the proxy saw", async () => {
+    const slug = await practice();
+    const [org] = await db.select().from(organizations).where(eq(organizations.slug, slug));
+    await db.update(services).set({ priceType: "from", priceMaxCents: 12000 }).where(eq(services.orgId, org.id));
+    await db.update(practitioners).set({ specialty: "" }).where(eq(practitioners.orgId, org.id));
+    framedBy("https://host.example/contatti");
+    requestHeaders.set("x-search", "?parent=https%3A%2F%2Fhost.example");
+    const { flow } = await open(slug, { parent: "https://host.example" }, "it");
+    const labels = flow!.props.labels as BookingLabels;
+    // "50 € to 120 €" (a range), not the fixed "50 €" the starting price used to show as.
+    const [visit] = await db.select({ id: services.id }).from(services).where(and(eq(services.orgId, org.id), eq(services.priceCents, 5000)));
+    const price = labels.services[visit.id].price;
+    expect(price).toContain(formatMoney(5000, "it"));
+    expect(price).toContain(formatMoney(12000, "it"));
+    expect(labels.defaultSpecialty).toBe(getT("it", "marketplace")("profile.defaultSpecialty"));
+    expect(flow!.props.search).toBe("?parent=https%3A%2F%2Fhost.example");
   });
 });

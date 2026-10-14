@@ -21,7 +21,7 @@ rights, and where each piece lives in the code. Owned by WP4 (patient GDPR).
 | The WhatsApp just-in-time notice (Meta, Twilio, US transfer under DPF + SCC) and a required, unticked confirmation | WhatsApp chosen and offered by the practice | `whatsapp_channel` grant; `patients.preferred_channel = 'whatsapp'` |
 | Feedback invitation, optional, unticked | booking variant | `feedback_request` grant if ticked |
 | News and offers, optional, unticked | booking variant, practice has `marketingEnabled` | `marketing` grant if ticked |
-| **Booking for another adult:** no consent box at all. Lines saying that only the patient can consent and makes their own choices later; that WhatsApp can't be chosen for them (it needs their consent: choose SMS or email); on the marketplace, that only they can agree to Sorriso's processing | relation "Another adult" | nothing: `validateBookingPrivacy`/`bookingPrivacyFormErrors` with `bookedFor: "other_adult"` require no consent and `effectiveBookingChoices` keeps none |
+| **Booking for another adult:** no consent box at all. Lines saying that only the patient can consent and makes their own choices later; that WhatsApp can't be chosen for them (it needs their consent: choose SMS or email); on the marketplace, that only they can agree to Sorriso's processing, so a booking waits for their own confirmation (and the waiting list, which can't wait, asks them to join themselves) | relation "Another adult" | nothing: `validateBookingPrivacy`/`bookingPrivacyFormErrors` with `bookedFor: "other_adult"` require no consent and `effectiveBookingChoices` keeps none |
 
 There is **no notice-acknowledgement checkbox** (critique 21): it isn't required, and next to the
 consent boxes it reads as bundled consent. The server checks (`validateBookingPrivacy`,
@@ -59,20 +59,32 @@ mount, so every booking is checked. Server rules: `validateBookingRelation`
 - **Another adult.** The patient fields are the adult's own; the booker's name and contact go to
   `appointments.booked_by_*`, never to the patient's contacts. Nothing the booker could tick is
   asked or recorded (section 1). Through the practice's channels the practice gives the Art. 14
-  notice: `sendBookedForYouNotice()` sends it to the adult's own contact (once WP8 calls it; until
-  then the form asks the booker to tell them). On the marketplace only the adult can give
-  Sorriso's Art. 9 consent (critique 2): `src/lib/privacy/adult-confirmation.ts` holds the booking
-  (status `requested`) and sends the adult a link to `/a/<token>/privacy/confirm`. That address
-  carries the appointment's manage token, which the booker has too (the booking's confirmation
-  shows it), so the link proves nothing: the page first sends a one-time code (purpose
-  `adult_confirmation`) to the adult's **own** phone or email on the record, never to a contact
-  that is also the booker's (`adultContacts`). Only with that code, bound to this appointment, can
-  they give **their** consent (`actor_relation` self) and confirm, or decline. Unconfirmed holds
-  are cancelled 48 hours after booking or when the visit time comes, as a system cancellation
-  (`cancelled_by` empty: it counts neither against the practice's reliability ranking nor as the
-  patient's late cancellation), and the booker is told. Until the lead wires it (see "Hooks
-  requested") and flips `OTHER_ADULT_ON_MARKETPLACE` in `minors.ts` to `held`, the marketplace path
-  stays refused with `other_adult_must_book_themselves`.
+  notice: right after the booking, `createAppointment` (WP8's `booking.ts`) calls
+  `sendBookedForYouNotice()`, which sends it to the adult's own contact. On the marketplace only
+  the adult can give Sorriso's Art. 9 consent (critique 2), so `OTHER_ADULT_ON_MARKETPLACE` in
+  `minors.ts` is `held`: `createAppointment` holds the booking (status `requested`, no consent
+  recorded, no reminders, no receipt) and calls `requestAdultConfirmation()`
+  (`src/lib/privacy/adult-confirmation.ts`), which sends the adult a link to
+  `/a/<token>/privacy/confirm`. A hold needs a phone or email of the adult's own: one the booker
+  also gave as theirs doesn't count, and without one the booking is refused with
+  `other_adult_contact_required` (field `phone`). That address carries the appointment's manage
+  token, which the booker has too (the booking's confirmation shows it), so the link proves
+  nothing: the page first sends a one-time code (purpose `adult_confirmation`) to the adult's
+  **own** phone or email on the record, never to a contact that is also the booker's
+  (`adultContacts`). Only with that code, bound to this appointment, can they give **their**
+  consent (`actor_relation` self) and confirm, or decline. Unconfirmed holds are cancelled 48
+  hours after booking or when the visit time comes (`expireAdultConfirmations()`, run with the
+  reminders: the in-process worker, `scripts/run-reminders.ts` and `/api/cron/reminders`), as a
+  system cancellation (`cancelled_by` empty: it counts neither against the practice's reliability
+  ranking nor as the patient's late cancellation), and the booker is told. The link and the
+  Art. 14 notice go only to the adult's own contacts too (`ownContactsOnly`: a booker who typed
+  their own number as the patient's gets nothing through it). Each step is audited on the
+  appointment, with the patient in `metadata.patientId`: `adult_confirmation.request` (the link,
+  by the system; a code asked for, by the link holder), `adult_confirmation.confirm`,
+  `adult_confirmation.decline` and `adult_confirmation.expire` (actor system). The waiting list
+  has no hold, so a marketplace waitlist entry for another adult is still refused
+  (`other_adult_must_book_themselves`); the form says so up front when it passes `context` and
+  `variant` to `PatientRelationSection`.
 
 The client-side checks (`ageBand`, `noticeKindFor`, `relationFormIssue`) are the same functions in
 the browser; the server's answer arrives in `errors` and wins.
@@ -97,8 +109,10 @@ every language but Italian a banner saying the Italian version prevails (with a 
 (per practice, kind and language); `recordPracticeNotices(org)` does it for every language at
 once, and `recordBookingNotices({ orgId, locale, context })` records the notices a booking shows
 when it is made (never throws). Pages alone would record a changed wording only on its first view,
-so the "in force since" date could be late: WP5's settings actions and WP8's booking are asked to
-call these (section 8); an adult confirming a held booking already does. An appointment's
+so the "in force since" date could be late: WP5's settings and privacy actions call
+`recordPracticeNotices` after a save, `createAppointment` and `joinWaitlist` call
+`recordBookingNotices` after a patient-facing booking or entry, and so does an adult confirming a
+held booking. An appointment's
 `notice_version` + `notice_locale` and the `notice_versions` rows together prove the wording a
 patient was shown.
 
@@ -150,9 +164,15 @@ and signs in with a one-time code (`src/lib/privacy/privacy-center.ts`,
    attempts used); the page gives the practice's contact instead. Bookers for another adult never
    match (their contact is on the appointment).
 4. **Per practice:** details; appointments with service names; messages, including the patient's
-   replies; waiting-list entries; choices (withdraw or give optional consents, object, switch
-   channels: `recordConsent`/`withdrawConsent`, source `privacy_center`); reviews, deletable
-   (`withdrawReview`, WP7); the access log (date, staff role, action; never names); requests.
+   replies; waiting-list entries; choices (withdraw or give optional consents, object to recalls,
+   no-show tracking and adaptive reminders, switch channels: `recordConsent`/`withdrawConsent`,
+   source `privacy_center`; an objection to adaptive reminders or no-show tracking also clears the
+   no-show risk stored on future visits at once, `clearRiskFor` in the same transaction); reviews,
+   deletable (`withdrawReview`, WP7); the access log (date, staff role, action; never names);
+   requests. The access log lists what the Art. 15 export does (`patientAccessFilter`, WP5's
+   `export.ts`): rows filed on the record or its appointments, and rows filed on something else
+   that name the patient in `metadata.patientId` (a message opened, a waiting-list entry changed,
+   recalls, forms, adult confirmations), from this practice's chain and Sorriso's.
 5. **Actions:** download (`/api/privacy/export`, `buildPatientExport` ZIP, `no-store`,
    attachment, audited `privacy_center.export`); correct a phone or email with a code to the new
    contact (purpose `contact_change`; the old contact is told; other practices holding the same
@@ -187,29 +207,23 @@ key adds it to `BROWSER_STORAGE` in `notices.ts` with its purpose under
 `legalPatient.cookies.storageItems`, so the cookie notice lists it; `notices.test.ts` greps `src`
 for storage keys and fails on one that is missing.
 
-## 8. Hooks requested from other packages
+## 8. Hooks in other packages
 
-- **WP8 / lead (`src/lib/booking.ts`, TODO(WP4))**: let marketplace `other_adult` bookings through
-  as held bookings (status `requested`, no consent recorded, no reminders), flip
-  `OTHER_ADULT_ON_MARKETPLACE` to `held`, then call `requestAdultConfirmation(appointmentId)`; call
-  `sendBookedForYouNotice(appointmentId)` after a practice-context `other_adult` booking; call
-  `expireAdultConfirmations()` from the reminders cron (WP3). adult-confirmation.ts no longer
-  imports booking.ts, so there is no import cycle. Pass `bookedFor: relation?.bookedFor` to
-  `validateBookingPrivacy` and `effectiveBookingChoices` in `planBookingPrivacy` (otherwise an
-  other-adult booking with WhatsApp chosen, or on the marketplace, is refused for a consent box the
-  form no longer shows). After a successful patient-facing booking, call
-  `recordBookingNotices({ orgId, locale: privacy.locale, context })`.
-- **WP5**: call `recordPracticeNotices(org)` after saving the practice's legal fields or privacy
-  settings, so a changed notice is on record before anyone opens it. WP5's notice preview uses
-  `buildNotice` (it records nothing).
-- **WP6**: the third-party/cookie check lists the privacy-center cookie as `__Host-sorriso_privacy`
-  / `sorriso_privacy`; the real names are `__Host-sorriso_pc` / `sorriso_pc`
-  (`PATIENT_SESSION_COOKIE_NAMES` in `patient-session.ts`).
-- **WP1**: add `errors.api.notice_outdated`; offer the birth date on the waitlist form (a minor
-  can't join the waiting list without it); in `DetailsStep` and `WaitlistOffer`, skip the
-  platform-consent and WhatsApp-confirmation checks when `relation.bookedFor === "other_adult"`
-  (or adopt `bookingPrivacyFormErrors` with `bookedFor`) and leave WhatsApp out of the channel
-  choice for another adult; optionally adopt `relationFormIssue` for the submit-time checks.
+Done at integration: WP8's `booking.ts` holds marketplace bookings for another adult, sends the
+confirmation request and the Art. 14 notice, and records the booking's notices; WP3's waitlist
+records them too and its cron route (with the worker and `scripts/run-reminders.ts`) expires
+unconfirmed holds; WP5's settings actions record a changed practice notice; WP6's cookie check
+uses the real privacy-center cookie names (`__Host-sorriso_pc` / `sorriso_pc`); WP1's forms have
+`errors.api.notice_outdated` and the waitlist birth date, skip the consent checks for another
+adult, and pass `context` and `variant` to `PatientRelationSection`, so "Another adult" on
+Sorriso's search pages is explained before the booker fills in the form (a booking waits for the
+adult; the waiting list refuses).
+
+Still open:
+
+- **WP5**: a staff-recorded objection to adaptive reminders or no-show tracking
+  (`actions/patients.ts`) should clear the stored risk with `clearRiskFor` in the same
+  transaction, as the privacy center does.
 
 ## 9. Points for the lawyer / DPO
 

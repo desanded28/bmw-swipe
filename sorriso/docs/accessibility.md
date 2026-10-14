@@ -148,5 +148,7 @@ WP1 tests: `src/components/ui.test.ts`, `src/components/booking/BookingFlow.test
 - The host page around an embedded widget is the practice's responsibility.
 - SMS are plain text.
 - Privacy-center downloads are machine-readable files.
-- The language switcher without JavaScript keeps the query through the same-origin `Referer`
-  (`/api/locale`); with `Referrer-Policy: no-referrer` pages (the manage page) the query is dropped.
+- The language switcher without JavaScript keeps the query from the proxy's `x-search` header
+  (passed down by the `(site)` layout, the book and the embed page). Only a switcher rendered
+  without it (another package's page) relies on the same-origin `Referer` in `/api/locale`, which
+  `no-referrer` pages don't send.

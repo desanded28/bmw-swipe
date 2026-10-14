@@ -26,7 +26,8 @@ import type { BookingPrivacyState, PrivacySectionProps } from "./contracts";
  * - Booking for another adult: no consent box at all. Consent can only come from the patient, so
  *   the section says they make their own choices later; that WhatsApp can't be chosen for them
  *   (it needs their consent: SMS or email instead); and, on the marketplace, that only they
- *   can agree to Sorriso's processing (OTHER_ADULT_ON_MARKETPLACE: refused, or held for them).
+ *   can agree to Sorriso's processing: a booking is held until they confirm it
+ *   (OTHER_ADULT_ON_MARKETPLACE "held"), while the waitlist, which has no hold, refuses it.
  *   Errors the form raises for a box that isn't shown are attached to these lines.
  *
  * Every consent label and description comes verbatim from the frozen `consents` namespace: the
@@ -76,7 +77,9 @@ export function PrivacySection({ clinic, context, variant, preferredChannel, rel
             ),
           })}
         </p>
-        {relation.bookedFor === "other_adult" ? <p className="font-medium text-slate-700">{t("booking.firstLayer.otherAdult")}</p> : null}
+        {forOther ? (
+          <p className="font-medium text-slate-700">{variant === "booking" ? t("booking.firstLayer.otherAdult") : t("booking.firstLayer.otherAdultWaitlist")}</p>
+        ) : null}
         {relation.bookedFor === "minor" ? <p className="font-medium text-slate-700">{t("booking.firstLayer.guardian")}</p> : null}
         <p className="flex flex-wrap gap-x-4 gap-y-1 pt-1">
           {external(lhref(locale, `/c/${clinic.org.slug}/privacy`), t("booking.links.practice", { controller }))}
@@ -164,9 +167,17 @@ function OtherAdultNotes({
       <span>{text}</span>
     </p>
   );
+  // Only a booking can be held for the adult's own confirmation; the waitlist has no hold, so the
+  // server refuses a marketplace entry for another adult (other_adult_must_book_themselves).
+  const marketplaceLine =
+    variant === "waitlist"
+      ? t("booking.otherAdult.marketplaceWaitlist")
+      : OTHER_ADULT_ON_MARKETPLACE === "held"
+        ? t("booking.otherAdult.marketplaceHeld")
+        : t("booking.otherAdult.marketplaceRefused");
   return (
     <div className="space-y-2">
-      {marketplace ? line(OTHER_ADULT_ON_MARKETPLACE === "held" ? t("booking.otherAdult.marketplaceHeld") : t("booking.otherAdult.marketplaceRefused"), errors.platform) : null}
+      {marketplace ? line(marketplaceLine, errors.platform) : null}
       {whatsapp ? line(t("booking.otherAdult.whatsapp"), errors.whatsapp) : null}
       {variant === "booking" ? line(t("booking.otherAdult.choices"), undefined) : null}
     </div>

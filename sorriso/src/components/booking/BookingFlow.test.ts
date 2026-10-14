@@ -7,10 +7,33 @@ import { I18nProvider } from "@/i18n/provider";
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { getMessages, getT } from "@/i18n/t";
 import type { PublicClinic } from "@/lib/directory";
-import { BookingFlow, flowReducer, initialFlowState, relayEscapeToHost, selectServiceAction, type FlowState } from "./BookingFlow";
-import { CONFIRM_WORD, SLOT_GONE_CODES, apiErrorText, apiFieldErrors, initialBookingForm } from "./DetailsStep";
+import { BookingFlow, flowReducer, initialFlowState, relayEscapeToHost, selectServiceAction, type BookingLabels, type FlowState } from "./BookingFlow";
+import type { PatientRelationSectionProps, RelationState } from "./contracts";
+import {
+  CONFIRM_WORD,
+  DetailsStep,
+  SLOT_GONE_CODES,
+  apiErrorText,
+  apiFieldErrors,
+  initialBookingForm,
+  privacyFormErrors,
+  type BookingFormState,
+} from "./DetailsStep";
+import { DoneStep, type BookedAppointment } from "./DoneStep";
 import type { PickedSlot } from "./SlotPicker";
 import { WaitlistOffer, initialWaitlist, waitlistBody, waitlistRange, type WaitlistState } from "./WaitlistOffer";
+
+/** The props the forms hand to WP4's relation section (the real section still renders). */
+const relationProps = vi.hoisted(() => [] as unknown[]);
+vi.mock("./PatientRelationSection", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./PatientRelationSection")>();
+  return {
+    PatientRelationSection: (p: Parameters<typeof real.PatientRelationSection>[0]) => {
+      relationProps.push(p);
+      return real.PatientRelationSection(p);
+    },
+  };
+});
 
 const clinic: PublicClinic = {
   org: {
@@ -211,9 +234,15 @@ describe("Escape inside the widget's frame", () => {
   });
 });
 
-function renderFlow(locale: Locale, c: PublicClinic = clinic) {
-  // The same namespaces the book and embed pages load: the layout's plus consents, privacy, catalog.
-  const messages = getMessages(locale, ["common", "a11y", "site", "booking", "errors", "consents", "privacy", "catalog"]);
+// The same namespaces the book and embed pages load: the layout's plus consents, privacy, catalog.
+const PAGE_NAMESPACES = ["common", "a11y", "site", "booking", "errors", "consents", "privacy", "catalog"] as const;
+
+function renderFlow(
+  locale: Locale,
+  c: PublicClinic = clinic,
+  extra: { initial?: Parameters<typeof BookingFlow>[0]["initial"]; labels?: BookingLabels } = {},
+) {
+  const messages = getMessages(locale, [...PAGE_NAMESPACES]);
   return renderToStaticMarkup(
     h(I18nProvider, {
       locale,
@@ -222,7 +251,8 @@ function renderFlow(locale: Locale, c: PublicClinic = clinic) {
         clinic: c,
         today: "2026-10-14",
         context: "practice",
-        initial: { serviceId: "sv1", practitionerId: "pr1", locationId: "loc1", start: START },
+        initial: extra.initial ?? { serviceId: "sv1", practitionerId: "pr1", locationId: "loc1", start: START },
+        labels: extra.labels,
       }),
     }),
   );
@@ -268,6 +298,24 @@ describe("BookingFlow (server render)", () => {
     expect(renderFlow("en")).toContain("Reply YES to confirm.");
     expect(renderFlow("it")).toMatch(/SI/);
     expect(CONFIRM_WORD).toEqual({ it: "SI", en: "YES", de: "JA", fr: "OUI", es: "SI", pt: "SIM", ro: "DA", pl: "TAK" });
+  });
+
+  it("shows the server's default specialty for a practitioner whose practice left it empty", () => {
+    const two: PublicClinic = {
+      ...clinic,
+      practitioners: [
+        { ...clinic.practitioners[0], specialty: "Orthodontist" },
+        { ...clinic.practitioners[0], id: "pr2", name: "Bruno Neri", specialty: "  " },
+      ],
+    };
+    const labels: BookingLabels = { services: { sv1: { price: "50 €", duration: "30 min" } }, defaultSpecialty: "Dentista" };
+    const html = renderFlow("it", two, { initial: { serviceId: "sv1" }, labels });
+    expect(html).toContain(">Dr. Anna Rossi (Orthodontist)</option>");
+    expect(html).toContain(">Dr. Bruno Neri (Dentista)</option>");
+    // A page that passes no default shows the name alone, never "Name ()".
+    const plain = renderFlow("it", two, { initial: { serviceId: "sv1" } });
+    expect(plain).toContain(">Dr. Bruno Neri</option>");
+    expect(plain).not.toContain("()");
   });
 
   it("ignores the browser language: the page decides", () => {
@@ -398,5 +446,141 @@ describe("API errors", () => {
   it("treats every slot conflict as a taken slot", () => {
     for (const code of ["practitioner_busy", "no_room", "time_off", "too_soon"]) expect(SLOT_GONE_CODES.has(code)).toBe(true);
     expect(SLOT_GONE_CODES.has("validation_error")).toBe(false);
+  });
+});
+
+describe("booking for another adult", () => {
+  const en = getT("en", "errors");
+  const forOther: RelationState = {
+    bookedFor: "other_adult",
+    guardian: { name: "", relation: "parent", phone: "", email: "" },
+    bookedBy: { name: "Eva Neri", phone: "", email: "" },
+  };
+  const noChoices = { noticeAck: false, platformConsent: false, whatsapp: false, feedback: false, marketing: false };
+  const withWhatsapp: PublicClinic = { ...clinic, privacy: { whatsappEnabled: true, marketingEnabled: false } };
+
+  it("asks the booker for no consent: the client checks follow the server's rules", () => {
+    const check = (relation: RelationState | null, context: "practice" | "marketplace", preferredChannel: "sms" | "whatsapp") =>
+      privacyFormErrors(en, { clinic: withWhatsapp, context, preferredChannel, privacy: noChoices, relation, birthDate: "" });
+    expect(check(forOther, "marketplace", "sms")).toEqual({});
+    expect(check(forOther, "practice", "whatsapp")).toEqual({});
+    // For themselves the consent boxes are required, with the boxes' own wording.
+    expect(check(null, "marketplace", "sms")).toEqual({ platformConsent: en("fields.consentRequired") });
+    expect(check({ ...forOther, bookedFor: "self" }, "practice", "whatsapp")).toEqual({ whatsapp: en("fields.whatsappRequired") });
+  });
+
+  it("checks the relation the way the server will, once the section reported it", () => {
+    const self = { ...forOther, bookedFor: "self" as const };
+    const minor = { ...forOther, bookedFor: "minor" as const };
+    const check = (relation: RelationState | null, birthDate: string) =>
+      privacyFormErrors(en, { clinic, context: "practice", preferredChannel: "sms", privacy: noChoices, relation, birthDate });
+    expect(check(self, "2016-05-01")).toEqual({ bookedFor: en("api.guardian_required") });
+    expect(check(minor, "")).toEqual({ birthDate: en("api.birthdate_required") });
+    expect(check(minor, "2016-05-01")).toEqual({ "guardian.name": en("api.guardian_name_required") });
+    expect(check({ ...minor, guardian: { ...minor.guardian, name: "Eva Neri", email: "eva@example.com" } }, "2016-05-01")).toEqual({});
+    // Not reported yet: no relation is posted, none is checked.
+    expect(check(null, "2016-05-01")).toEqual({});
+  });
+
+  function renderDetails(form: BookingFormState, context: "practice" | "marketplace" = "practice") {
+    return renderToStaticMarkup(
+      h(I18nProvider, {
+        locale: "en",
+        messages: getMessages("en", [...PAGE_NAMESPACES]),
+        children: h(DetailsStep, {
+          clinic: withWhatsapp,
+          service: withWhatsapp.services[0],
+          slot,
+          source: "online",
+          context,
+          headingId: "step",
+          form,
+          onFormChange: () => {},
+          onDetailsChange: () => {},
+          onBack: () => {},
+          onBooked: () => {},
+          onSlotTaken: () => {},
+        }),
+      }),
+    );
+  }
+
+  it("leaves WhatsApp out of the channel choice, and tells the relation section where it is", () => {
+    const base = initialBookingForm("en");
+    relationProps.length = 0;
+    expect(renderDetails(base, "marketplace")).toContain('value="whatsapp"');
+    expect(relationProps.at(-1)).toMatchObject({ context: "marketplace", variant: "booking" } satisfies Partial<PatientRelationSectionProps>);
+    // A WhatsApp choice made before switching to "Another adult" falls back to SMS.
+    const html = renderDetails({ ...base, details: { ...base.details, preferredChannel: "whatsapp" }, relation: forOther, relationAsked: true });
+    expect(html).not.toContain('value="whatsapp"');
+    expect(html).toMatch(/<input type="radio"[^>]*checked=""[^>]*value="sms"/);
+  });
+
+  it("tells the waitlist's relation section it is the waitlist", () => {
+    relationProps.length = 0;
+    renderToStaticMarkup(
+      h(I18nProvider, {
+        locale: "en",
+        messages: getMessages("en", [...PAGE_NAMESPACES]),
+        children: h(WaitlistOffer, {
+          clinic,
+          serviceId: "sv1",
+          practitionerId: "",
+          locationId: "",
+          today: "2026-10-14",
+          context: "marketplace",
+          contact: initialBookingForm("en").details,
+          onContactChange: () => {},
+          value: { ...initialWaitlist("2026-10-14"), open: true },
+          onChange: () => {},
+        }),
+      }),
+    );
+    expect(relationProps.at(-1)).toMatchObject({ context: "marketplace", variant: "waitlist" });
+  });
+
+  const booked = (status: BookedAppointment["status"]): BookedAppointment => ({
+    id: "ap1",
+    status,
+    confirmation: "pending",
+    start: START,
+    end: "2026-10-20T09:00:00.000Z",
+    manageUrl: "/a/tok",
+    icsUrl: "/api/ics/appointment/tok",
+    practitioner: { name: "Dr. Anna Rossi" },
+    location: { name: "Milano", address: "Via Roma 1", city: "Milano" },
+    service: { name: "Visit" },
+  });
+  const renderDone = (a: BookedAppointment, forOtherAdult?: "no" | "practice" | "marketplace") =>
+    renderToStaticMarkup(
+      h(I18nProvider, {
+        locale: "en",
+        messages: getMessages("en", [...PAGE_NAMESPACES]),
+        children: h(DoneStep, { appointment: a, clinic, confirmWord: "YES", headingId: "done", forOtherAdult }),
+      }),
+    );
+  const tb = getT("en", "booking");
+  const esc = (text: string) => text.replaceAll("'", "&#x27;");
+
+  it("says a marketplace booking for another adult waits for that adult's own confirmation", () => {
+    const html = renderDone(booked("requested"), "marketplace");
+    expect(html).toContain(esc(tb("done.heldTitle")));
+    expect(html).toContain(esc(tb("done.heldBody")));
+    expect(html).not.toContain(esc(tb("done.requestedBody", { clinic: "Studio Test" })));
+  });
+
+  it("tells the booker the patient's messages go to the patient, not to them", () => {
+    expect(renderDone(booked("scheduled"), "practice")).toContain(esc(tb("done.otherAdultBody")));
+    expect(renderDone(booked("requested"), "practice")).toContain(esc(tb("done.otherAdultRequestedBody", { clinic: "Studio Test" })));
+    // Booking for themselves: unchanged.
+    expect(renderDone(booked("requested"))).toContain(esc(tb("done.requestedBody", { clinic: "Studio Test" })));
+    expect(renderDone(booked("scheduled"))).toContain(esc(tb("done.pendingBody", { word: "YES" })));
+  });
+
+  it("explains other_adult_contact_required instead of the generic text", () => {
+    expect(apiFieldErrors(en, { code: "other_adult_contact_required", field: "phone", message: "x" })).toEqual({
+      phone: en("api.other_adult_contact_required"),
+    });
+    expect(en("api.other_adult_contact_required")).not.toBe(en("generic"));
   });
 });
