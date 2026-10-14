@@ -13,12 +13,14 @@ import {
 import { newId, newToken } from "@/lib/ids";
 import { DEFAULT_SETTINGS } from "@/lib/settings";
 import { backfill0001 } from "../../scripts/backfill-0001";
+import { backfill0003 } from "../../scripts/backfill-0003";
 
 let migrated = false;
 export async function migrateOnce() {
   if (migrated) return;
   await migrate(db, { migrationsFolder: "./drizzle" });
   await backfill0001(db);
+  await backfill0003(db);
   migrated = true;
 }
 

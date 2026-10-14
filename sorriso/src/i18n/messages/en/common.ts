@@ -159,6 +159,14 @@ export default {
     forbidden: "You don't have permission to do this.",
     rateLimited: "Too many attempts. Please wait a few minutes and try again.",
     unexpected: "Something went wrong. Please try again.",
+    /** A form value failed validation and the validator gave no message of its own. */
+    invalidInput: "Some details aren't valid. Please check them and try again.",
+    /** A sensitive action needs a fresh sign-in check (the dashboard then opens the verification page). */
+    stepUp: "Please confirm it's you to continue.",
+  },
+  /** Generic feedback after an action that didn't say anything more specific. */
+  feedback: {
+    done: "Done.",
   },
   /** Last-resort pages (global-not-found, global-error) outside both root layouts. */
   pages: {

@@ -287,6 +287,10 @@ describe("two-step verification enforcement", () => {
   it("lets reception in without MFA unless the practice requires it for everyone", async () => {
     const { orgId } = await createPractice();
     const u = await makeUser({ orgId, role: "reception" });
+    // requireStaff() also applies the compliance gates on dashboard pages (src/lib/dashboard-gates.test.ts):
+    // this member has accepted the staff instructions, so only the MFA rule decides here.
+    const { LEGAL_VERSIONS } = await import("./privacy/versions");
+    await db.update(memberships).set({ instructionsVersion: LEGAL_VERSIONS.staff_instructions }).where(eq(memberships.userId, u.id));
     const [org] = await db.select().from(organizations).where(eq(organizations.id, orgId));
     const setRequire = (requireMfa: boolean) =>
       db

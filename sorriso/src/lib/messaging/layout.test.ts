@@ -88,41 +88,10 @@ const base: AppointmentTemplateData = {
 };
 
 /**
- * Every template, rendered with fixed data. The snapshot pins the output: a change to a patient
- * text or to the layout shows up in review (regenerated for WP3's discreet, translated templates).
+ * The rendered output of every template, per language, is pinned by the snapshot in
+ * templates.test.ts ("appointment templates as reviewed", WP3); it isn't repeated here.
  */
-function renderAll(d: AppointmentTemplateData) {
-  return {
-    bookingConfirmation: templates.bookingConfirmation(d),
-    bookingConfirmationSms: templates.bookingConfirmationSms(d),
-    bookingRequested: templates.bookingRequested(d),
-    bookingApproved: templates.bookingApproved(d),
-    reminderEmailAsk: templates.reminderEmail(d, true),
-    reminderEmail: templates.reminderEmail(d, false),
-    reminderSmsAsk: templates.reminderSms(d, true),
-    reminderSms: templates.reminderSms(d, false),
-    cancelledEmailStaff: templates.cancelledEmail(d, "staff", "https://sorriso.test/book/x"),
-    cancelledEmailPatient: templates.cancelledEmail(d, "patient", "https://sorriso.test/book/x"),
-    cancelledSms: templates.cancelledSms(d, "https://sorriso.test/book/x"),
-    rescheduledEmail: templates.rescheduledEmail(d),
-    rescheduledSms: templates.rescheduledSms(d),
-    waitlistOfferEmail: templates.waitlistOfferEmail(d, "https://sorriso.test/book/x?slot=1"),
-    waitlistOfferSms: templates.waitlistOfferSms(d, "https://sorriso.test/book/x?slot=1"),
-    reviewRequest: templates.reviewRequest(d, "https://sorriso.test/a/tok123/review"),
-    replyConfirmed: templates.reply.confirmed(d),
-    replyCancelled: templates.reply.cancelled(d, "https://sorriso.test/book/x"),
-    replyReschedule: templates.reply.reschedule(d),
-    replyUnknown: templates.reply.unknown(d),
-    replyStop: templates.reply.stop(d.locale, d.clinicName),
-    replyNone: templates.reply.none(d.locale, d.clinicName),
-  };
-}
-
 describe("appointment templates", () => {
-  it.each(["it", "en", "de"] as const)("render as reviewed in %s", (locale) => {
-    expect(renderAll({ ...base, locale })).toMatchSnapshot();
-  });
-
   it("fall back to the default brand colour", () => {
     const { html } = templates.bookingRequested({ ...base, brandColor: "red;background:url(x)" });
     expect(html).toContain("background:#0d9488");

@@ -6,10 +6,13 @@ import { register } from "./instrumentation";
 
 const jobs = vi.hoisted(() => ({
   processDueReminders: vi.fn(),
+  purgeProviderCopies: vi.fn(),
+  expireAdultConfirmations: vi.fn(),
   runCareJobs: vi.fn(),
   runRetention: vi.fn(),
 }));
-vi.mock("./lib/reminders", () => ({ processDueReminders: jobs.processDueReminders }));
+vi.mock("./lib/reminders", () => ({ processDueReminders: jobs.processDueReminders, purgeProviderCopies: jobs.purgeProviderCopies }));
+vi.mock("./lib/privacy/adult-confirmation", () => ({ expireAdultConfirmations: jobs.expireAdultConfirmations }));
 vi.mock("./lib/recalls", () => ({ runCareJobs: jobs.runCareJobs }));
 vi.mock("./lib/privacy/retention", () => ({ runRetention: jobs.runRetention }));
 
@@ -30,6 +33,8 @@ beforeAll(migrateOnce);
 
 beforeEach(() => {
   jobs.processDueReminders.mockResolvedValue({ due: 0, sent: 0, skipped: 0, failed: 0, retry: 0 });
+  jobs.purgeProviderCopies.mockResolvedValue({ deleted: 0, failed: 0 });
+  jobs.expireAdultConfirmations.mockResolvedValue(0);
   jobs.runCareJobs.mockResolvedValue({ recallsSent: 0, risksRefreshed: 0, formInvites: 0 });
   jobs.runRetention.mockImplementation(async (now = new Date()) => ({
     startedAt: now,
@@ -143,10 +148,29 @@ describe("register: background jobs", () => {
 
     await vi.advanceTimersByTimeAsync(MINUTE); // 16:05 after startup
     expect(jobs.runCareJobs).toHaveBeenCalledTimes(2);
+    // Held bookings for another adult expire with every reminder tick.
+    expect(jobs.expireAdultConfirmations).toHaveBeenCalledTimes(jobs.processDueReminders.mock.calls.length);
+    expect(jobs.purgeProviderCopies).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(60 * MINUTE); // 03:16:05 UTC: the providers' copies, daily
+    expect(jobs.purgeProviderCopies).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(24 * 60 * MINUTE);
     expect(jobs.runRetention).toHaveBeenCalledTimes(2);
+    expect(jobs.purgeProviderCopies).toHaveBeenCalledTimes(2);
     expect(log.logError).not.toHaveBeenCalled();
+  });
+
+  it("a failing adult-confirmation expiry doesn't stop the reminder tick", async () => {
+    const err = new Error("boom");
+    jobs.expireAdultConfirmations.mockRejectedValueOnce(err);
+    jobs.expireAdultConfirmations.mockResolvedValueOnce(2);
+    await register();
+    await vi.advanceTimersByTimeAsync(5 * SECOND);
+    expect(jobs.processDueReminders).toHaveBeenCalledTimes(1);
+    expect(log.logError).toHaveBeenCalledWith("jobs", err, { job: "adult-confirmations" });
+    await vi.advanceTimersByTimeAsync(MINUTE);
+    expect(log.logInfo).toHaveBeenCalledWith("reminders", "adult confirmations expired", { expired: 2 });
   });
 
   it("logs reminder ticks only when something was due", async () => {

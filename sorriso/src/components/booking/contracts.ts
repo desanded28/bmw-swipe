@@ -67,6 +67,13 @@ export type PatientRelationSectionProps = {
   birthDate: string;
   /** Keyed by field: bookedFor, birthDate, guardian.name, guardian.relation, guardian.phone, bookedBy.name... */
   errors: Record<string, string>;
+  /**
+   * Optional (integration): where the booking happens and which form, so "Another adult" can be
+   * explained up front (on the marketplace that adult must confirm before the booking holds).
+   * The forms pass the same values as to PrivacySection.
+   */
+  context?: ProcessingContext;
+  variant?: "booking" | "waitlist";
 };
 
 export type BookingExtrasSectionProps = {

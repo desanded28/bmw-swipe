@@ -365,6 +365,8 @@ export const practitioners = sqliteTable(
     /** Translations of bio / specialty written by the practice (fallback: base columns). */
     bioI18n: text("bio_i18n", { mode: "json" }).$type<LocalizedText>().notNull().default({}),
     specialtyI18n: text("specialty_i18n", { mode: "json" }).$type<LocalizedText>().notNull().default({}),
+    /** Who issued the current feed URL (rotateIcsToken): offboarding turns it off when they lose access. (0003) */
+    icsIssuedByUserId: text("ics_issued_by_user_id").references(() => users.id, { onDelete: "set null" }),
   },
   (t) => [uniqueIndex("practitioners_org_slug_idx").on(t.orgId, t.slug)],
 );
@@ -496,6 +498,11 @@ export const patients = sqliteTable(
     possibleDuplicateOfId: text("possible_duplicate_of_id"),
     /** Tombstone after a staff-confirmed merge: lookups follow this pointer. */
     mergedIntoId: text("merged_into_id"),
+    /**
+     * Erasure requested but deferred until retainUntil (the record is restricted meanwhile);
+     * retention pseudonymises it once that date has passed. (0003)
+     */
+    erasureRequestedAt: integer("erasure_requested_at", { mode: "timestamp_ms" }),
   },
   (t) => [
     index("patients_org_email_idx").on(t.orgId, t.email),
@@ -593,6 +600,13 @@ export const appointments = sqliteTable(
     riskReasons: text("risk_reasons", { mode: "json" }).$type<string[]>().notNull().default([]),
     riskComputedAt: integer("risk_computed_at", { mode: "timestamp_ms" }),
     fundId: text("fund_id").references(() => funds.id, { onDelete: "set null" }),
+    /**
+     * Rebooking (practice closure): the start time the practice's "please pick a new time" offer
+     * was about, and the start time a patient asked to be called about. Each counts only while it
+     * equals startsAt, so moving the visit voids it. (0003)
+     */
+    rebookOfferStartsAt: integer("rebook_offer_starts_at", { mode: "timestamp_ms" }),
+    rebookCallStartsAt: integer("rebook_call_starts_at", { mode: "timestamp_ms" }),
   },
   (t) => [
     index("appointments_org_start_idx").on(t.orgId, t.startsAt),
@@ -621,6 +635,8 @@ export const reminders = sqliteTable(
     sentAt: integer("sent_at", { mode: "timestamp_ms" }),
     error: text("error"),
     messageId: text("message_id"),
+    /** The rule's onlyIfRisk, fixed when the reminder is scheduled: sent only at this risk level or above. (0003) */
+    onlyIfRisk: text("only_if_risk", { enum: ["medium", "high"] }),
   },
   (t) => [index("reminders_due_idx").on(t.status, t.sendAt), index("reminders_appointment_idx").on(t.appointmentId)],
 );
@@ -652,6 +668,9 @@ export const messages = sqliteTable(
     /** The provider was asked to delete its copy. */
     providerDeletedAt: integer("provider_deleted_at", { mode: "timestamp_ms" }),
     finalStatusAt: integer("final_status_at", { mode: "timestamp_ms" }),
+    /** Failed attempts to delete the provider's copy, and the last failure (purge backoff). (0003) */
+    providerDeleteAttempts: integer("provider_delete_attempts").notNull().default(0),
+    providerDeleteFailedAt: integer("provider_delete_failed_at", { mode: "timestamp_ms" }),
   },
   (t) => [
     index("messages_org_created_idx").on(t.orgId, t.createdAt),
@@ -688,6 +707,8 @@ export const waitlist = sqliteTable(
     processingContext: text("processing_context", { enum: PROCESSING_CONTEXTS }).notNull().default("practice"),
     bookedFor: text("booked_for", { enum: BOOKED_FOR }).notNull().default("self"),
     noticeVersion: text("notice_version"),
+    /** When the entry stopped being active (booked or removed): the retention clock. (0003) */
+    closedAt: integer("closed_at", { mode: "timestamp_ms" }),
   },
   (t) => [index("waitlist_org_status_idx").on(t.orgId, t.status)],
 );
@@ -776,6 +797,8 @@ export const consents = sqliteTable(
     /** HMAC of the IP, never the raw address. */
     ipHash: text("ip_hash"),
     createdAt: createdAt(),
+    /** When erasure detached the row from its patient (patientId set to null): the proof's retention clock. (0003) */
+    unlinkedAt: integer("unlinked_at", { mode: "timestamp_ms" }),
   },
   (t) => [index("consents_patient_purpose_idx").on(t.patientId, t.purpose, t.createdAt), index("consents_org_created_idx").on(t.orgId, t.createdAt)],
 );
@@ -805,6 +828,12 @@ export const privacyRequests = sqliteTable(
     handledByUserId: text("handled_by_user_id").references(() => users.id, { onDelete: "set null" }),
     remindersSent: text("reminders_sent", { mode: "json" }).$type<string[]>().notNull().default([]),
     createdAt: createdAt(),
+    /**
+     * Where to send the answer when the request isn't (or is no longer) linked to a patient
+     * record, e.g. after erasure: an email or E.164 number, encrypted. Cleared with the request's
+     * free text by retention. (0003)
+     */
+    answerContact: encryptedText("answer_contact", "privacy_requests.answer_contact"),
   },
   (t) => [index("privacy_requests_org_status_due_idx").on(t.orgId, t.status, t.dueAt)],
 );

@@ -22,6 +22,13 @@
       "when": 1791935741113,
       "tag": "0002_verified_contacts",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1792003694756,
+      "tag": "0003_integration",
+      "breakpoints": true
     }
   ]
 }

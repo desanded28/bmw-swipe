@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db } from "@/db";
 import type { MembershipRole } from "@/db/enums";
 import { auditLog, organizations, patients, practitioners } from "@/db/schema";
+import { getT } from "@/i18n/t";
 import type { StaffSession } from "@/lib/auth";
 import { sha256Hex } from "@/lib/crypto";
 import { BookingError } from "@/lib/booking";
@@ -20,7 +21,7 @@ import { simulateReply } from "./messages";
 import { updatePatient } from "./patients";
 import { savePractitioner } from "./practitioners";
 import { runRemindersNow, saveReminderSettings } from "./reminders";
-import { replyToReview, setReviewPublished } from "./reviews";
+import { replyToReview, reportReview } from "./reviews";
 import { saveSchedule } from "./schedules";
 import { saveService } from "./services";
 import { saveBookingPolicy, saveProfile } from "./settings";
@@ -42,12 +43,14 @@ vi.mock("@/lib/auth", async (importOriginal) => ({
 }));
 
 let orgId: string;
+/** guard()'s own messages come from the common namespace, in the staff member's language. */
+const common = getT("en", "common");
 
 async function signIn(role: MembershipRole) {
   const [org] = await db.select().from(organizations).where(eq(organizations.id, orgId));
   state.session = {
     sessionId: "s1",
-    user: { id: `user-${role}`, name: "Test", email: "t@example.com", isPlatformAdmin: false, locale: null },
+    user: { id: `user-${role}`, name: "Test", email: "t@example.com", isPlatformAdmin: false, locale: "en" },
     org,
     role,
     orgs: [{ org, role }],
@@ -65,7 +68,7 @@ describe("guard", () => {
     await signIn("reception");
     const fn = vi.fn(async () => ok("ran"));
     const res = await guard(fn, { permission: "settings.manage" });
-    expect(res).toEqual({ ok: false, error: "You don't have permission to do that.", code: "forbidden" });
+    expect(res).toEqual({ ok: false, error: common("errors.forbidden"), code: "forbidden" });
     expect(fn).not.toHaveBeenCalled();
     expect(revalidatePath).not.toHaveBeenCalled();
   });
@@ -129,12 +132,54 @@ describe("guard", () => {
     expect(zodFail).toEqual({ ok: false, error: "Enter a", code: undefined });
     expect(await guard(async () => Promise.reject(new Error("boom")))).toEqual({
       ok: false,
-      error: "Something went wrong.",
+      error: common("errors.unexpected"),
       code: undefined,
     });
     expect(logError).toHaveBeenCalledWith("dashboard action", expect.objectContaining({ message: "boom" }));
     const redirect = Object.assign(new Error("NEXT_REDIRECT"), { digest: "NEXT_REDIRECT;replace;/x;307;" });
     await expect(guard(async () => Promise.reject(redirect))).rejects.toBe(redirect);
+  });
+
+  it("answers step_up_required with requireStepUp's own message, which the UI acts on", async () => {
+    await signIn("owner");
+    const { StepUpRequiredError } = await import("@/lib/security/errors");
+    expect(await guard(async () => Promise.reject(new StepUpRequiredError("Confirm it's you.")))).toEqual({
+      ok: false,
+      error: "Confirm it's you.",
+      code: "step_up_required",
+    });
+  });
+
+  it("speaks the staff member's language, falling back to the practice's", async () => {
+    const s = await signIn("reception");
+    state.session = { ...s, user: { ...s.user, locale: "de" } };
+    expect(await guard(async () => ok(), { permission: "settings.manage" })).toEqual({
+      ok: false,
+      error: getT("de", "common")("errors.forbidden"),
+      code: "forbidden",
+    });
+    // No personal choice and no request (cookies, Accept-Language): the practice's default language.
+    state.session = { ...s, user: { ...s.user, locale: null } };
+    expect(await guard(async () => ok(), { permission: "settings.manage" })).toMatchObject({
+      error: getT(s.org.defaultLocale, "common")("errors.forbidden"),
+    });
+  });
+});
+
+describe("updateSettings", () => {
+  it("keeps stored keys it doesn't know, such as the Art. 30 register's rows", async () => {
+    const { updateSettings } = await import("./_shared");
+    const [before] = await db.select().from(organizations).where(eq(organizations.id, orgId));
+    const register = { entries: [{ id: "r1", activity: "Payroll" }] };
+    await db
+      .update(organizations)
+      .set({ settings: { ...before.settings, register } as typeof before.settings })
+      .where(eq(organizations.id, orgId));
+    await updateSettings(orgId, (cur) => ({ ...cur, booking: { ...cur.booking, maxAdvanceDays: 45 } }));
+    const [after] = await db.select().from(organizations).where(eq(organizations.id, orgId));
+    expect((after.settings as { register?: unknown }).register).toEqual(register);
+    expect(after.settings.booking?.maxAdvanceDays).toBe(45);
+    await db.update(organizations).set({ settings: before.settings }).where(eq(organizations.id, orgId));
   });
 });
 
@@ -185,7 +230,12 @@ describe("authorisation after the split", () => {
     newApiKey: () => newApiKey("test"),
     revokeApiKey: () => revokeApiKey(none),
     replyToReview: () => replyToReview(none, ""),
-    setReviewPublished: () => setReviewPublished(none, true),
+    // Practices can no longer publish or hide reviews (WP7): only reply or report.
+    reportReview: () => reportReview(none, "defamation", "details…"),
+    // Reminders run on demand need reminders.run; the reply simulator needs messages.simulate
+    // (and demo mode: elsewhere a manager gets "not_available", never "forbidden").
+    runRemindersNow: () => runRemindersNow(),
+    simulateReply: () => simulateReply("x", "SI", "sms"),
   };
   const everyone: Record<string, () => Promise<ActionResult>> = {
     cancelByStaff: () => cancelByStaff(none, "", false),
@@ -196,8 +246,6 @@ describe("authorisation after the split", () => {
     deleteTimeOff: () => deleteTimeOff(none),
     removeWaitlistEntry: () => removeWaitlistEntry(none),
     updatePatient: () => updatePatient(none, null, new FormData()),
-    runRemindersNow: () => runRemindersNow(),
-    simulateReply: () => simulateReply("x", "SI", "sms"),
   };
   const isForbidden = (r: ActionResult) => !r.ok && r.code === "forbidden";
 

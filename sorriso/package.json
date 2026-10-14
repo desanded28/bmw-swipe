@@ -17,6 +17,7 @@
     "reminders": "tsx scripts/run-reminders.ts",
     "retention": "tsx scripts/run-retention.ts",
     "check:third-party": "tsx scripts/check-third-party.ts",
+    "platform:grant": "tsx scripts/grant-platform-admin.ts",
     "i18n:check": "I18N_STRICT=1 vitest run src/i18n",
     "i18n:report": "tsx scripts/i18n-report.ts",
     "gen:calendar": "tsx scripts/gen-calendar-names.ts"

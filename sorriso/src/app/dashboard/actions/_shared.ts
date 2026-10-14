@@ -4,12 +4,15 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/db";
 import { organizations, type OrgSettings } from "@/db/schema";
+import { DEFAULT_LOCALE, isLocale, type Locale } from "@/i18n/config";
+import { getStaffLocale, getT } from "@/i18n/server";
 import { getOrgAppointmentDetails } from "@/lib/appointments";
 import { auditStaff, type AuditAction, type AuditEvent } from "@/lib/audit";
 import { requireStaff, type StaffSession } from "@/lib/auth";
 import { BookingError } from "@/lib/booking";
 import { logError } from "@/lib/log";
 import { assertPermission, PermissionError, type Permission } from "@/lib/permissions";
+import { isStepUpRequired, STEP_UP_REQUIRED } from "@/lib/security/errors";
 import { resolveSettings } from "@/lib/settings";
 
 /**
@@ -49,13 +52,35 @@ export type GuardOptions = {
 };
 
 /**
+ * The language of guard()'s own messages: the staff member's choice, else getStaffLocale()
+ * (cookie, browser, practice default), else the practice default when there is no request.
+ */
+async function actionLocale(s: StaffSession | null): Promise<Locale> {
+  if (s && isLocale(s.user.locale)) return s.user.locale;
+  try {
+    return await getStaffLocale();
+  } catch {
+    return s && isLocale(s.org.defaultLocale) ? s.org.defaultLocale : DEFAULT_LOCALE;
+  }
+}
+
+/**
  * Run a dashboard action: loads the staff session, checks the permission, turns domain errors
  * into ActionResults, revalidates the dashboard after a success, and audits it.
  * Next.js redirects and notFound() propagate.
+ *
+ * Failure codes the UI can act on:
+ * - "forbidden": the role lacks the permission (message from common.errors.forbidden);
+ * - "step_up_required": requireStepUp() wants a fresh second factor; send the user to
+ *   /dashboard/account/security/verify?next=<this page> (useSecureAction does);
+ * - a BookingError's code, with its (already localised) message.
+ * Its own messages are in the staff member's language (common namespace).
  */
 export async function guard(fn: (s: StaffSession) => Promise<ActionResult>, opts: GuardOptions = {}): Promise<ActionResult> {
+  let s: StaffSession | null = null;
   try {
-    const s = await staff(opts.permission);
+    s = await requireStaff();
+    if (opts.permission) assertPermission(s, opts.permission);
     const result = await fn(s);
     if (result.ok) {
       if (opts.audit) await auditStaff(s, opts.audit, opts.entity);
@@ -63,13 +88,16 @@ export async function guard(fn: (s: StaffSession) => Promise<ActionResult>, opts
     }
     return result;
   } catch (err) {
-    if (err instanceof PermissionError) return fail("You don't have permission to do that.", "forbidden");
+    const t = async () => getT(await actionLocale(s), "common");
+    if (err instanceof PermissionError) return fail((await t())("errors.forbidden"), "forbidden");
+    // Before BookingError, which it extends: its message comes from requireStepUp(), localised.
+    if (isStepUpRequired(err)) return fail(err.message || (await t())("errors.stepUp"), STEP_UP_REQUIRED);
     if (err instanceof BookingError) return fail(err.message, err.code);
-    if (err instanceof z.ZodError) return fail(err.issues[0]?.message ?? "Invalid input");
+    if (err instanceof z.ZodError) return fail(err.issues[0]?.message ?? (await t())("errors.invalidInput"));
     // Let Next.js redirects / notFound propagate.
     if (err && typeof err === "object" && "digest" in err) throw err;
     logError("dashboard action", err);
-    return fail("Something went wrong.");
+    return fail((await t())("errors.unexpected"));
   }
 }
 
@@ -85,8 +113,19 @@ export async function ownAppointment(orgId: string, id: string) {
   return d;
 }
 
-/** Read-modify-write of the org's settings JSON (resolved over the defaults first). */
+/**
+ * Read-modify-write of the org's settings JSON, in one write transaction. `patch` sees the
+ * settings resolved over the defaults; stored keys it doesn't know (e.g. `register`, the Art. 30
+ * register's free rows kept by WP5) are written back unchanged.
+ */
 export async function updateSettings(orgId: string, patch: (s: OrgSettings) => OrgSettings) {
-  const [org] = await db.select().from(organizations).where(eq(organizations.id, orgId));
-  await db.update(organizations).set({ settings: patch(resolveSettings(org.settings)) }).where(eq(organizations.id, orgId));
+  await db.transaction(async (tx) => {
+    const [org] = await tx.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, orgId));
+    if (!org) return;
+    const stored = (org.settings ?? {}) as Record<string, unknown>;
+    await tx
+      .update(organizations)
+      .set({ settings: { ...stored, ...patch(resolveSettings(org.settings)) } })
+      .where(eq(organizations.id, orgId));
+  });
 }

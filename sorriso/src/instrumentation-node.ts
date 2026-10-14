@@ -44,6 +44,15 @@ async function backgroundJobs(): Promise<Job[]> {
         const { processDueReminders } = await import("./lib/reminders");
         const s = await processDueReminders();
         if (s.due) logInfo("reminders", "tick", s);
+        // Marketplace bookings held for another adult's confirmation: cancelled after 48 hours or
+        // at the visit time. Its own failure must not hide that the reminders went out.
+        try {
+          const { expireAdultConfirmations } = await import("./lib/privacy/adult-confirmation");
+          const expired = await expireAdultConfirmations(new Date());
+          if (expired) logInfo("reminders", "adult confirmations expired", { expired });
+        } catch (err) {
+          logError("jobs", err, { job: "adult-confirmations" });
+        }
       },
     },
     {
@@ -64,6 +73,17 @@ async function backgroundJobs(): Promise<Job[]> {
         const { runRetention } = await import("./lib/privacy/retention");
         const s = await runRetention();
         logInfo("retention", "run", { ...s.counts, orgs: s.orgs, ms: s.finishedAt.getTime() - s.startedAt.getTime() });
+      },
+    },
+    {
+      // Ask the SMS/WhatsApp provider to delete its copies once the practice's
+      // privacy.retention.providerMessageDays have passed (the reminders cron does it on serverless hosts).
+      name: "provider-copies",
+      firstIn: msUntilUtc(3, 15),
+      every: DAY,
+      run: async () => {
+        const { purgeProviderCopies } = await import("./lib/reminders");
+        await purgeProviderCopies();
       },
     },
     {

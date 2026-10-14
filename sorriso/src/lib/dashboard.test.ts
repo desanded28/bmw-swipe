@@ -48,7 +48,7 @@ vi.mock("@/lib/permissions", async (importOriginal) => {
     },
   };
 });
-vi.mock("@/lib/privacy/gates", () => ({ enforceDashboardGates: async () => {}, canAcceptOnlineBookings: async () => true }));
+vi.mock("@/lib/privacy/gates", () => ({ enforceDashboardGates: async () => {}, gatePage: async () => null, canAcceptOnlineBookings: async () => true }));
 vi.mock("@/app/fonts", () => ({ jakarta: { variable: "font-jakarta" } }));
 
 const { listAppointments, listViewer, redactPatientLinks } = await import("./dashboard");

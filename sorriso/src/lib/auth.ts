@@ -386,8 +386,33 @@ export function mfaEnrolmentRequired(s: Pick<SessionInfo, "auth" | "org" | "role
 }
 
 /**
+ * The compliance gates of src/lib/privacy/gates.ts (owners and admins: the current DPA and terms;
+ * every member: the staff instructions) for a dashboard page or route handler. They run here,
+ * through requireStaff() (and so requirePermission() and requirePlatformAdmin()), because Next
+ * keeps a shared layout across client-side navigations: the layout's own check alone could be
+ * walked past from the sidebar. Their exempt pages (legal, account security, closure and its
+ * export) stay reachable. Server actions are not redirected: they are posted from pages that were
+ * gated themselves, and signing out or accepting a document must keep working. Once per request.
+ * gates.ts is loaded lazily: it pulls in the messaging stack, and this module must stay cheap and
+ * free of import cycles.
+ */
+const gateDashboardRequest = cache(async (userId: string, orgId: string, role: Role, path: string): Promise<void> => {
+  void path; // part of the cache key: enforceDashboardGates reads the same x-pathname itself
+  const { enforceDashboardGates } = await import("./privacy/gates");
+  await enforceDashboardGates({ user: { id: userId }, org: { id: orgId }, role });
+});
+
+async function enforcePageGates(s: { user: { id: string }; org: { id: string }; role: Role }): Promise<void> {
+  const path = await currentPath();
+  if (!path || !(path === "/dashboard" || path.startsWith("/dashboard/"))) return;
+  if (await isServerActionRequest()) return;
+  await gateDashboardRequest(s.user.id, s.org.id, s.role, path);
+}
+
+/**
  * For dashboard pages and actions: require a signed-in member of a practice. Sends people who
- * still have to enrol in two-step verification to /dashboard/account/security first.
+ * still have to enrol in two-step verification to /dashboard/account/security first, and (pages
+ * and route handlers only) applies the compliance gates (enforcePageGates).
  */
 export async function requireStaff(roles?: Role[]) {
   const session = await getSession();
@@ -398,6 +423,7 @@ export async function requireStaff(roles?: Role[]) {
   if (!session.org || !session.role) redirect(await loginUrl({ notice: "noPractice" }));
   if (mfaEnrolmentRequired(session) && !isEnrolmentExempt((await currentPath()) ?? "")) redirect(`${SECURITY_PAGE}?setup=mfa`);
   if (roles && !roles.includes(session.role)) redirect("/dashboard?denied=1");
+  await enforcePageGates({ user: session.user, org: session.org, role: session.role });
   return { ...session, org: session.org, role: session.role };
 }
 

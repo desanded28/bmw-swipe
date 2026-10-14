@@ -7,9 +7,10 @@
  * tests fall back to built-in values, so they need no extra environment.
  *
  * Jobs, each never overlapping itself (a tick is skipped while the previous run is in flight):
- *   reminders     every minute
+ *   reminders     every minute, then expires bookings held for another adult's confirmation
  *   care          every 15 minutes: recalls, no-show risk refresh, anamnesis invites
  *   retention     daily at 02:15 UTC, like the Vercel cron
+ *   provider-copies daily at 03:15 UTC: asks Twilio to delete its copies of old texts
  *   audit-heads   2 minutes after startup, then daily: logs each audit chain's head, so that
  *                 deleting the newest rows can be detected later (verifyAuditChain({ head })), and
  *                 how many audit rows could not be written (audit() never throws)

@@ -2,6 +2,7 @@ import { and, count, eq, gt, inArray } from "drizzle-orm";
 import type { Metadata } from "next";
 import { Sidebar } from "@/components/dashboard/Sidebar";
 import { ToastProvider } from "@/components/dashboard/Toast";
+import { ComplianceBanner } from "@/components/privacy-admin/ComplianceBanner";
 import { db } from "@/db";
 import { appointments, waitlist } from "@/db/schema";
 import { DIR } from "@/i18n/config";
@@ -11,7 +12,7 @@ import { getStaffLocale, getT } from "@/i18n/server";
 import { requireStaff } from "@/lib/auth";
 import { APP_NAME } from "@/lib/config";
 import { permissionsFor } from "@/lib/permissions";
-import { enforceDashboardGates } from "@/lib/privacy/gates";
+import { gatePage } from "@/lib/privacy/gates";
 import { jakarta } from "../fonts";
 import "../globals.css";
 
@@ -31,7 +32,8 @@ export async function generateMetadata(): Promise<Metadata> {
  */
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const s = await requireStaff();
-  await enforceDashboardGates(s);
+  // The gates (also applied by requireStaff on every page) and the dashboard-wide compliance banner.
+  const banner = await gatePage(s);
   const locale = await getStaffLocale();
   const t = getT(locale, "dashboard");
   const now = new Date();
@@ -80,6 +82,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
                 counts={{ attention: attention?.n ?? 0, requests: requests?.n ?? 0, waitlist: waiting?.n ?? 0 }}
               />
               <main id="main" tabIndex={-1} className="min-w-0 flex-1 p-4 sm:p-6 lg:p-8">
+                <ComplianceBanner state={banner} />
                 {children}
               </main>
             </div>

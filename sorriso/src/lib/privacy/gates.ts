@@ -50,8 +50,13 @@ export const SUBPROCESSOR_CHANGES: readonly SubprocessorChange[] = [
   { version: "2026-10", announced: "2026-10-01", effective: "2026-10-01", items: [{ type: "initial" }] },
 ];
 
-/** Paths the gate never redirects from (prefixes). */
-export const GATE_EXEMPT_PATHS = ["/dashboard/legal", "/dashboard/account", "/dashboard/settings/closure"] as const;
+/**
+ * Paths the gate never redirects from (prefixes). The practice-wide export is reachable too: the
+ * closure page offers it, and a practice that won't accept a new version must still get its data
+ * out (EU Data Act, switching). Since the integration pass the gate also runs on every page and
+ * route handler through requireStaff() (src/lib/auth.ts), not only in the layout.
+ */
+export const GATE_EXEMPT_PATHS = ["/dashboard/legal", "/dashboard/account", "/dashboard/settings/closure", "/dashboard/settings/export"] as const;
 
 /** Documents the practice accepts as a whole (any owner or admin). */
 export const ORG_DOCS = ["dpa", "terms"] as const satisfies readonly LegalDoc[];

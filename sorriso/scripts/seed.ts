@@ -769,6 +769,8 @@ async function main() {
           riskReasons: [],
           riskComputedAt: null,
           fundId: null,
+          rebookOfferStartsAt: null,
+          rebookCallStartsAt: null,
           cancelledAt: status === "cancelled" ? new Date(slot.start.getTime() - 30 * 3_600_000) : null,
           cancelledBy: status === "cancelled" ? (chance(0.8) ? "patient" : "staff") : null,
           cancelReason: status === "cancelled" ? pick(["Replied NO via SMS", "Work commitment", "Feeling unwell", null]) : null,

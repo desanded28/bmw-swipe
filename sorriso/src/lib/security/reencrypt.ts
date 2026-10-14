@@ -29,6 +29,7 @@ export const ENCRYPTED_COLUMNS: readonly EncryptedColumn[] = [
   { table: "messages", column: "html", aad: "messages.html" },
   { table: "waitlist", column: "note", aad: "waitlist.note" },
   { table: "privacy_requests", column: "details", aad: "privacy_requests.details" },
+  { table: "privacy_requests", column: "answer_contact", aad: "privacy_requests.answer_contact" },
   { table: "audit_log", column: "reason", aad: "audit_log.reason" },
   { table: "form_submissions", column: "answers", aad: "form_submissions.answers" },
 ];

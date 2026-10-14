@@ -51,6 +51,7 @@ const patient = (overrides: Partial<Patient> = {}): Patient => ({
   erasedAt: null,
   possibleDuplicateOfId: null,
   mergedIntoId: null,
+  erasureRequestedAt: null,
   ...overrides,
 });
 

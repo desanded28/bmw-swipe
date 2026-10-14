@@ -33,6 +33,13 @@ import { clientIpHash, userAgentHash } from "./rate-limit";
  * deadlocks on the local write mutex (src/db/serialize.ts).
  */
 
+/**
+ * The closed list of audited actions, grouped by area. Names are `<subject>.<verb>`; metadata
+ * carries ids, counts and codes only. The audit viewer labels each one from
+ * privacyAdmin.audit.actions.<action> (falling back to the raw name). Rows already written keep
+ * their action: nothing here is renamed or removed, only added (the integration pass added the
+ * entries marked "(integration)"; see the lead's decision log for which package adopts each).
+ */
 export const AUDIT_ACTIONS = [
   // patients
   "patient.view",
@@ -48,28 +55,61 @@ export const AUDIT_ACTIONS = [
   "patient.merge",
   // appointments
   "appointment.view",
+  /** (integration) A calendar, list or board view: no entity, metadata { view, count }. */
+  "appointment.list",
   "appointment.create",
   "appointment.update",
   "appointment.cancel",
   "appointment.note.update",
   "appointment.link.issue",
+  // another adult confirming a booking made for them (Art. 9(2)(a) consent from the data subject) (integration)
+  "adult_confirmation.request",
+  "adult_confirmation.confirm",
+  "adult_confirmation.decline",
+  "adult_confirmation.expire",
+  // schedules and the waitlist (integration)
+  "schedule.update",
+  "waitlist.view",
+  "waitlist.update",
+  // messages and reminders (integration)
+  /** Message log or thread opened (entity message, or none plus { view, count } for a list). */
+  "message.view",
+  /** A reminder run started by staff: metadata { due, sent, skipped, failed, retry }. */
+  "reminders.run",
+  // care: recalls and forms (integration)
+  "recall.update",
+  "form.submit",
+  /** Marked as added to the clinical record, or printed / downloaded. */
+  "form.export",
   // privacy
   "consent.record",
   "privacy_request.create",
+  /** (integration) A request's detail page opened. */
+  "privacy_request.view",
   "privacy_request.update",
   "privacy_center.view",
   "privacy_center.export",
   // auth
+  /** (integration) A practice and its first owner account created. */
+  "auth.signup",
   "auth.login.success",
   "auth.login.fail",
   "auth.logout",
+  /** (integration) An email address confirmed through its link, and a new link sent. */
+  "auth.email.verify",
+  "auth.email.resend",
   "auth.mfa.enable",
+  /** (integration) Two-step sign-in turned off by the user, and reset by a manager. */
+  "auth.mfa.disable",
+  "auth.mfa.reset",
   "auth.mfa.fail",
   "auth.password.change",
   "auth.password.reset",
   "session.revoke",
   // team and keys
   "member.invite",
+  /** (integration) A pending invitation withdrawn before it was accepted. */
+  "member.invite_withdraw",
   "member.role_change",
   "member.remove",
   "apikey.create",
@@ -82,17 +122,25 @@ export const AUDIT_ACTIONS = [
   "settings.update",
   "settings.privacy.update",
   "legal.accept",
+  /** (integration) Practices told about a change to a legal document (e.g. the sub-processor list). */
+  "legal.notify",
   // reviews and profiles
   "review.reply",
   "review.report",
   "review.moderate",
   "review.withdraw",
   "practitioner.profile.approve",
+  /** (integration) A practitioner left (or rejoined) the marketplace listing: metadata { optedOut }. */
+  "practitioner.marketplace.opt_out",
+  /** (integration) A platform admin verified (or revoked) a practitioner's Albo registration. */
+  "practitioner.albo.verify",
   // organisation and platform
   "export.org",
   "org.close",
   "retention.run",
   "platform.access",
+  /** (integration) Platform-admin rights granted or revoked (scripts/grant-platform-admin.ts). */
+  "platform.admin_grant",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -110,6 +158,8 @@ export const AUDIT_ENTITY_TYPES = [
   "consent",
   "form_submission",
   "recall",
+  /** (integration) */
+  "waitlist",
 ] as const;
 export type AuditEntityType = (typeof AUDIT_ENTITY_TYPES)[number];
 

@@ -34,16 +34,3 @@ export function resolveSettings(settings: StoredOrgSettings | OrgSettings | null
     care: resolveCareSettings(s.care),
   };
 }
-
-/** @deprecated English-only; use the reminders namespace (src/i18n) to describe offsets. */
-export function describeOffset(minutes: number): string {
-  if (minutes % (24 * 60) === 0) {
-    const d = minutes / (24 * 60);
-    return `${d} day${d === 1 ? "" : "s"} before`;
-  }
-  if (minutes % 60 === 0) {
-    const h = minutes / 60;
-    return `${h} hour${h === 1 ? "" : "s"} before`;
-  }
-  return `${minutes} minutes before`;
-}

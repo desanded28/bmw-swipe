@@ -113,6 +113,13 @@ describe("proxy passes through", () => {
     expect(forwarded(proxy(request("/de/c/x", spoofed)), "x-sorriso-locale")).toBe("de");
   });
 
+  it("forwards the query string (x-search), overwriting a client-sent one", () => {
+    expect(forwarded(proxy(request("/de/c/x?service=y&via=z")), "x-search")).toBe("?service=y&via=z");
+    expect(forwarded(proxy(request("/de/c/x", { headers: { "x-search": "?spoofed=1" } })), "x-search")).toBe("");
+    expect(forwarded(proxy(request("/dashboard/patients?q=1")), "x-search")).toBe("?q=1");
+    expect(forwarded(proxy(request("/de/c/x", { headers: { "x-pathname": "/dashboard/legal" } })), "x-pathname")).toBe("/de/c/x");
+  });
+
   it("keeps the client's other request headers", () => {
     const res = proxy(request("/it/c/x", { cookie: "NEXT_LOCALE=it", acceptLanguage: "it" }));
     expect(forwarded(res, "cookie")).toBe("NEXT_LOCALE=it");
