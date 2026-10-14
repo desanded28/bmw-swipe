@@ -32,9 +32,22 @@ describe("redact", () => {
     expect(redact("550 mailbox anna.bianchi+test@example.co.uk unavailable")).toBe("550 mailbox a•••@e••• unavailable");
   });
 
+  it("masks numbers written without + (national, 00, bare country code, URL-encoded)", () => {
+    expect(redact("call 3331234567 now")).toBe("call •••4567 now");
+    expect(redact("to 333 1234567 and 333 123 4567 and 333-123-4567")).toBe("to •••4567 and •••4567 and •••4567");
+    expect(redact("landline 02 12345678 or 0612345678")).toBe("landline •••5678 or •••5678");
+    expect(redact("0039 333 1234567")).toBe("+39•••4567");
+    expect(redact("0044 7700 900123")).toBe("+44•••0123");
+    expect(redact("393331234567")).toBe("+39•••4567");
+    expect(redact("To=%2B393331234567&Body=x")).toBe("To=+39•••4567&Body=x");
+    expect(redact("To=%2b447700900123")).toBe("To=+44•••0123");
+  });
+
   it("leaves ids, timestamps and offsets alone", () => {
     const text = "appointment=Ab12Cd34Ef56 at=2026-10-13T09:00:00+01:00 ms=1760000000000 count=+12";
     expect(redact(text)).toBe(text);
+    const more = "code 21211 status=503 port=3010 took 0.375s date=13-10-2026 time=08:30 ids=Xy3331234567z,3331234 v=1.2.3";
+    expect(redact(more)).toBe(more);
   });
 
   it("drops drizzle's bound parameters, including multi-line values", () => {

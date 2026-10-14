@@ -4,7 +4,7 @@ import { p } from "./plural";
 import { messagesFor } from "./registry";
 import { getMessages, getT } from "./server";
 import { createTranslator, interpolate, mergeMessages } from "./translator";
-import type { Messages, Vars, WideLeaves } from "./types";
+import type { Messages, Plural, Vars, WideLeaves } from "./types";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 function expectType<T extends true>(_ok: T) {}
@@ -136,8 +136,7 @@ describe("types", () => {
   });
 
   it("lists the leaves that lost their literal type (English files without `as const`)", () => {
-    const leaf = p({ one: "{count} slot", other: "{count} slots" });
-    type Tree = { booking: { title: string; slots: typeof leaf; ok: "Book" }; site: { nav: { home: string } } };
+    type Tree = { booking: { title: string; slots: Plural; ok: "Book" }; site: { nav: { home: string } } };
     expectType<Equal<WideLeaves<Tree>, "booking.title" | "site.nav.home">>(true);
     expectType<Equal<WideLeaves<typeof EN_MESSAGES>, never>>(true);
   });

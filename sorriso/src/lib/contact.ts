@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { patients, type Patient, type PrivacySettings } from "@/db/schema";
 import { hmac } from "./crypto";
@@ -109,8 +109,21 @@ export async function markContactVerified(patientId: string, contact: ProvenCont
     .where(eq(patients.id, patientId));
   const hash = contactHash(contact.kind, contact.value);
   if (!p || !hash || !matchedVia(p, hash)) return false;
-  await tx.update(patients).set({ contactVerifiedAt: now }).where(eq(patients.id, patientId));
+  // Record which contact was proven, so "verified" never spills over to the patient's other contacts.
+  await tx
+    .update(patients)
+    .set({
+      contactVerifiedAt: now,
+      verifiedContacts: sql`(select json_group_array(value) from (select value from json_each(${patients.verifiedContacts}) union select ${hash}))`,
+    })
+    .where(eq(patients.id, patientId));
   return true;
+}
+
+/** Was this specific contact (e.g. the phone a reminder goes to) proven to belong to the patient? */
+export function isContactVerified(p: Pick<Patient, "verifiedContacts">, kind: ContactKind, value: string | null): boolean {
+  const hash = value ? contactHash(kind, value) : null;
+  return Boolean(hash && p.verifiedContacts.includes(hash));
 }
 
 // ---------------------------------------------------------------- contact hashing

@@ -400,7 +400,7 @@ function DetailsStep({
     note: "",
     isNewPatient: "yes",
     preferredChannel: "sms",
-    locale: typeof navigator !== "undefined" && !navigator.language.startsWith("it") ? "en" : "it",
+    locale: "it",
     consent: false,
     website: "",
   }));
@@ -715,7 +715,7 @@ function WaitlistOffer({
           lastName: form.lastName,
           phone: form.phone || null,
           email: form.email || null,
-          locale: navigator.language.startsWith("it") ? "it" : "en",
+          locale: "it",
         },
       }),
     }).catch(() => null);

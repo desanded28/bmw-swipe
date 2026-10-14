@@ -1,5 +1,5 @@
 import { MapPin, Search, Stethoscope } from "lucide-react";
-import { SERVICE_CATEGORIES } from "@/db/schema";
+import { SERVICE_CATEGORIES } from "@/db/enums";
 import { CATEGORY_LABELS } from "@/lib/format";
 import { cx } from "./ui";
 

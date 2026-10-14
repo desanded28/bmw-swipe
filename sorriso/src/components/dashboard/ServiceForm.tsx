@@ -1,5 +1,6 @@
 import { saveService } from "@/app/dashboard/actions";
-import { SERVICE_CATEGORIES, type Service } from "@/db/schema";
+import { SERVICE_CATEGORIES } from "@/db/enums";
+import type { Service } from "@/db/schema";
 import { CATEGORY_LABELS } from "@/lib/format";
 import { Field, Input, Select, Textarea } from "../ui";
 import { ActionForm } from "./ActionForm";

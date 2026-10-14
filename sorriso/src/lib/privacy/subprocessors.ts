@@ -39,8 +39,8 @@ export type Subprocessor = {
   /** i18n key suffix for the service description (e.g. legalPractice.subprocessors.service.<id>). */
   service: string;
   dataCategories: SubprocessorDataCategory[];
-  /** Where data is hosted or processed. */
-  region: string;
+  /** Where data is hosted or processed; null when the deployment hasn't said (render "not configured", never assume the EU). */
+  region: string | null;
   transfer: TransferTool;
   /** Covered by the transfer impact assessment. */
   tia: boolean;
@@ -59,7 +59,9 @@ function smtpTransfer(): TransferTool {
 
 /**
  * The SMTP provider is chosen per deployment, so it is described through the environment.
- * Without SMTP_PROVIDER_TRANSFER=eu (an EU-owned provider), it is treated as a transfer.
+ * Without SMTP_PROVIDER_TRANSFER=eu (an EU-owned provider), it is treated as a transfer. Nothing
+ * is assumed where the environment is silent: the region stays null rather than "EU", and
+ * production refuses to start without the provider's identity (assertSubprocessorsConfigured).
  */
 function smtpEntry(): Subprocessor {
   const transfer = smtpTransfer();
@@ -70,11 +72,28 @@ function smtpEntry(): Subprocessor {
     parent: env("SMTP_PROVIDER_PARENT"),
     service: "email",
     dataCategories: ["contact", "message_content", "message_metadata"],
-    region: env("SMTP_PROVIDER_REGION") ?? "EU",
+    region: env("SMTP_PROVIDER_REGION"),
     transfer,
     tia: transfer !== "eu",
     dpaUrl: env("SMTP_PROVIDER_DPA_URL"),
   };
+}
+
+const SMTP_IDENTITY = ["SMTP_PROVIDER_NAME", "SMTP_PROVIDER_ENTITY", "SMTP_PROVIDER_REGION"] as const;
+
+/** Environment variables the published sub-processor list still needs (Art. 28(2) and (4): name the provider and where it processes). */
+export function missingSubprocessorConfig(): string[] {
+  return SMTP_IDENTITY.filter((name) => !env(name));
+}
+
+/**
+ * For startup (src/instrumentation.ts) and pre-deploy checks: in production, an SMTP deployment
+ * must identify its provider, or /legal/subprocessors and the DPA annex would name nobody.
+ */
+export function assertSubprocessorsConfigured(): void {
+  if (process.env.NODE_ENV !== "production" || !env("SMTP_URL")) return;
+  const missing = missingSubprocessorConfig();
+  if (missing.length) throw new Error(`Sub-processor list incomplete: set ${missing.join(", ")}`);
 }
 
 export function getSubprocessors(): Subprocessor[] {

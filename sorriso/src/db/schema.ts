@@ -481,8 +481,10 @@ export const patients = sqliteTable(
     guardianRelation: text("guardian_relation", { enum: GUARDIAN_RELATIONS }),
     guardianPhone: text("guardian_phone"),
     guardianEmail: text("guardian_email"),
-    /** Contact proven by an OTP, an explicit action on the manage page, or an SMS reply. */
+    /** Last time any contact was proven (OTP, explicit action on the manage page, SMS reply). */
     contactVerifiedAt: integer("contact_verified_at", { mode: "timestamp_ms" }),
+    /** HMACs of the specific contacts proven (contactHash): proof is per contact, not per patient. */
+    verifiedContacts: text("verified_contacts", { mode: "json" }).$type<string[]>().notNull().default([]),
     /** Art. 18 restriction: data kept but not used (no messages, no new bookings without reason). */
     restrictedAt: integer("restricted_at", { mode: "timestamp_ms" }),
     restrictionReason: text("restriction_reason"),
@@ -824,7 +826,8 @@ export const auditLog = sqliteTable(
     action: text("action").notNull(),
     entityType: text("entity_type"),
     entityId: text("entity_id"),
-    reason: text("reason"),
+    /** Staff free text (e.g. why restricted data was accessed): may contain personal data. */
+    reason: encryptedText("reason", "audit_log.reason"),
     ipHash: text("ip_hash"),
     uaHash: text("ua_hash"),
     metadata: text("metadata", { mode: "json" }).$type<Record<string, string | number | boolean | null>>(),

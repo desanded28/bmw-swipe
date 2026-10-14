@@ -44,6 +44,7 @@ const patient = (overrides: Partial<Patient> = {}): Patient => ({
   guardianPhone: null,
   guardianEmail: null,
   contactVerifiedAt: null,
+  verifiedContacts: [],
   restrictedAt: null,
   restrictionReason: null,
   retainUntil: null,
