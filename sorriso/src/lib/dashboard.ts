@@ -33,7 +33,9 @@ import { logError } from "./log";
 import { can, PermissionError, permissionsFor, type Permission } from "./permissions";
 import { hasRestrictedAccess } from "./privacy/erasure";
 import { getPrivacy } from "./privacy/settings";
+import { rebookStatus } from "./rebooking";
 import { loadCareFlags } from "./risk";
+import { isStepUpRequired } from "./security/errors";
 
 /**
  * Server-side data for the dashboard's scheduling screens (WP2): the resources the calendar is
@@ -328,6 +330,9 @@ export async function loadAppointmentDetail(s: StaffSession, id: string, locale:
     }));
   }
 
+  // Clearing the flag ("Mark handled") withdraws a rebooking offer (WP8): the drawer warns first.
+  const rebookOfferSent = row.needsAttention && access.write ? (await rebookStatus(s.org.id, id)).offerSent : false;
+
   const detail: ApptDetailDTO = {
     ...row,
     access,
@@ -336,6 +341,7 @@ export async function loadAppointmentDetail(s: StaffSession, id: string, locale:
     internalNote: access.notes ? (full?.internalNote ?? null) : null,
     cancelReason: access.notes ? (full?.cancelReason ?? null) : null,
     messages: thread,
+    rebookOfferSent,
   };
   await auditStaff(
     s,
@@ -405,10 +411,11 @@ export async function loadAppointmentPhone(s: StaffSession, id: string): Promise
 // ---------------------------------------------------------------- list views in the access log
 
 /**
- * Record that a list of patients' appointments was shown (calendar, overview, confirmations,
- * waitlist): one row per view with the count, never the names. The drawer audits each record.
+ * Record that a list of patients' appointments was shown (calendar, overview, confirmations:
+ * appointment.list; the waitlist: waitlist.view): one row per view, no entity, with the count,
+ * never the names. The drawer audits each record it opens (appointment.view).
  */
-export async function auditListView(s: StaffSession, view: string, count: number, action: AuditAction = "appointment.view") {
+export async function auditListView(s: StaffSession, view: string, count: number, action: Extract<AuditAction, "appointment.list" | "waitlist.view"> = "appointment.list") {
   if (count > 0) await auditStaff(s, action, undefined, { metadata: { view, count } });
 }
 
@@ -428,6 +435,9 @@ export async function calendarTexts(s: Parameters<typeof staffLocaleOf>[0]): Pro
  * carry the zodErrorMap message prefixed with the field's label. Null for anything else.
  */
 export function localiseError(err: unknown, t: CalendarT): ActionResult | null {
+  // A BookingError too, but guard() answers it: requireStepUp()'s own (localised) message with
+  // the code the UI acts on (useSecureAction sends the user to the verification page).
+  if (isStepUpRequired(err)) return null;
   if (err instanceof BookingError) {
     const reasonKey = `errors.reasons.${err.reason ?? ""}` as const;
     if (err.reason && t.has(reasonKey)) return fail(t(reasonKey), err.reason === "restriction_reason_required" ? "restricted" : err.code);
@@ -459,8 +469,8 @@ export async function dashboardAction(
     } catch (err) {
       const failure = localiseError(err, t);
       if (failure) return failure;
-      // Next.js redirects and notFound() propagate; guard() answers permission errors.
-      if (err instanceof PermissionError || (err && typeof err === "object" && "digest" in err)) throw err;
+      // Next.js redirects and notFound() propagate; guard() answers permission and step-up errors.
+      if (err instanceof PermissionError || isStepUpRequired(err) || (err && typeof err === "object" && "digest" in err)) throw err;
       logError("dashboard action", err);
       return fail(t("errors.unexpected"), "unexpected");
     }

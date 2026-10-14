@@ -7,8 +7,8 @@ import { cancelForClosureAction, loadClosureClashes, sendRebookOffersAction } fr
 import { capitalizeFirst, fmtDay, fmtTime, zonedDate } from "@/i18n/datefmt";
 import { useLocale, useT } from "@/i18n/provider";
 import { Badge, Button } from "../ui";
+import { useModalDialog } from "../dashboard/modal";
 import { useRunAction } from "../dashboard/useRunAction";
-import { useNativeModal } from "./modal";
 import type { CareResult, ClashItem } from "./types";
 
 /** Class names of a drawer docked to the right edge (a native <dialog>), as WP2's drawers. */
@@ -32,7 +32,7 @@ function RebookDrawerDialog({ timeOffId, onClose }: { timeOffId: string; onClose
   const locale = useLocale();
   const titleId = useId();
   const descId = useId();
-  const { ref, props: dialogProps } = useNativeModal(onClose);
+  const { ref, props: dialogProps } = useModalDialog(onClose);
   const { run, pending } = useRunAction();
   const [version, setVersion] = useState(0);
   const [loaded, setLoaded] = useState<{ v: number; res: CareResult<ClashItem[]> } | null>(null);

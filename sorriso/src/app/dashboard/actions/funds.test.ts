@@ -2,12 +2,12 @@
  * Public practice texts outside the catalogue and the profile go through the health-advertising
  * check too (Law 145/2018): health-fund notes (saveOrgFunds) and directions to an office
  * (saveLocation). Promotional wording blocks the save and stores nothing; suggestive wording is
- * saved with a warning.
+ * saved with a warning. Another practice's office or chair answers not_found.
  */
 import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
-import { locations, organizations, orgFunds } from "@/db/schema";
+import { locations, organizations, orgFunds, rooms } from "@/db/schema";
 import type { StaffSession } from "@/lib/auth";
 import { createPractice } from "@/test/fixtures";
 
@@ -23,7 +23,7 @@ vi.mock("@/lib/auth", async (importOriginal) => ({
 }));
 
 const { saveOrgFunds } = await import("./funds");
-const { saveLocation } = await import("./locations");
+const { addRoom, saveLocation, updateRoom } = await import("./locations");
 
 let p: Awaited<ReturnType<typeof createPractice>>;
 
@@ -69,5 +69,16 @@ describe("saveLocation", () => {
   it("saves plain directions", async () => {
     expect(await saveLocation(p.milano, null, fd({ ...office, transit: "Metro M1 Cairoli, 3 minuti a piedi" }))).toMatchObject({ ok: true });
     expect(await transit()).toBe("Metro M1 Cairoli, 3 minuti a piedi");
+  });
+
+  it("answers not_found for another practice's office or chair and changes nothing", async () => {
+    const other = await createPractice();
+    expect(await saveLocation(other.milano, null, fd({ name: "Hijacked", address: "Via X 1", city: "X" }))).toMatchObject({ ok: false, code: "not_found" });
+    expect(await addRoom(other.milano, "Hijacked")).toMatchObject({ ok: false, code: "not_found" });
+    expect(await updateRoom(other.chair1, { name: "Hijacked", active: false })).toMatchObject({ ok: false, code: "not_found" });
+    expect((await db.select().from(locations).where(eq(locations.id, other.milano)))[0].name).toBe("Milano");
+    const chairs = await db.select().from(rooms).where(eq(rooms.locationId, other.milano));
+    expect(chairs.map((r) => r.name).sort()).toEqual(["Chair 1", "Chair 2"]);
+    expect(chairs.every((r) => r.active)).toBe(true);
   });
 });

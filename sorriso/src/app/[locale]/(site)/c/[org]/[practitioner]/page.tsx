@@ -5,6 +5,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { BookingFlow } from "@/components/booking/BookingFlow";
 import { AccessibilityList } from "@/components/marketplace/AccessibilityList";
+import { bookingLabels } from "@/components/marketplace/price";
 import { ProfileFacts } from "@/components/marketplace/ProfileFacts";
 import { RatingBreakdown } from "@/components/RatingBreakdown";
 import { ReviewList } from "@/components/ReviewList";
@@ -147,7 +148,14 @@ export default async function PractitionerPage({ params, searchParams }: { param
             <Card className="p-6">
               <h2 className="mb-4 text-lg font-bold">{t("practitioner.book", { name })}</h2>
               <ClientMessages locale={locale} ns={["consents", "privacy", "catalog"]}>
-                <BookingFlow clinic={clinic} initial={{ practitionerId: p.id }} today={todayIn(clinic.org.timezone)} context={context} practiceRef={practiceRef} />
+                <BookingFlow
+                  clinic={clinic}
+                  initial={{ practitionerId: p.id }}
+                  today={todayIn(clinic.org.timezone)}
+                  context={context}
+                  practiceRef={practiceRef}
+                  labels={bookingLabels(clinic.services, locale, getT(locale, "common"), getT(locale, "catalog"))}
+                />
               </ClientMessages>
             </Card>
             <Card className="p-6" id="reviews">

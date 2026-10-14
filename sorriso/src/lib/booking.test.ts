@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
-import { appointments, auditLog, messages, patients, reminders, waitlist } from "@/db/schema";
+import { appointments, auditLog, messages, organizations, patients, reminders, waitlist } from "@/db/schema";
 import { createPractice, MONDAY, NOW, TZ } from "@/test/fixtures";
 import {
   BookingError,
@@ -158,6 +158,43 @@ describe("cancel, reschedule and waitlist", () => {
     expect(moved.appointment.confirmation).toBe("confirmed");
     const pending = await db.select().from(reminders).where(and(eq(reminders.appointmentId, d.appointment.id), eq(reminders.status, "pending")));
     expect(pending).toHaveLength(3);
+  });
+
+  it("booking from a waitlist offer closes the entry (closedAt, the retention clock)", async () => {
+    const q = await createPractice();
+    const first = await createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt: at(9), patient: patient({ firstName: "Wilma" }), source: "staff", online: false, now: NOW });
+    const entryId = newId();
+    await db.insert(waitlist).values({ id: entryId, orgId: q.orgId, patientId: first.patient.id, serviceId: q.visit, earliestDate: MONDAY, latestDate: MONDAY });
+    await createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt: at(10), patient: { id: first.patient.id }, source: "waitlist", online: false, waitlistEntryId: entryId, now: NOW });
+    const [entry] = await db.select().from(waitlist).where(eq(waitlist.id, entryId));
+    expect(entry).toMatchObject({ status: "booked", closedAt: NOW });
+  });
+
+  it("staff cancel and move notices use WhatsApp only with an approved template of their own kind", async () => {
+    vi.stubEnv("TWILIO_WHATSAPP_CONTENT_SIDS", JSON.stringify({ cancelled: { it: `HX${"c".repeat(32)}` } }));
+    try {
+      const q = await createPractice();
+      await db
+        .update(organizations)
+        .set({ settings: { ...q.settings, privacy: { ...q.settings.privacy, whatsappEnabled: true } } })
+        .where(eq(organizations.id, q.orgId));
+      const bookOnWhatsApp = async (hh: number) => {
+        const d = await createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt: at(hh), patient: patient({ firstName: "Wapp", preferredChannel: "whatsapp" }), source: "staff", online: false, now: NOW });
+        await recordConsent(db, { orgId: q.orgId, patientId: d.patient.id, purpose: "whatsapp_channel", granted: true, locale: "it", method: "staff_recorded", source: "staff" });
+        return d;
+      };
+      const cancelled = await bookOnWhatsApp(9);
+      const moved = await bookOnWhatsApp(10);
+      await cancelAppointment(cancelled.appointment.id, { by: "staff", now: NOW });
+      await rescheduleAppointment(moved.appointment.id, { startsAt: at(11), by: "staff", now: NOW });
+      const sent = (id: string) => db.select().from(messages).where(eq(messages.appointmentId, id));
+      // 'cancelled' has an approved template: WhatsApp, to the patient's number.
+      expect((await sent(cancelled.appointment.id)).map((m) => [m.channel, m.to])).toEqual([["whatsapp", cancelled.patient.phone]]);
+      // 'rescheduled' has none here: SMS, never free text on WhatsApp.
+      expect((await sent(moved.appointment.id)).map((m) => m.channel)).toEqual(["sms"]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("counts no-shows on the patient", async () => {

@@ -182,7 +182,7 @@ export async function upsertRecall(tx: Tx, i: UpsertRecallInput): Promise<Recall
 
 /**
  * The clinician's decision after a visit: a recall in `months` (3–24), or none (null). Audited as
- * patient.update on the recall. Returns the recall, or null when none applies.
+ * recall.update on the recall (metadata.patientId names the patient, for the access log). Returns the recall, or null when none applies.
  */
 export async function setRecallInterval(i: {
   orgId: string;
@@ -209,7 +209,7 @@ export async function setRecallInterval(i: {
         {
           orgId: i.orgId,
           actor: { type: "user", id: i.actor.userId },
-          action: "patient.update",
+          action: "recall.update",
           entity: { type: "recall", id: recall.id },
           metadata: { patientId: recall.patientId, appointmentId: i.appointmentId, months: i.months, status: recall.status },
           headers: i.actor.headers,
@@ -584,7 +584,7 @@ async function changeRecall(orgId: string, id: string, actor: StaffActor, now: D
       {
         orgId,
         actor: { type: "user", id: actor.userId },
-        action: "patient.update",
+        action: "recall.update",
         entity: { type: "recall", id: row.id },
         metadata: { patientId: row.patientId, change },
         headers: actor.headers,

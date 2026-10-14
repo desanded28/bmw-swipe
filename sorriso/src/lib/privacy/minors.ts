@@ -13,8 +13,9 @@ import type { BookingRelationInput } from "./consent";
  *                (it decides routing and when guardian access ends) and the guardian must give
  *                a name, a relation and a way to reach them.
  * - other_adult: allowed through the practice's channels (the practice gives the Art. 14
- *                notice). Not on the marketplace: Sorriso's Art. 9(2)(a) consent can only
- *                come from the data subject, so the adult must book themselves.
+ *                notice). On the marketplace Sorriso's Art. 9(2)(a) consent can only come
+ *                from the data subject, so the booking is held until the adult confirms it
+ *                themselves (OTHER_ADULT_ON_MARKETPLACE).
  *
  * Ages are taken in Italy. Whether the patient may book and consent alone (14) is decided at the
  * moment of booking, the instant recordConsent checks too: a 13-year-old can't book alone for a
@@ -29,12 +30,13 @@ import type { BookingRelationInput } from "./consent";
  */
 
 /**
- * Marketplace bookings for another adult. "refused" until the lead wires the held booking of
- * src/lib/privacy/adult-confirmation.ts into src/lib/booking.ts (TODO(WP4) there); then "held":
- * the relation check lets them through and the booking waits for the adult's own confirmation.
- * The booking form's texts follow this switch.
+ * Marketplace bookings for another adult: "held" (wired in src/lib/booking.ts): the relation check
+ * lets them through and the booking waits for the adult's own confirmation
+ * (src/lib/privacy/adult-confirmation.ts). "refused" would answer other_adult_must_book_themselves.
+ * The booking form's texts follow this switch. The waitlist has no hold, so planBookingPrivacy
+ * (booking.ts) still refuses a marketplace waitlist entry for another adult.
  */
-export const OTHER_ADULT_ON_MARKETPLACE = "refused" as "refused" | "held";
+export const OTHER_ADULT_ON_MARKETPLACE = "held" as "refused" | "held";
 
 /** Under this age a patient can't consent alone, and messages go to the guardian. */
 export const GUARDIAN_ROUTING_AGE = 14;

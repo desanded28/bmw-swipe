@@ -19,8 +19,11 @@ duplicate patients. This package also owns the booking engine (`src/lib/booking.
 
 Dashboard actions live in `src/app/dashboard/actions/care.ts` and `timeoff.ts`; the patient pages'
 actions next to their pages. Lists of patients are audited as `patient.search` (recalls page,
-duplicates queue, the "Rebook N patients" drawer), changes as `patient.update` (recalls, forms,
-duplicate dismissals) or `appointment.update`/`.cancel`, merges as `patient.merge`, clinical reads
+duplicates queue, the "Rebook N patients" drawer), changes as `recall.update` (recall interval,
+confirm, dismiss, called), `form.submit` (a signed medical history), `form.export` ("mark as added to
+the clinical record"), `patient.update` (duplicate dismissals) or `appointment.update`/`.cancel`
+(each recall and form row carries `metadata.patientId`, for the patient's access log), merges as
+`patient.merge`, clinical reads
 as `patient.clinical.view` **on the patient** (so they show in the patient's access log, the
 privacy center and the Art. 15 export).
 
@@ -135,7 +138,8 @@ Prenota: {url}`, followed by the opt-out (`Per non ricevere più promemoria: {op
 2. "Rebook N patients" opens a drawer listing them (a native modal `<dialog>`). **Send offers**
    (`sendRebookOffers`): each visit is flagged `needsAttention`, its pending reminders are
    cancelled (they would announce a visit that can't happen), the offer is recorded for the
-   visit's current start (an `appointment.update` audit row, `rebook: "offer"`), and the patient —
+   visit's current start (`appointments.rebook_offer_starts_at`, in the same transaction as the
+   flag; plus an `appointment.update` audit row, `rebook: "offer"`), and the patient —
    or the guardian under 14 — gets `careMessages.practiceMoved` in their language with
    `/a/<token>/rebook`. Discreet: date and practice only. Restricted patients get no message
    (the practice calls them).
@@ -149,7 +153,8 @@ Prenota: {url}`, followed by the opt-out (`Per non ricevere più promemoria: {op
    assistant offers right now is accepted (`acceptAlternative` recomputes the alternatives and
    refuses any other key as "taken"), and the slot is checked again. The original slot is freed and
    offered to the waitlist when bookable (e.g. a chair closure with another chair free).
-4. **Call me instead** records the request for the visit's start (`rebook: "call_requested"`),
+4. **Call me instead** records the request for the visit's start (`rebook_call_starts_at`, plus an
+   audit row `rebook: "call_requested"`),
    keeps `needsAttention`, and puts the visit at the top of the call list. The visit's
    confirmation is left as it was: the patient declined nothing.
 5. Or staff **cancel instead**: `cancelledBy = "staff"`, `cancelReason = "practice_unavailable"`
@@ -161,7 +166,8 @@ asking for a call — only once the practice offered it (`patientRebook`): an of
 the visit's current start, `needsAttention` still set, and a closure still covering it. So a visit
 staff force-booked into a blocked time, or one they will phone about, shows the patient nothing;
 "mark handled" (clearing `needsAttention`) withdraws an offer; a visit moved since the offer needs
-a new one. Removing the closure ends it and brings the reminders back (`afterClosureRemoved`);
+a new one (both columns count only while they equal `starts_at`, and `rescheduleAppointment` clears
+them). Removing the closure ends it and brings the reminders back (`afterClosureRemoved`);
 `needsAttention` stays for staff to clear, since the patient may have been told the visit moves.
 
 ## Digital medical history (anamnesis)
@@ -184,7 +190,7 @@ submitAnamnesis: answers checked → code verified (purpose + target = contact o
 form_submissions: answers  = encryptedText("v1:…", AES-256-GCM, AAD form_submissions.answers)
                   red_flags = field ids (plain, for the calendar)
                   signer_name, signed_at, signed_via (otp_sms|otp_email), otp_challenge_id,
-                  locale, version, template_id   ── audit: patient.update (form_submission)
+                  locale, version, template_id   ── audit: form.submit (form_submission)
       ▼
 calendar:     status complete/missing → everyone with calendar.read
               red-flag boolean        → patient.clinical.read only (not audited: one boolean)
@@ -196,6 +202,7 @@ sheet:        the answers             → patient.clinical.read only; each openi
 restricted patient: all of the above only after a restricted-access reason (mayReadPatient)
       ▼
 print sheet (clinical record) → "Mark as added to the clinical record" sets exported_at
+                                (audit: form.export)
 ```
 
 The sheet is a native `<dialog>` opened with `showModal()`: opened from the appointment drawer

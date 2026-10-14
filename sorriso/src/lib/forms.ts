@@ -374,7 +374,7 @@ export type SubmitAnamnesisResult =
  * Store a signed medical history. The answers are checked first (so a mistake doesn't burn the
  * code), then the code: it must be a form_signature code sent to the contact on file for this
  * patient. The answers go into the encrypted column, the red flags beside them; an invitation row
- * for the visit is filled in rather than duplicated. Audited as patient.update on the submission.
+ * for the visit is filled in rather than duplicated. Audited as form.submit on the submission.
  */
 export async function submitAnamnesis(i: SubmitAnamnesisInput): Promise<SubmitAnamnesisResult> {
   const now = i.now ?? new Date();
@@ -434,9 +434,9 @@ export async function submitAnamnesis(i: SubmitAnamnesisInput): Promise<SubmitAn
       {
         orgId: d.org.id,
         actor: { type: "patient_link", id: d.appointment.id },
-        action: "patient.update",
+        action: "form.submit",
         entity: { type: "form_submission", id },
-        metadata: { appointmentId: d.appointment.id, kind: "anamnesis", version: template.version, redFlags: redFlags.length, signedVia },
+        metadata: { patientId: d.patient.id, appointmentId: d.appointment.id, kind: "anamnesis", version: template.version, redFlags: redFlags.length, signedVia },
         headers: i.headers,
         at: now,
       },
@@ -751,7 +751,7 @@ export async function markFormExported(i: {
       {
         orgId: i.orgId,
         actor: i.actor,
-        action: "patient.update",
+        action: "form.export",
         entity: { type: "form_submission", id: row.id },
         metadata: { patientId: row.patientId, exported: true },
         at: now,

@@ -8,7 +8,8 @@ import { useT } from "@/i18n/provider";
 import { fullName } from "@/lib/format";
 import { formatPhone } from "@/lib/phone";
 import { Badge, Button, Field, Input, Select, Textarea, cx } from "../ui";
-import { DRAWER_DIALOG, SLOT_CONFLICTS, useModalDialog } from "./AppointmentDrawer";
+import { SLOT_CONFLICTS } from "./AppointmentDrawer";
+import { DRAWER_DIALOG, useModalDialog } from "./modal";
 import { Pii } from "./PrivacyScreen";
 import type { Resources } from "./types";
 import { useRunAction } from "./useRunAction";
@@ -23,8 +24,11 @@ export type NewAppointmentDefaults = {
   roomId?: string;
 };
 
-/** A restricted record in the search results (WP5 masks its name and flags it). */
-const isRestrictedHit = (h: PatientHit) => "restricted" in h && Boolean((h as { restricted?: boolean }).restricted);
+/**
+ * A restricted (Art. 18) record in the search results. WP5's search lists these only for a role
+ * with patient.restricted.read, and booking one needs a reason the server records.
+ */
+const isRestrictedHit = (h: PatientHit) => h.restricted;
 
 /**
  * A patient's name and contacts in the search results and the chosen-patient card. Under the
@@ -231,7 +235,11 @@ export function NewAppointmentDrawer({
                       <li key={h.id}>
                         <button
                           type="button"
-                          onClick={() => setPatient(h)}
+                          onClick={() => {
+                            setPatient(h);
+                            // Ask for the reason up front instead of after a refused first attempt.
+                            setNeedsReason(isRestrictedHit(h));
+                          }}
                           className="group/pii flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-slate-50"
                         >
                           <span className="min-w-0">

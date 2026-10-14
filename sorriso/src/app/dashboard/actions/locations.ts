@@ -59,7 +59,7 @@ export async function saveLocation(id: string | null, _prev: unknown, fd: FormDa
           .set(values)
           .where(and(eq(locations.id, id), eq(locations.orgId, s.org.id)))
           .returning({ id: locations.id });
-        if (!res.length) return fail(t("locations.notFound"));
+        if (!res.length) return fail(t("locations.notFound"), "not_found");
         return ok(warned ? t("locations.savedWithWarnings") : t("locations.saved"));
       }
       const locationId = newId();
@@ -79,7 +79,7 @@ export async function addRoom(locationId: string, name: string): Promise<ActionR
         .select({ id: locations.id })
         .from(locations)
         .where(and(eq(locations.id, locationId), eq(locations.orgId, s.org.id)));
-      if (!l) return fail(t("locations.notFound"));
+      if (!l) return fail(t("locations.notFound"), "not_found");
       await db.insert(rooms).values({ id: newId(), locationId, name: name.trim().slice(0, 60) || t("locations.chair") });
       return ok(t("rooms.added"));
     },
@@ -96,7 +96,7 @@ export async function updateRoom(roomId: string, values: { name?: string; active
         .from(rooms)
         .innerJoin(locations, eq(locations.id, rooms.locationId))
         .where(and(eq(rooms.id, roomId), eq(locations.orgId, s.org.id)));
-      if (!r) return fail(t("rooms.notFound"));
+      if (!r) return fail(t("rooms.notFound"), "not_found");
       await db
         .update(rooms)
         .set({

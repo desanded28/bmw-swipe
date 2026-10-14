@@ -49,6 +49,7 @@ export default {
     restrictedOpenRecord: "This patient's data is restricted. Open the appointment and give a reason to see their contact details.",
     reasonRequired: "Give a reason of at least 3 characters.",
     unknownOffice: "One of the offices no longer exists. Reload the page and try again.",
+    waitlistClosed: "This waitlist entry was already booked or removed.",
     loadFailed: "The details couldn't be loaded. Please try again.",
     reasons: {
       patient_erased: "This patient record was erased and can't be booked.",
@@ -248,6 +249,8 @@ export default {
     approve: "Approve request",
     confirmByPhone: "Confirmed by phone",
     markHandled: "Mark handled",
+    markHandledRebookConfirm:
+      "The patient was sent new times to choose from because of a closure. Marking this handled withdraws that offer: their link will no longer let them pick a time. Continue?",
     sendReminder: "Send reminder",
     reminderVia: "Send by {channel}",
     reschedule: "Reschedule",

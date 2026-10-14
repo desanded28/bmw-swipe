@@ -165,7 +165,9 @@ describe("signing the medical history", () => {
     expect(JSON.parse(row.answers)).toEqual(ANSWERS);
     expect(row).toMatchObject({ signerName: "Signed Form", signedVia: "otp_sms", otpChallengeId: c.challengeId, locale: "it", version: "v1", signedAt: NOW });
     const audits = await db.select().from(auditLog).where(and(eq(auditLog.entityType, "form_submission"), eq(auditLog.entityId, id)));
-    expect(audits.map((a) => a.action)).toEqual(["patient.update"]);
+    expect(audits.map((a) => a.action)).toEqual(["form.submit"]);
+    // The patient is named for the access log; the answers never are.
+    expect(audits[0].metadata).toMatchObject({ patientId: d.patient.id, appointmentId: d.appointment.id, redFlags: 1 });
     expect(JSON.stringify(audits[0].metadata)).not.toContain("Warfarin");
 
     const status = await anamnesisStatuses(p.orgId, [d.appointment], { ...p.settings.care, anamnesisEnabled: true });
@@ -265,6 +267,8 @@ describe("the clinical team's side", () => {
     );
     expect(await clinicalAnamnesis({ orgId: p.orgId, submissionId: res.submissionId, permissions: permissionsFor("practitioner"), actor })).toEqual(restricted);
     expect(await markFormExported({ orgId: p.orgId, submissionId: res.submissionId, permissions: owner, actor })).toBe(true);
+    const exported = await db.select().from(auditLog).where(and(eq(auditLog.action, "form.export"), eq(auditLog.entityId, res.submissionId)));
+    expect(exported.map((r) => [r.actorId, r.metadata?.patientId])).toEqual([[actor.id, d.patient.id]]);
   });
 });
 

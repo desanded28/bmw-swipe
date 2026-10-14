@@ -1,23 +1,28 @@
 "use server";
 
 import { eq } from "drizzle-orm";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { db } from "@/db";
-import { sessions, users } from "@/db/schema";
+import { users } from "@/db/schema";
 import { LOCALES, type Locale } from "@/i18n/config";
 import { getT } from "@/i18n/server";
 import { zodErrorMap } from "@/i18n/zod";
+import { switchSessionOrg } from "@/lib/auth";
 import { staffLocaleOf } from "@/lib/dashboard";
 import { fail, guard, ok, staff, type ActionResult } from "./_shared";
 
 /** Staff session actions (WP2): switching practice and the dashboard language. */
 
-/** Make another of the user's practices the active one. */
+/**
+ * Make another of the user's practices the active one. The session moves with a fresh id
+ * (switchSessionOrg, WP6): the old row is deleted, sign-in time and second-step state carry over.
+ * Not a member of `orgId`: nothing happens.
+ */
 export async function switchOrg(orgId: string) {
   const s = await staff();
-  if (!s.orgs.some((o) => o.org.id === orgId)) return;
-  await db.update(sessions).set({ orgId }).where(eq(sessions.id, s.sessionId));
+  if (typeof orgId !== "string" || !(await switchSessionOrg(s, orgId, new Headers(await headers())))) return;
   redirect("/dashboard");
 }
 

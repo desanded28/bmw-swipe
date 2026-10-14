@@ -1,7 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
-import { formSubmissions, messages, organizations, patients, recalls, services, users } from "@/db/schema";
+import { auditLog, formSubmissions, messages, organizations, patients, recalls, services, users } from "@/db/schema";
 import { createPractice, MONDAY, NOW, TZ } from "@/test/fixtures";
 import { cancelAppointment, createAppointment, setOutcome } from "./booking";
 import { ensureDefaultTemplate } from "./forms";
@@ -9,7 +9,17 @@ import { newId } from "./ids";
 import { permissionsFor } from "./permissions";
 import { withdrawConsent } from "./privacy/consent";
 import { grantRestrictedAccess } from "./privacy/erasure";
-import { addMonthsToDate, appointmentRecall, loadPatientCare, processDueRecalls, recallDashboard, setRecallInterval, upsertRecall } from "./recalls";
+import {
+  addMonthsToDate,
+  appointmentRecall,
+  dismissRecall,
+  loadPatientCare,
+  markRecallCalled,
+  processDueRecalls,
+  recallDashboard,
+  setRecallInterval,
+  upsertRecall,
+} from "./recalls";
 import { zonedToUtc } from "./time";
 
 let p: Awaited<ReturnType<typeof createPractice>>;
@@ -344,6 +354,21 @@ describe("recallDashboard", () => {
     expect(later.overdue.map((r) => r.patientName)).toEqual(["Uno Recall"]);
     expect(later.overdue[0].phone).toMatch(/^\+39/);
     expect(later.stats.due).toBe(1);
+  });
+
+  it("audits every staff change as recall.update, naming the patient for the access log", async () => {
+    const q = await createPractice();
+    await db.update(services).set({ recallMonths: 6 }).where(eq(services.id, q.cleaning));
+    const d = await completedCleaning("Tre", 11, {}, q);
+    const recall = await setRecallInterval({ orgId: q.orgId, appointmentId: d.appointment.id, months: 6, actor: { userId: clinician }, now: AFTER_VISIT });
+    expect(await markRecallCalled(q.orgId, recall!.id, { userId: clinician }, AFTER_VISIT)).toBe(true);
+    expect(await dismissRecall(q.orgId, recall!.id, { userId: clinician }, AFTER_VISIT)).toBe(true);
+    // Another practice's id changes nothing.
+    expect(await dismissRecall(p.orgId, recall!.id, { userId: clinician }, AFTER_VISIT)).toBe(false);
+    const rows = await db.select().from(auditLog).where(and(eq(auditLog.entityType, "recall"), eq(auditLog.entityId, recall!.id))).orderBy(auditLog.seq);
+    expect(rows.map((r) => r.action)).toEqual(["recall.update", "recall.update", "recall.update"]);
+    expect(rows.every((r) => r.metadata?.patientId === d.patient.id && r.actorId === clinician)).toBe(true);
+    expect(rows.map((r) => r.metadata?.change ?? r.metadata?.months)).toEqual([6, "called", "dismissed"]);
   });
 });
 

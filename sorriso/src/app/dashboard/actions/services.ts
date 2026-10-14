@@ -81,7 +81,7 @@ export async function saveService(id: string | null, _prev: unknown, fd: FormDat
           .set(values)
           .where(and(eq(services.id, id), eq(services.orgId, s.org.id)))
           .returning({ id: services.id });
-        if (!res.length) return fail(t("serviceForm.notFound"));
+        if (!res.length) return fail(t("serviceForm.notFound"), "not_found");
         return ok(warned ? t("serviceForm.savedWithWarnings") : t("serviceForm.saved"));
       }
       const [{ max }] = await db

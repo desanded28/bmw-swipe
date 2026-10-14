@@ -1,9 +1,9 @@
 import { eq } from "drizzle-orm";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
-import { messages, patients, type Patient } from "@/db/schema";
+import { messages, organizations, patients, type Patient } from "@/db/schema";
 import { newId } from "@/lib/ids";
-import { withdrawConsent } from "@/lib/privacy/consent";
+import { recordConsent, withdrawConsent } from "@/lib/privacy/consent";
 import { createPractice, NOW } from "@/test/fixtures";
 import { sendPatientMessage } from "./index";
 
@@ -143,5 +143,64 @@ describe("sendPatientMessage", () => {
   it("refuses a patient of another practice", async () => {
     const p = await makePatient();
     await expect(send({ ...p, orgId: "another-org" }, "recall")).rejects.toThrow(/another practice/);
+  });
+});
+
+describe("WhatsApp templates for other namespaces' kinds (careMessages.recall, .practiceMoved, .anamnesisInvite)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("uses the approved template of \"<namespace>.<kind>\" in the patient's language, and SMS where there is none", async () => {
+    const TEMPLATE = `HX${"c".repeat(32)}`;
+    const bodies: URLSearchParams[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+        bodies.push(new URLSearchParams(String(init?.body ?? "")));
+        return new Response(JSON.stringify({ sid: `SM${"1".repeat(32)}` }), { status: 201 });
+      }),
+    );
+    vi.stubEnv("TWILIO_ACCOUNT_SID", "ACtest");
+    vi.stubEnv("TWILIO_AUTH_TOKEN", "tok");
+    vi.stubEnv("TWILIO_FROM", "+390200000000");
+    vi.stubEnv("TWILIO_WHATSAPP_FROM", "+14155238886");
+    vi.stubEnv("TWILIO_WHATSAPP_CONTENT_SIDS", JSON.stringify({ "careMessages.recall": { it: TEMPLATE } }));
+    vi.stubEnv("MESSAGING_ALLOWLIST", "+393334445555,+393334446666");
+
+    const wa = await createPractice();
+    await db
+      .update(organizations)
+      .set({ settings: { ...wa.settings, privacy: { ...wa.settings.privacy, whatsappEnabled: true } } })
+      .where(eq(organizations.id, wa.orgId));
+    const whatsappPatient = async (phone: string, locale: "it" | "en") => {
+      const id = newId();
+      await db.insert(patients).values({ id, orgId: wa.orgId, firstName: "Giulia", lastName: "Rossi", phone, locale, preferredChannel: "whatsapp" });
+      await recordConsent(db, { orgId: wa.orgId, patientId: id, purpose: "whatsapp_channel", granted: true, locale, method: "web_checkbox", source: "booking" });
+      return (await db.select().from(patients).where(eq(patients.id, id)))[0];
+    };
+    const recall = (patient: Patient) =>
+      sendPatientMessage({
+        orgId: wa.orgId,
+        patient,
+        ns: "careMessages",
+        kind: "recall",
+        vars: { clinic: "Studio Test", url: "https://sorriso.test/b", optout: "https://sorriso.test/it/privacy" },
+        url: "https://sorriso.test/b",
+        now: NOW,
+      });
+
+    const italian = await recall(await whatsappPatient("+393334445555", "it"));
+    expect(italian.ok && italian.message).toMatchObject({ channel: "whatsapp", status: "sent" });
+    expect(bodies[0].get("ContentSid")).toBe(TEMPLATE);
+    // Discreet variables only: name, practice, link (a recall has no date).
+    expect(JSON.parse(bodies[0].get("ContentVariables")!)).toEqual({ "1": "Giulia", "3": "Studio Test", "4": "https://sorriso.test/b" });
+
+    // No approved English template: the English patient gets the SMS, never Italian on WhatsApp.
+    const english = await recall(await whatsappPatient("+393334446666", "en"));
+    expect(english.ok && english.message).toMatchObject({ channel: "sms", status: "sent" });
+    expect(bodies[1].get("ContentSid")).toBeNull();
+    expect(bodies[1].get("Body")).toBe("Studio Test: time for a check-up. Book: https://sorriso.test/b");
   });
 });

@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, isNull, like, lt, lte, notInArray, or, type SQL } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, like, lt, lte, or, sql, type SQL } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import {
   appointments,
@@ -11,7 +11,6 @@ import {
   type OrgSettings,
   type Patient,
   type Reminder,
-  type ReminderRule,
   type RiskLevel,
 } from "@/db/schema";
 import {
@@ -42,16 +41,13 @@ const MAX_ATTEMPTS = 3;
 const RISK_RANK: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2 };
 
 /**
- * A rule's onlyIfRisk travels with its reminder rows. The reminders table has no column for it
- * (the schema is frozen; requested as reminders.only_if_risk), so it is the id's suffix:
- * "<id>.risk-high". Like the rule's channel and askConfirmation, it is fixed when the reminders are
- * scheduled; rows without the suffix are ungated.
+ * A rule's onlyIfRisk travels with its reminder rows (reminders.only_if_risk). Like the rule's
+ * channel and askConfirmation, it is fixed when the reminders are scheduled; rows without it are
+ * ungated. Rows scheduled before the column existed carried it as an id suffix ("<id>.risk-high");
+ * migration 0003 copied those into the column, and the suffix is still read as a fallback.
  */
-export function reminderRowId(rule: Pick<ReminderRule, "onlyIfRisk">): string {
-  return rule.onlyIfRisk ? `${newId()}.risk-${rule.onlyIfRisk}` : newId();
-}
-
-export function reminderRiskGate(r: Pick<Reminder, "id">): Exclude<RiskLevel, "low"> | null {
+export function reminderRiskGate(r: Pick<Reminder, "id" | "onlyIfRisk">): Exclude<RiskLevel, "low"> | null {
+  if (r.onlyIfRisk) return r.onlyIfRisk;
   const m = /\.risk-(medium|high)$/.exec(r.id);
   return m ? (m[1] as "medium" | "high") : null;
 }
@@ -92,19 +88,20 @@ export async function scheduleReminders(
 
   const rows = settings.reminders.rules
     .map((rule) => ({
-      id: reminderRowId(rule),
+      id: newId(),
       appointmentId: appointment.id,
       kind: "reminder" as const,
       channel: rule.channel,
       askConfirmation: rule.askConfirmation,
       fallbackToEmail: rule.fallbackToEmail,
       sendAt: new Date(appointment.startsAt.getTime() - rule.offsetMinutes * 60_000),
+      onlyIfRisk: rule.onlyIfRisk ?? null,
     }))
     .filter((r) => r.sendAt.getTime() > now.getTime());
 
   if (rows.length) await tx.insert(reminders).values(rows);
   // A risk-gated rule may never be sent, so it is not counted on to ask for confirmation.
-  return rows.some((r) => r.askConfirmation && !reminderRiskGate(r));
+  return rows.some((r) => r.askConfirmation && !r.onlyIfRisk);
 }
 
 export async function cancelPendingReminders(tx: Tx, appointmentId: string, kinds?: Reminder["kind"][]) {
@@ -367,31 +364,46 @@ export async function processDueReminders(opts: { now?: Date; limit?: number; ap
 
 // ---------------------------------------------------------------- provider copies
 
-/** A copy whose deletion failed is left alone this long (in this process), so the batch moves on. */
+/** After a copy's first failed deletion it is left alone this long; the wait doubles with each failure… */
 const FAILED_DELETE_BACKOFF_MS = 6 * 3_600_000;
+/** …up to a week (6h, 12h, 24h, 48h, 96h, then 7 days). */
+const FAILED_DELETE_BACKOFF_DOUBLINGS = 5;
+const FAILED_DELETE_BACKOFF_MAX_MS = 7 * 86_400_000;
 /** Consecutive failures after which a provider is left for the next run (bad credentials, outage). */
 const PROVIDER_FAILURE_LIMIT = 5;
-const MAX_REMEMBERED_FAILURES = 5_000;
-/** messageId -> when deleting its provider copy last failed. */
-const failedDeletes = new Map<string, number>();
+
+/**
+ * A copy is due again once its back-off has passed since its last failed deletion
+ * (messages.provider_delete_attempts / provider_delete_failed_at, so the back-off holds across
+ * restarts and serverless runs). Never-failed copies are always due.
+ */
+function retryDue(now: Date): SQL {
+  return or(
+    isNull(messages.providerDeleteFailedAt),
+    lte(
+      sql`${messages.providerDeleteFailedAt} + min(${FAILED_DELETE_BACKOFF_MS} << max(min(${messages.providerDeleteAttempts} - 1, ${FAILED_DELETE_BACKOFF_DOUBLINGS}), 0), ${FAILED_DELETE_BACKOFF_MAX_MS})`,
+      now.getTime(),
+    ),
+  )!;
+}
 
 /**
  * Ask Twilio to delete its copies of texts (outbound and inbound) older than each practice's
  * privacy.retention.providerMessageDays, and mark them providerDeletedAt. Platform messages (no
- * practice: privacy-center codes) use the default. Run by the reminders cron.
+ * practice: privacy-center codes) use the default. Run by the reminders cron, the in-process
+ * worker and scripts/run-reminders.ts.
  *
  * Oldest first. Copies that can't be deleted don't block the others:
  * - a provider whose credentials are not set here (e.g. after leaving IE1) is not tried at all;
  *   its copies wait, unmarked, until the credentials are back;
  * - a provider that fails PROVIDER_FAILURE_LIMIT times in a row is left for the next run;
- * - a copy that failed is skipped for FAILED_DELETE_BACKOFF_MS (remembered in this process; the
- *   frozen schema has no column for attempts), and is retried after that.
+ * - a copy that failed is counted on its row (providerDeleteAttempts, providerDeleteFailedAt) and
+ *   skipped until its back-off has passed (retryDue): 6 hours after the first failure, doubling
+ *   up to a week.
  * One error line per provider and run, not one per message.
  */
 export async function purgeProviderCopies(now = new Date(), opts: { batch?: number } = {}) {
   const batch = opts.batch ?? 200;
-  for (const [id, at] of failedDeletes) if (now.getTime() - at >= FAILED_DELETE_BACKOFF_MS) failedDeletes.delete(id);
-  const skip = [...failedDeletes.keys()];
   const orgs = await db.select({ id: organizations.id, settings: organizations.settings }).from(organizations);
   const scopes: { orgId: string | null; days: number }[] = [
     ...orgs.map((o) => ({ orgId: o.id, days: getPrivacy(o).retention.providerMessageDays })),
@@ -409,6 +421,7 @@ export async function purgeProviderCopies(now = new Date(), opts: { batch?: numb
       isNotNull(messages.providerId),
       isNull(messages.providerDeletedAt),
       lt(messages.createdAt, cutoff),
+      retryDue(now),
     );
     const providers = (await db.selectDistinct({ provider: messages.provider }).from(messages).where(due)).map((p) => p.provider);
     for (const provider of providers.filter((p) => !canDeleteProviderCopies(p) && !reported.has(p))) {
@@ -420,7 +433,7 @@ export async function purgeProviderCopies(now = new Date(), opts: { batch?: numb
     const rows = await db
       .select({ id: messages.id, provider: messages.provider, providerId: messages.providerId })
       .from(messages)
-      .where(and(due, inArray(messages.provider, usable), skip.length ? notInArray(messages.id, skip) : undefined))
+      .where(and(due, inArray(messages.provider, usable)))
       .orderBy(asc(messages.createdAt))
       .limit(batch);
     for (const m of rows) {
@@ -432,7 +445,10 @@ export async function purgeProviderCopies(now = new Date(), opts: { batch?: numb
         summary.deleted++;
       } catch (err) {
         summary.failed++;
-        if (failedDeletes.size < MAX_REMEMBERED_FAILURES) failedDeletes.set(m.id, now.getTime());
+        await db
+          .update(messages)
+          .set({ providerDeleteAttempts: sql`${messages.providerDeleteAttempts} + 1`, providerDeleteFailedAt: now })
+          .where(eq(messages.id, m.id));
         const n = (streak.get(m.provider) ?? 0) + 1;
         streak.set(m.provider, n);
         if (n >= PROVIDER_FAILURE_LIMIT) stopped.add(m.provider);

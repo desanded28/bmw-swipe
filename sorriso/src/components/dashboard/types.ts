@@ -105,6 +105,11 @@ export type ApptDetailDTO = ApptListDTO & {
   cancelReason: string | null;
   /** null without messages.read. */
   messages: ThreadMessage[] | null;
+  /**
+   * The patient was offered new times for this visit because of a closure (WP8's rebooking) and
+   * the offer is still open: "Mark handled" would withdraw it. False without appointment.write.
+   */
+  rebookOfferSent: boolean;
 };
 
 export type DetailResult = { ok: true; data: ApptDetailDTO } | { ok: false; error: string; code?: string };

@@ -1,14 +1,17 @@
 import { and, desc, eq } from "drizzle-orm";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import type { MembershipRole } from "@/db/enums";
-import { appointments, auditLog, organizations, reminders } from "@/db/schema";
+import { appointments, auditLog, messages, organizations, patients, reminders } from "@/db/schema";
 import type { StaffSession } from "@/lib/auth";
 import { createAppointment } from "@/lib/booking";
+import { newId } from "@/lib/ids";
+import { grantRestrictedAccess } from "@/lib/privacy/erasure";
 import { resolveSettings } from "@/lib/settings";
 import { zonedToUtc } from "@/lib/time";
 import { createPractice, MONDAY, NOW, TZ } from "@/test/fixtures";
-import { simulateReply } from "./messages";
+import { appointmentMessages, simulateReply } from "./messages";
 import { runRemindersNow, saveInboundNumber, saveReminderSettings } from "./reminders";
 
 /** The reminders and messages actions (WP3): permissions, practice scoping and what they store. */
@@ -117,8 +120,8 @@ describe("runRemindersNow", () => {
       .from(auditLog)
       .where(and(eq(auditLog.orgId, A.orgId), eq(auditLog.actorId, "user-owner"), eq(auditLog.entityType, "org")))
       .orderBy(desc(auditLog.seq));
-    expect(entry).toMatchObject({ action: "appointment.update", entityId: A.orgId });
-    expect(entry.metadata).toMatchObject({ job: "reminders.run", due: expect.any(Number), sent: expect.any(Number) });
+    expect(entry).toMatchObject({ action: "reminders.run", entityId: A.orgId });
+    expect(entry.metadata).toMatchObject({ due: expect.any(Number), sent: expect.any(Number), skipped: expect.any(Number), failed: expect.any(Number) });
   });
 });
 
@@ -183,5 +186,123 @@ describe("simulateReply", () => {
     expect(res.ok && res.message).toMatch(/^Understood as “confirmed”/);
     const [row] = await db.select().from(appointments).where(eq(appointments.id, d.appointment.id));
     expect(row.confirmation).toBe("confirmed");
+  });
+});
+
+describe("appointmentMessages", () => {
+  it("returns the thread with patients' links replaced, audited as message.view, and follows the restriction rule", async () => {
+    const d = await createAppointment({
+      orgId: A.orgId,
+      serviceId: A.visit,
+      practitionerId: A.drA,
+      locationId: A.milano,
+      startsAt: new Date(Date.now() + 5 * 86_400_000),
+      patient: { firstName: "Nora", lastName: "Galli", phone: "+393331112299" },
+      source: "staff",
+      online: false,
+      force: true,
+      notifyPatient: false,
+    });
+    const id = d.appointment.id;
+    const base = { orgId: A.orgId, appointmentId: id, patientId: d.patient.id, channel: "sms" as const, to: "+393331112299", provider: "dev" };
+    await db.insert(messages).values([
+      { ...base, id: newId(), direction: "outbound", status: "captured", body: "Studio: reminder. Details: https://sorriso.test/it/a/tok123SECRET. STOP", createdAt: new Date(NOW.getTime() - 60_000) },
+      { ...base, id: newId(), direction: "inbound", status: "received", body: "SI", intent: "confirm", createdAt: NOW },
+    ]);
+
+    await signIn("reception");
+    const thread = await appointmentMessages(id);
+    expect(thread.map((m) => m.body)).toEqual(["Studio: reminder. Details: [patient link]. STOP", "SI"]);
+    expect(thread[0]).not.toHaveProperty("to");
+    expect(thread[0]).not.toHaveProperty("html");
+    const rows = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.orgId, A.orgId), eq(auditLog.entityType, "appointment"), eq(auditLog.entityId, id)));
+    expect(rows.map((r) => r.action)).toEqual(["message.view"]);
+    expect(rows[0].metadata).toEqual({ view: "thread", count: 2, patientId: d.patient.id });
+
+    // Another practice's appointment: nothing, and nothing audited.
+    await signIn("owner", B.orgId);
+    expect(await appointmentMessages(id)).toEqual([]);
+
+    // A restricted patient: nothing for reception, nor for the owner until they give a reason.
+    await db.update(patients).set({ restrictedAt: NOW, restrictionReason: "Art. 18 request" }).where(eq(patients.id, d.patient.id));
+    await signIn("reception");
+    expect(await appointmentMessages(id)).toEqual([]);
+    await signIn("owner");
+    expect(await appointmentMessages(id)).toEqual([]);
+    await grantRestrictedAccess(state.session!, d.patient.id, "Patient called about this visit");
+    expect(await appointmentMessages(id)).toHaveLength(2);
+  });
+});
+
+describe("the messages page", () => {
+  it("audits the log as message.view (no entity, counts) and an opened email on the message, with its patient", async () => {
+    const { default: MessagesPage } = await import("../messages/page");
+    const patientId = newId();
+    await db.insert(patients).values({ id: patientId, orgId: B.orgId, firstName: "Ugo", lastName: "Sala", email: "ugo@example.com" });
+    const emailId = newId();
+    await db.insert(messages).values({
+      id: emailId,
+      orgId: B.orgId,
+      patientId,
+      channel: "email",
+      direction: "outbound",
+      to: "ugo@example.com",
+      subject: "Promemoria",
+      body: "Promemoria",
+      html: "<p>Promemoria</p>",
+      status: "captured",
+      provider: "dev",
+    });
+    await signIn("reception", B.orgId);
+    await MessagesPage({ searchParams: Promise.resolve({ f: "email", open: emailId }) });
+    const rows = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.orgId, B.orgId), eq(auditLog.actorId, "user-reception"), eq(auditLog.action, "message.view")))
+      .orderBy(desc(auditLog.seq));
+    expect(rows).toHaveLength(2);
+    expect(rows[1]).toMatchObject({ entityType: null, entityId: null });
+    expect(rows[1].metadata).toMatchObject({ view: "messages", filter: "email", count: expect.any(Number) });
+    expect(rows[0]).toMatchObject({ entityType: "message", entityId: emailId });
+    expect(rows[0].metadata).toMatchObject({ view: "message", patientId });
+  });
+
+  it("shows a restricted patient's messages only after a reason, and never a patient's personal link", async () => {
+    const { default: MessagesPage } = await import("../messages/page");
+    const html = async () => renderToStaticMarkup(await MessagesPage({ searchParams: Promise.resolve({ f: "sms" }) }));
+    const patientId = newId();
+    await db.insert(patients).values({ id: patientId, orgId: B.orgId, firstName: "Ottavia", lastName: "Restricta", phone: "+393335550001" });
+    await db.insert(messages).values({
+      id: newId(),
+      orgId: B.orgId,
+      patientId,
+      channel: "sms",
+      direction: "outbound",
+      to: "+393335550001",
+      body: "Studio: reminder. Details: https://sorriso.test/it/a/tokSECRET99 STOP",
+      status: "captured",
+      provider: "dev",
+    });
+    await signIn("owner", B.orgId);
+    let page = await html();
+    expect(page).toContain("Ottavia Restricta");
+    expect(page).toContain("Details: [patient link] STOP");
+    expect(page).not.toContain("tokSECRET99");
+
+    await db.update(patients).set({ restrictedAt: NOW, restrictionReason: "Art. 18 request" }).where(eq(patients.id, patientId));
+    for (const role of ["reception", "owner"] as const) {
+      await signIn(role, B.orgId);
+      page = await html();
+      expect(page, role).not.toContain("Ottavia");
+      expect(page, role).not.toContain("Studio: reminder");
+      expect(page, role).toContain("Restricted patient");
+    }
+    await grantRestrictedAccess(state.session!, patientId, "Patient asked about a text");
+    page = await html();
+    expect(page).toContain("Ottavia Restricta");
+    expect(page).toContain("Details: [patient link] STOP");
   });
 });

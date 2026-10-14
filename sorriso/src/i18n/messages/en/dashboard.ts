@@ -20,6 +20,7 @@ export default {
     confirmations: "Confirmations",
     messages: "Messages",
     patients: "Patients",
+    duplicates: "Possible duplicates",
     waitlist: "Waitlist",
     recalls: "Recalls",
     reviews: "Reviews",
@@ -36,6 +37,7 @@ export default {
     audit: "Audit log",
     security: "My security",
     platform: "Platform",
+    platformPrivacy: "Platform privacy inbox",
     groups: {
       setup: "Setup",
       privacy: "Privacy",

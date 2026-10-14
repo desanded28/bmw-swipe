@@ -137,6 +137,57 @@ describe("loadAppointmentCare", () => {
   });
 });
 
+describe("anamnesis answers", () => {
+  it("are for patient.clinical.read only: reception gets forbidden and nothing is logged as shown", async () => {
+    const d = await visitWithForm("Clinica", 13);
+    await signIn("reception");
+    expect(await care.loadAnamnesis({ appointmentId: d.appointment.id })).toMatchObject({ ok: false, code: "forbidden" });
+    expect(await care.markFormExportedAction("any")).toMatchObject({ ok: false, code: "forbidden" });
+    expect(await clinicalViews(d.patient.id)).toHaveLength(0);
+    await signIn("practitioner");
+    const sheet = await care.loadAnamnesis({ appointmentId: d.appointment.id });
+    expect(sheet.ok && sheet.data.answers).toEqual({ anticoagulants: "yes" });
+  });
+
+  it("an erased patient's visit stays closed like a restricted one, and another practice's visit is not found", async () => {
+    const d = await visitWithForm("Cancellata", 14);
+    await db.update(patients).set({ erasedAt: NOW }).where(eq(patients.id, d.patient.id));
+    await signIn("practitioner");
+    expect(await care.loadAppointmentCare(d.appointment.id)).toMatchObject({ ok: false, code: "restricted" });
+    const other = await createPractice();
+    const foreign = await createAppointment({
+      orgId: other.orgId,
+      serviceId: other.visit,
+      practitionerId: other.drA,
+      locationId: other.milano,
+      startsAt: at(MONDAY, 9),
+      patient: { firstName: "Altro", lastName: "Studio", phone: `+39${seq++}`, locale: "it" },
+      source: "staff",
+      online: false,
+      now: NOW,
+    });
+    expect(await care.loadAppointmentCare(foreign.appointment.id)).toMatchObject({ ok: false, code: "not_found" });
+  });
+});
+
+describe("deleteTimeOff", () => {
+  it("removes the practice's own block, and answers not_found on another practice's id without touching it", async () => {
+    const own = newId();
+    await db.insert(timeOff).values({ id: own, orgId: p.orgId, practitionerId: p.drB, startsAt: at(TUESDAY, 9), endsAt: at(TUESDAY, 10) });
+    const other = await createPractice();
+    const foreign = newId();
+    await db.insert(timeOff).values({ id: foreign, orgId: other.orgId, practitionerId: other.drB, startsAt: at(TUESDAY, 9), endsAt: at(TUESDAY, 10) });
+
+    await signIn("reception");
+    expect(await timeoff.deleteTimeOff(foreign)).toMatchObject({ ok: false, code: "not_found" });
+    expect(await db.select().from(timeOff).where(eq(timeOff.id, foreign))).toHaveLength(1);
+    expect(await timeoff.deleteTimeOff(own)).toMatchObject({ ok: true });
+    expect(await db.select().from(timeOff).where(eq(timeOff.id, own))).toEqual([]);
+    // Already gone: nothing to remove.
+    expect(await timeoff.deleteTimeOff(own)).toMatchObject({ ok: false, code: "not_found" });
+  });
+});
+
 describe("loadClosureClashes", () => {
   it("is audited as a patient listing and masks restricted patients for staff who may not see them", async () => {
     const open = await visitWithForm("Aperto", 11);

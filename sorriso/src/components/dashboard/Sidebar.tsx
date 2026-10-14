@@ -9,9 +9,11 @@ import {
   ChevronDown,
   ExternalLink,
   Fingerprint,
+  GitMerge,
   Globe,
   HeartHandshake,
   Hourglass,
+  Inbox,
   KeyRound,
   Languages,
   LayoutDashboard,
@@ -48,6 +50,7 @@ type NavKey =
   | "confirmations"
   | "messages"
   | "patients"
+  | "duplicates"
   | "waitlist"
   | "recalls"
   | "reviews"
@@ -63,7 +66,8 @@ type NavKey =
   | "privacySettings"
   | "audit"
   | "security"
-  | "platform";
+  | "platform"
+  | "platformPrivacy";
 
 type NavItem = {
   href: string;
@@ -84,6 +88,7 @@ const NAV: NavItem[] = [
   { href: "/dashboard/appointments", key: "confirmations", icon: ListChecks, count: "requests", perm: "calendar.read" },
   { href: "/dashboard/messages", key: "messages", icon: MessageCircle, count: "attention", perm: "messages.read" },
   { href: "/dashboard/patients", key: "patients", icon: UserRound, perm: "patient.read" },
+  { href: "/dashboard/patients/duplicates", key: "duplicates", icon: GitMerge, perm: "patient.read" },
   { href: "/dashboard/waitlist", key: "waitlist", icon: Hourglass, count: "waitlist", muted: true, perm: "calendar.read" },
   { href: "/dashboard/recalls", key: "recalls", icon: CalendarClock, perm: "recalls.manage" },
   { href: "/dashboard/reviews", key: "reviews", icon: Star },
@@ -106,6 +111,8 @@ const PRIVACY: NavItem[] = [
 const ACCOUNT: NavItem[] = [
   { href: "/dashboard/account/security", key: "security", icon: Fingerprint },
   { href: "/dashboard/platform", key: "platform", icon: Globe, platformOnly: true },
+  // Sorriso's own privacy inbox (WP5): requests where Sorriso is the controller.
+  { href: "/dashboard/platform/privacy", key: "platformPrivacy", icon: Inbox, platformOnly: true },
 ];
 
 const AUTO = "auto";

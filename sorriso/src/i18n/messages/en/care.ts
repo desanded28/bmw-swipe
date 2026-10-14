@@ -373,6 +373,7 @@ export default {
       office: "Office not found.",
       chair: "Chair not found.",
       scope: "Choose who or what is unavailable.",
+      notFound: "This block was already removed.",
     },
     nothing: "Nothing planned.",
     unavailable: "Unavailable",

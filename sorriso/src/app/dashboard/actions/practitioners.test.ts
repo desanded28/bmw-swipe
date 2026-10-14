@@ -1,13 +1,14 @@
 /**
  * Public profiles: approval by the practitioner or the owner only, re-approval after someone else
  * edits what patients see, the practitioner's own opt-out (the owner can't undo it), the Albo
- * check reset on changes, and the health-advertising rules on bios.
+ * check reset on changes, the health-advertising rules on bios, the audit rows of the opt-out
+ * and the Albo reset, and not_found on another practice's records.
  */
-import { eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import type { MembershipRole } from "@/db/enums";
-import { organizations, practitioners, services, users } from "@/db/schema";
+import { auditLog, organizations, practitioners, services, users } from "@/db/schema";
 import type { StaffSession } from "@/lib/auth";
 import { createPractice, NOW } from "@/test/fixtures";
 
@@ -34,6 +35,13 @@ async function signIn(userId: string, role: MembershipRole) {
 }
 
 const row = async () => (await db.select().from(practitioners).where(eq(practitioners.id, p.drA)))[0];
+/** The audit rows of one action on Dr A, oldest first. */
+const audits = async (action: string) =>
+  db
+    .select({ actorId: auditLog.actorId, metadata: auditLog.metadata })
+    .from(auditLog)
+    .where(and(eq(auditLog.orgId, p.orgId), eq(auditLog.action, action), eq(auditLog.entityId, p.drA)))
+    .orderBy(asc(auditLog.seq));
 
 function form(fields: Record<string, string | string[]>) {
   const fd = new FormData();
@@ -84,8 +92,18 @@ describe("public profile approval", () => {
     expect(await savePractitioner(p.drA, null, form({ bio: "Conservative dentistry and prevention for families." }))).toMatchObject({ ok: true });
     expect((await row()).profileApprovedAt).toBeNull();
     expect((await row()).alboVerifiedAt).toBeInstanceOf(Date);
+    const resets = (await audits("practitioner.albo.verify")).length;
     await savePractitioner(p.drA, null, form({ bio: "Conservative dentistry and prevention for families.", alboNumber: "999" }));
     expect((await row()).alboVerifiedAt).toBeNull();
+    // The badge's disappearance is on the chain, as the admin's act.
+    expect((await audits("practitioner.albo.verify")).slice(resets)).toEqual([{ actorId: "user-admin", metadata: { verified: false, via: "edit" } }]);
+  });
+
+  it("answers not_found for another practice's practitioner", async () => {
+    const other = await createPractice();
+    await signIn("user-owner", "owner");
+    expect(await savePractitioner(other.drA, null, form({ name: "Hijacked" }))).toMatchObject({ ok: false, code: "not_found" });
+    expect((await db.select().from(practitioners).where(eq(practitioners.id, other.drA)))[0].name).not.toBe("Hijacked");
   });
 
   it("blocks promotional wording in the bio (L. 145/2018) and saves a neutral one", async () => {
@@ -112,6 +130,19 @@ describe("marketplace opt-out", () => {
     expect(await setMarketplaceOptOut(p.drA, false)).toMatchObject({ ok: true });
     expect((await row()).marketplaceOptOutAt).toBeNull();
   });
+
+  it("is audited as practitioner.marketplace.opt_out, both ways, and only when it happened", async () => {
+    const before = (await audits("practitioner.marketplace.opt_out")).length;
+    await signIn("user-owner", "owner");
+    await setMarketplaceOptOut(p.drA, true); // refused: nothing recorded
+    await signIn(DOCTOR, "practitioner");
+    await setMarketplaceOptOut(p.drA, true);
+    await setMarketplaceOptOut(p.drA, false);
+    expect((await audits("practitioner.marketplace.opt_out")).slice(before)).toEqual([
+      { actorId: DOCTOR, metadata: { optedOut: true } },
+      { actorId: DOCTOR, metadata: { optedOut: false } },
+    ]);
+  });
 });
 
 describe("treatments", () => {
@@ -129,5 +160,14 @@ describe("treatments", () => {
     expect(svc).toMatchObject({ priceType: "from", priceCents: 6000, priceMaxCents: 12000, recallMonths: 6, sensitive: true, priceIncludes: "Controllo" });
     expect(await saveService(p.cleaning, null, fd({ priceType: "quote", price: "60" }))).toMatchObject({ ok: true });
     expect((await db.select().from(services).where(eq(services.id, p.cleaning)))[0]).toMatchObject({ priceType: "quote", priceCents: null });
+  });
+
+  it("answers not_found for another practice's treatment and leaves it alone", async () => {
+    const other = await createPractice();
+    await signIn("user-owner", "owner");
+    const f = new FormData();
+    for (const [k, v] of Object.entries({ name: "Hijacked", category: "checkup", durationMinutes: "30" })) f.append(k, v);
+    expect(await saveService(other.cleaning, null, f)).toMatchObject({ ok: false, code: "not_found" });
+    expect((await db.select().from(services).where(eq(services.id, other.cleaning)))[0].name).toBe("Cleaning");
   });
 });

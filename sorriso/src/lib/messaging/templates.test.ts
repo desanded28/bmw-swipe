@@ -12,7 +12,6 @@ import { absoluteUrl, APP_URL } from "../config";
 import { signPracticeRef } from "../privacy/context";
 import { bookSlotUrl } from "../waitlist";
 import { deliver, patientEmailHeaders } from "./index";
-import { renderEmailLayout } from "./layout";
 import { smtpTransportOptions } from "./providers";
 import { asciiFallback, isGsm7, segments, withinBudget, ASCII_FALLBACK_LOCALES } from "./sms-encoding";
 import { templates, type AppointmentTemplateData, type EmailContent } from "./templates";
@@ -325,30 +324,9 @@ describe("email hygiene", () => {
   });
 });
 
-// ---------------------------------------------------------------- layout and templates as reviewed
+// ---------------------------------------------------------------- templates as reviewed
 
-describe("the email layout", () => {
-  it("declares the recipient's language and renders footer links and the note", () => {
-    const { html, text } = renderEmailLayout({
-      locale: "de",
-      brandColor: "#123abc",
-      brandName: "Praxis <Müller>",
-      intro: "Ihr Termin & mehr",
-      footerLines: ["Praxis Müller", "Via Roma 1 <Bozen>"],
-      note: "Details <online>",
-      footerLinks: [
-        { label: "Datenschutz", url: "https://sorriso.test/de/c/x/privacy" },
-        { label: "Bad", url: "javascript:alert(1)" },
-      ],
-    });
-    expect(html.startsWith('<!doctype html><html lang="de"><head><meta charset="utf-8">')).toBe(true);
-    expect(html).toContain("Details &lt;online&gt;");
-    expect(html).toContain('<a href="https://sorriso.test/de/c/x/privacy" style="color:#64748b;text-decoration:underline">Datenschutz</a>');
-    expect(html).toContain('<a href="#"');
-    expect(html).not.toContain("javascript:");
-    expect(text).toContain("Datenschutz: https://sorriso.test/de/c/x/privacy");
-  });
-});
+// The email layout itself is tested in layout.test.ts.
 
 /** Fixed data with characters that need escaping, for the snapshot below. */
 const reviewed: AppointmentTemplateData = {

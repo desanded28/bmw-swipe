@@ -1,7 +1,8 @@
 /**
  * /[locale]/c/[org]/[practitioner]: only listed practitioners have a page (approved profile, no
  * opt-out); the page shows the verified Albo badge and legal specialisations only once verified,
- * and counts a view server-side.
+ * hands the booking form server-formatted prices (with the price types) and counts a view
+ * server-side.
  */
 import { and, eq } from "drizzle-orm";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
@@ -9,8 +10,9 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { BookingFlow } from "@/components/booking/BookingFlow";
 import { ProfileFacts, type ProfileFactsData } from "@/components/marketplace/ProfileFacts";
 import { db } from "@/db";
-import { organizations, practitioners, profileStats } from "@/db/schema";
+import { organizations, practitioners, profileStats, services } from "@/db/schema";
 import { LOCALES } from "@/i18n/config";
+import { formatMoney } from "@/i18n/number";
 import { todayIn } from "@/lib/time";
 import { createPractice, NOW } from "@/test/fixtures";
 
@@ -94,6 +96,14 @@ describe("/[locale]/c/[org]/[practitioner]", () => {
     const flow = findElement(tree, BookingFlow)!;
     expect(flow.props.context).toBe("marketplace");
     expect(flow.props.practiceRef).toBeNull();
+  });
+
+  it("gives the booking form the practice's price types, formatted on the server", async () => {
+    await db.update(services).set({ priceType: "from", priceCents: 5000, priceMaxCents: 9000 }).where(eq(services.id, p.visit));
+    await db.update(services).set({ priceType: "quote", priceCents: null }).where(eq(services.id, p.cleaning));
+    const labels = findElement(await open("a", "en"), BookingFlow)!.props.labels as { services: Record<string, { price: string; duration: string }> };
+    expect(labels.services[p.visit]).toEqual({ price: `${formatMoney(5000, "en")} to ${formatMoney(9000, "en")}`, duration: "30 min" });
+    expect(labels.services[p.cleaning].price).toBe("Price after an assessment");
   });
 
   it("hides specialisations until the Albo registration is verified", async () => {

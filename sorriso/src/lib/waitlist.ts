@@ -33,6 +33,7 @@ import { newId } from "./ids";
 import { deliver } from "./messaging";
 import { templates, type AppointmentTemplateData } from "./messaging/templates";
 import { signPracticeRef } from "./privacy/context";
+import { recordBookingNotices } from "./privacy/notices";
 import { getPrivacy } from "./privacy/settings";
 import { resolveSettings } from "./settings";
 import { zonedParts } from "./time";
@@ -91,8 +92,9 @@ export type JoinWaitlistInput = {
 /**
  * Put a patient on the waitlist (patient-facing: the record is matched or created in public mode).
  * Runs the same privacy and relation checks as a booking, stores the context, who it is for and the
- * notice version, and records the choices against the entry. A failed check throws
- * BookingError('invalid', code) and leaves nothing behind.
+ * notice version, records the choices against the entry and, for a patient-facing entry, the
+ * notices the form showed (recordBookingNotices). A failed check throws BookingError('invalid',
+ * code) and leaves nothing behind.
  */
 export async function joinWaitlist(input: JoinWaitlistInput): Promise<{ id: string; patientId: string }> {
   const now = input.now ?? new Date();
@@ -136,6 +138,8 @@ export async function joinWaitlist(input: JoinWaitlistInput): Promise<{ id: stri
     }
     return patient.id;
   });
+  // Patient-facing: the notices the form showed are on record as of now, as for a booking (never throws).
+  if (input.privacy) await recordBookingNotices({ orgId: input.orgId, locale: input.privacy.locale, context, now });
   return { id, patientId };
 }
 

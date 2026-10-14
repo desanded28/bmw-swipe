@@ -93,7 +93,7 @@ export async function savePractitioner(id: string | null, _prev: unknown, fd: Fo
       let needsApproval = false;
       if (id) {
         const [current] = await db.select().from(practitioners).where(and(eq(practitioners.id, id), eq(practitioners.orgId, s.org.id)));
-        if (!current) return fail(t("profile.notFound"));
+        if (!current) return fail(t("profile.notFound"), "not_found");
         const publicChanged =
           current.title !== values.title ||
           current.name !== values.name ||
@@ -119,6 +119,10 @@ export async function savePractitioner(id: string | null, _prev: unknown, fd: Fo
           .where(and(eq(practitioners.id, id), eq(practitioners.orgId, s.org.id)));
         if (approval.profileApprovedAt !== undefined) {
           await auditStaff(s, "practitioner.profile.approve", { type: "practitioner", id }, { metadata: { approved: approval.profileApprovedAt !== null, via: "edit" } });
+        }
+        // The badge disappears until Sorriso checks the new registration: say why on the chain.
+        if (alboChanged && current.alboVerifiedAt) {
+          await auditStaff(s, "practitioner.albo.verify", { type: "practitioner", id }, { metadata: { verified: false, via: "edit" } });
         }
       } else {
         practitionerId = newId();
@@ -200,8 +204,8 @@ export async function setMarketplaceOptOut(id: string, optOut: boolean): Promise
       .update(practitioners)
       .set(optOut ? { marketplaceOptOutAt: new Date(), profileApprovedAt: null, profileApprovedByUserId: null } : { marketplaceOptOutAt: null })
       .where(and(eq(practitioners.id, id), eq(practitioners.orgId, s.org.id)));
-    // No dedicated audit action exists for the opt-out (closed list): recorded as a profile approval change.
-    await auditStaff(s, "practitioner.profile.approve", { type: "practitioner", id }, { metadata: { approved: false, marketplaceOptOut: optOut } });
+    // Opting out also withdraws the approval (cleared above); rejoining needs a fresh one.
+    await auditStaff(s, "practitioner.marketplace.opt_out", { type: "practitioner", id }, { metadata: { optedOut: optOut } });
     return ok(optOut ? t("profile.optOut.done") : t("profile.optOut.undone"));
   });
 }

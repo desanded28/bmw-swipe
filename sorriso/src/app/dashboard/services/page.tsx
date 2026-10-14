@@ -2,7 +2,7 @@ import { asc, eq } from "drizzle-orm";
 import { ChevronDown } from "lucide-react";
 import type { Metadata } from "next";
 import { ServiceForm } from "@/components/dashboard/ServiceForm";
-import { priceLabel } from "@/components/marketplace/price";
+import { priceLabel, priceTexts } from "@/components/marketplace/price";
 import { Badge, Card, PageHeader } from "@/components/ui";
 import { db } from "@/db";
 import { practitionerServices, practitioners, services } from "@/db/schema";
@@ -28,14 +28,8 @@ export default async function ServicesPage() {
       .innerJoin(practitioners, eq(practitioners.id, practitionerServices.practitionerId))
       .where(eq(practitioners.orgId, s.org.id)),
   ]);
-  const price = (svc: (typeof svcs)[number]) =>
-    priceLabel(svc, locale, {
-      onRequest: tc("price.onRequest"),
-      free: tc("price.free"),
-      from: (p) => tc("price.from", { price: p }),
-      range: (min, max) => t("price.range", { min, max }),
-      quote: t("price.quote"),
-    });
+  const texts = priceTexts(tc, t);
+  const price = (svc: (typeof svcs)[number]) => priceLabel(svc, locale, texts);
 
   return (
     <div className="mx-auto max-w-5xl">

@@ -2,6 +2,7 @@ import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, sql } from "
 import { db, type Tx } from "@/db";
 import {
   appointments,
+  consents,
   formSubmissions,
   messages,
   orgFunds,
@@ -22,6 +23,7 @@ import {
 } from "@/db/schema";
 import {
   appointmentLinks,
+  appointmentWhatsApp,
   canReachByEmail,
   getAppointmentDetails,
   templateData,
@@ -45,6 +47,7 @@ import { logError } from "./log";
 import { deliver } from "./messaging";
 import { templates } from "./messaging/templates";
 import { normalizePhone } from "./phone";
+import { adultContacts, requestAdultConfirmation, sendBookedForYouNotice } from "./privacy/adult-confirmation";
 import { effectiveBookingChoices, noticeVersionFor, validateBookingPrivacy } from "./privacy/booking-rules";
 import {
   ConsentError,
@@ -53,6 +56,7 @@ import {
   type BookingRelationInput,
 } from "./privacy/consent";
 import { validateBookingRelation } from "./privacy/minors";
+import { recordBookingNotices } from "./privacy/notices";
 import { dropRecallForVisit, markRecallBooked, reopenRecallsFor, upsertRecall } from "./recalls";
 import { cancelPendingReminders, enqueueNow, processDueReminders, scheduleReminders } from "./reminders";
 import { refreshAppointmentRisk } from "./risk";
@@ -102,6 +106,8 @@ const RULE_MESSAGES: Partial<Record<string, string>> = {
   guardian_relation_required: "Please say whether you are a parent or a legal guardian.",
   guardian_contact_required: "Please enter a phone number or an email for the parent or guardian.",
   other_adult_must_book_themselves: "An adult has to book their own appointment here, or book directly with the practice.",
+  other_adult_contact_required:
+    "Please enter the patient's own phone number or email (not yours): they confirm the booking through it.",
 };
 
 export function bookingRuleMessage(code: string): string {
@@ -299,6 +305,11 @@ export type BookingPrivacyPlan = {
   actorRelation: ActorRelation;
   noticeVersion: string | null;
   noticeLocale: Locale | null;
+  /**
+   * A marketplace booking for another adult: held (status 'requested', no consent, no reminders)
+   * until that adult confirms it themselves (src/lib/privacy/adult-confirmation.ts).
+   */
+  awaitsAdult: boolean;
 };
 
 /**
@@ -307,6 +318,13 @@ export type BookingPrivacyPlan = {
  * (effectiveBookingChoices), and nothing at all from someone booking for another adult — consent
  * can only come from the data subject, or a minor's guardian. Without `privacy` (staff, partner API)
  * nothing is validated or recorded.
+ *
+ * Another adult: through the practice's channels the practice gives the Art. 14 notice
+ * (sendBookedForYouNotice after the booking). On the marketplace Sorriso's Art. 9(2)(a) consent can
+ * only come from that adult, so a booking is held for their own confirmation (`holdForAdult`,
+ * createAppointment: requestAdultConfirmation); a caller that can't hold (the waitlist) is refused
+ * with other_adult_must_book_themselves. The booker's contact is stored apart (booked_by_*,
+ * bookedByColumns) and never matches the patient's records in the privacy center.
  */
 export function planBookingPrivacy(i: {
   context: ProcessingContext;
@@ -315,8 +333,12 @@ export function planBookingPrivacy(i: {
   /** The channel the form asked for, before any downgrade. */
   preferredChannel: Channel;
   org: Pick<PrivacySettings, "whatsappEnabled" | "marketingEnabled">;
+  /** The caller holds a marketplace booking for another adult until they confirm (createAppointment only). */
+  holdForAdult?: boolean;
 }): BookingPrivacyPlan {
   const bookedFor = i.relation?.bookedFor ?? "self";
+  const awaitsAdult = bookedFor === "other_adult" && i.context === "marketplace";
+  if (awaitsAdult && !i.holdForAdult) throw ruleError("other_adult_must_book_themselves", "bookedFor");
   const org = { whatsappEnabled: i.org.whatsappEnabled, marketingEnabled: i.org.marketingEnabled };
   let choices: BookingPrivacyChoices = {};
   if (i.privacy) {
@@ -326,20 +348,11 @@ export function planBookingPrivacy(i: {
       choices: i.privacy.choices,
       noticeVersion: i.privacy.noticeVersion,
       org,
+      bookedFor,
     });
     if (!check.ok) throw ruleError(check.code, check.field);
-    choices = effectiveBookingChoices({ context: i.context, choices: i.privacy.choices, org });
-  }
-  if (bookedFor === "other_adult") {
-    // Consent can only come from the data subject, never from whoever books for them: nothing ticked
-    // here is recorded. Through the practice's channels the practice gives the Art. 14 notice; on the
-    // marketplace validateBookingRelation refuses these bookings (other_adult_must_book_themselves).
-    // TODO(WP4): marketplace bookings for another adult. Hold the booking until that adult confirms
-    // through a link or one-time code (OTP purpose 'adult_confirmation') sent to their own contact, then
-    // record their own choices (platform_booking_art9 included) with actorRelation 'self'. The booker's
-    // contact is already stored apart (booked_by_*, see bookedByColumns); keep those rows out of the
-    // booker's privacy center.
-    choices = {};
+    // Nothing at all for another adult: only they can consent, later, through their own messages.
+    choices = effectiveBookingChoices({ context: i.context, choices: i.privacy.choices, org, bookedFor });
   }
   return {
     context: i.context,
@@ -348,6 +361,7 @@ export function planBookingPrivacy(i: {
     actorRelation: bookedFor === "minor" ? (i.relation?.guardian?.relation ?? "parent") : "self",
     noticeVersion: i.privacy ? noticeVersionFor(i.context) : null,
     noticeLocale: i.privacy?.locale ?? null,
+    awaitsAdult,
   };
 }
 
@@ -557,7 +571,7 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
   const relation = input.relation;
 
   // Writes inside the transaction go through `tx` only (src/db/serialize.ts: the root db deadlocks here).
-  const appointmentId = await db.transaction(async (tx) => {
+  const booked = await db.transaction(async (tx) => {
     const ctx = await loadAvailabilityContext(
       {
         orgId: input.orgId,
@@ -596,7 +610,7 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
     let plan: BookingPrivacyPlan;
     let createdPatient = false;
     const planFor = (preferredChannel: Channel) =>
-      planBookingPrivacy({ context, relation, privacy: input.privacy, preferredChannel, org: ctx.settings.privacy });
+      planBookingPrivacy({ context, relation, privacy: input.privacy, preferredChannel, org: ctx.settings.privacy, holdForAdult: true });
     if ("id" in input.patient) {
       const p = await survivingPatient(tx, input.orgId, input.patient.id);
       if (!p) throw new BookingError("not_found", "Patient not found.");
@@ -619,7 +633,11 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
     checkBookingRelation(relation, birthDate, start, context, now);
     const dialCode = "id" in input.patient ? null : input.patient.phoneCountry;
 
-    const status = input.online && ctx.settings.booking.requireApproval ? "requested" : "scheduled";
+    // A marketplace booking for another adult is held until that adult confirms it themselves
+    // (adult-confirmation.ts): 'requested', no consent recorded (plan.choices is empty), no reminders,
+    // no receipt; requestAdultConfirmation asks them after the commit.
+    const held = plan.awaitsAdult;
+    const status = held || (input.online && ctx.settings.booking.requireApproval) ? "requested" : "scheduled";
     const endsAt = new Date(start.getTime() + duration * 60_000);
     const id = newId();
     const link = issueManageToken();
@@ -656,6 +674,10 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
       })
       .returning();
 
+    // Only the adult can confirm a held booking, with a code sent to a contact of their own: one the
+    // booker also gave as theirs doesn't count (adultContacts). Without one it could never be confirmed.
+    const ownContact = plan.bookedFor === "other_adult" && adultContacts({ patient, appointment }).length > 0;
+    if (held && !ownContact) throw ruleError("other_adult_contact_required", "phone");
     if (input.privacy) {
       await recordBookingChoices(tx, { orgId: input.orgId, patientId: patient.id, appointmentId: id, plan, privacy: input.privacy, now });
     }
@@ -675,33 +697,50 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
     }
 
     const notify = input.online || input.notifyPatient;
-    if (notify && ctx.settings.reminders.sendBookingConfirmation) {
+    if (notify && !held && ctx.settings.reminders.sendBookingConfirmation) {
       await enqueueNow(tx, appointment.id, "booking_confirmation", "email", now);
     }
 
     if (input.waitlistEntryId) {
       await tx
         .update(waitlist)
-        .set({ status: "booked" })
+        .set({ status: "booked", closedAt: now })
         .where(
-          and(eq(waitlist.id, input.waitlistEntryId), eq(waitlist.orgId, input.orgId), eq(waitlist.patientId, patient.id)),
+          and(
+            eq(waitlist.id, input.waitlistEntryId),
+            eq(waitlist.orgId, input.orgId),
+            eq(waitlist.patientId, patient.id),
+            eq(waitlist.status, "active"),
+          ),
         );
     }
-    return appointment.id;
+    // Booked through the practice's channels for another adult reachable at a contact of their own.
+    return { id: appointment.id, held, tellAdult: !held && ownContact };
   });
+  const appointmentId = booked.id;
 
   // Send the confirmation right away (best effort; the cron retries on failure).
   await processDueReminders({ appointmentId, now }).catch((err) => logError("booking", err, { step: "confirmation", appointmentId }));
+  if (booked.held) {
+    // Ask the adult to confirm at their own contact (the hold expires unconfirmed: expireAdultConfirmations).
+    await requestAdultConfirmation(appointmentId, now).catch((err) => logError("booking", err, { step: "adult_confirmation", appointmentId }));
+  } else if (booked.tellAdult) {
+    // Booked through the practice's channels for another adult: the Art. 14 notice, to them (never throws).
+    await sendBookedForYouNotice(appointmentId);
+  }
+  // Patient-facing: the notices the form showed are on record as of now (never throws).
+  if (input.privacy) await recordBookingNotices({ orgId: input.orgId, locale: input.privacy.locale, context, now });
   return (await getAppointmentDetails({ id: appointmentId }))!;
 }
 
 /**
  * The channel for a message the patient didn't ask for (staff cancelled or moved the visit): the
  * preferred one when it reaches the recipient, else the other. Both look at recipientFor(), so a
- * child under 14 reachable only through the guardian's phone still gets a text.
+ * child under 14 reachable only through the guardian's phone still gets a text. WhatsApp only with
+ * an approved template for `kind` in the patient's language (textChannelFor), otherwise SMS.
  */
-async function textOrEmail(d: AppointmentDetails): Promise<Channel | null> {
-  const text = await textChannelFor(d.patient, d.org);
+async function textOrEmail(d: AppointmentDetails, kind: "cancelled" | "rescheduled", now: Date): Promise<Channel | null> {
+  const text = await textChannelFor(d.patient, d.org, now, kind);
   const email = canReachByEmail(d.patient) ? ("email" as const) : null;
   return d.patient.preferredChannel === "email" ? (email ?? text) : (text ?? email);
 }
@@ -751,7 +790,7 @@ export async function cancelAppointment(
     const data = templateData(details);
     const { rebookUrl } = appointmentLinks(details);
     // Patients who cancelled get an email receipt; staff cancellations go out on their preferred channel.
-    const channel = opts.by === "patient" ? (canReachByEmail(details.patient) ? "email" : null) : await textOrEmail(details);
+    const channel = opts.by === "patient" ? (canReachByEmail(details.patient) ? "email" : null) : await textOrEmail(details, "cancelled", now);
     if (channel) {
       const email = templates.cancelledEmail(data, opts.by, rebookUrl);
       await deliver({
@@ -763,6 +802,8 @@ export async function cancelAppointment(
         subject: channel === "email" ? email.subject : undefined,
         text: channel === "email" ? email.text : templates.cancelledSms(data, rebookUrl),
         html: channel === "email" ? email.html : undefined,
+        // WhatsApp: the approved 'cancelled' template, its link the one to book again.
+        ...(channel === "whatsapp" ? appointmentWhatsApp(details, "cancelled", rebookUrl) : {}),
         fromName: details.org.name,
         replyTo: details.org.email,
       });
@@ -881,6 +922,9 @@ export async function rescheduleAppointment(
         confirmedAt: online ? now : null,
         confirmedVia: online ? "web" : null,
         needsAttention: false,
+        // A rebooking offer or call request was about the old time (src/lib/rebooking.ts).
+        rebookOfferStartsAt: null,
+        rebookCallStartsAt: null,
         updatedAt: now,
       })
       .where(and(eq(appointments.id, appointmentId), inArray(appointments.status, ["scheduled", "requested"])))
@@ -894,7 +938,7 @@ export async function rescheduleAppointment(
 
   if (opts.notifyPatient ?? true) {
     const data = templateData(after);
-    const channel = online ? (canReachByEmail(after.patient) ? "email" : null) : await textOrEmail(after);
+    const channel = online ? (canReachByEmail(after.patient) ? "email" : null) : await textOrEmail(after, "rescheduled", now);
     if (channel) {
       const email = templates.rescheduledEmail(data);
       await deliver({
@@ -906,6 +950,8 @@ export async function rescheduleAppointment(
         subject: channel === "email" ? email.subject : undefined,
         text: channel === "email" ? email.text : templates.rescheduledSms(data),
         html: channel === "email" ? email.html : undefined,
+        // WhatsApp: the approved 'rescheduled' template (its link: the manage page).
+        ...(channel === "whatsapp" ? appointmentWhatsApp(after, "rescheduled") : {}),
         fromName: after.org.name,
         replyTo: after.org.email,
       });
@@ -926,9 +972,42 @@ export async function rescheduleAppointment(
   return after;
 }
 
-/** Front desk accepts an online booking request. */
+/**
+ * A marketplace booking for another adult the adult hasn't confirmed yet: only their own consent
+ * releases it (confirmAdultBooking in src/lib/privacy/adult-confirmation.ts), never the practice.
+ */
+async function awaitsAdultConsent(tx: Tx, a: Pick<Appointment, "id" | "processingContext" | "bookedFor">): Promise<boolean> {
+  if (a.processingContext !== "marketplace" || a.bookedFor !== "other_adult") return false;
+  const [given] = await tx
+    .select({ id: consents.id })
+    .from(consents)
+    .where(
+      and(
+        eq(consents.appointmentId, a.id),
+        eq(consents.purpose, "platform_booking_art9"),
+        eq(consents.actorRelation, "self"),
+        eq(consents.granted, true),
+      ),
+    )
+    .limit(1);
+  return !given;
+}
+
+/**
+ * Front desk accepts an online booking request. A booking held for another adult's own
+ * confirmation can't be approved before they confirm (BookingError not_allowed,
+ * reason awaiting_adult_confirmation).
+ */
 export async function approveRequest(appointmentId: string, now = new Date()) {
   const ok = await db.transaction(async (tx) => {
+    const [request] = await tx
+      .select({ id: appointments.id, processingContext: appointments.processingContext, bookedFor: appointments.bookedFor })
+      .from(appointments)
+      .where(and(eq(appointments.id, appointmentId), eq(appointments.status, "requested")));
+    if (!request) return false;
+    if (await awaitsAdultConsent(tx, request)) {
+      throw new BookingError("not_allowed", "The patient hasn't confirmed this booking yet.", { reason: "awaiting_adult_confirmation" });
+    }
     const [updated] = await tx
       .update(appointments)
       .set({ status: "scheduled", updatedAt: now })

@@ -20,7 +20,10 @@ const action = async () => ({ ok: true as const });
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: () => {}, refresh: () => {} }),
   useSearchParams: () => new URLSearchParams(),
+  usePathname: () => "/dashboard/patients/duplicates",
 }));
+vi.mock("@/app/auth-actions", () => ({ logout: action }));
+vi.mock("@/app/dashboard/actions/session", () => ({ switchOrg: action, updateMyLocale: action }));
 vi.mock("@/app/dashboard/actions/appointments", () => ({
   approve: action,
   cancelByStaff: action,
@@ -55,6 +58,9 @@ const { AppointmentDrawer, MessageThread } = await import("./AppointmentDrawer")
 const { AppointmentList } = await import("./AppointmentList");
 const { CalendarBoard, slotCursor } = await import("./CalendarBoard");
 const { PatientSummary } = await import("./NewAppointmentDrawer");
+const { Sidebar } = await import("./Sidebar");
+const { handleBackdropClick, handleCancel, modalForPrint } = await import("./modal");
+const { permissionsFor } = await import("@/lib/permissions");
 
 const TZ = "Europe/Rome";
 const tCal = getT("en", "calendar");
@@ -229,5 +235,88 @@ describe("NewAppointmentDrawer: patient search results", () => {
     expect(blurred[0]).toBe("Ottavia Brambilla");
     expect(blurred[1]).toContain("ottavia@example.org");
     expect(html.replace(/<span data-pii=""[^>]*>.*?<\/span>/g, "")).not.toMatch(/Ottavia|example\.org|333/);
+  });
+});
+
+describe("Sidebar", () => {
+  const tDash = getT("en", "dashboard");
+  const sidebar = (role: "owner" | "reception", platformAdmin: boolean) =>
+    render(
+      h(Sidebar, {
+        user: { name: "Test", email: "t@example.org", locale: null },
+        org: { id: "o1", name: "Studio", slug: "studio", brandColor: "#0ea5e9" },
+        orgs: [{ id: "o1", name: "Studio" }],
+        role,
+        permissions: permissionsFor(role),
+        platformAdmin,
+        counts: { attention: 0, requests: 0, waitlist: 0 },
+      }),
+    );
+
+  it("links the duplicates queue for roles that read patients, and marks it as the current page", () => {
+    const html = sidebar("reception", false);
+    expect(html).toContain('href="/dashboard/patients/duplicates"');
+    expect(html).toContain(tDash("nav.duplicates"));
+    // Only the deepest matching entry is current, not the patients list as well.
+    const current = [...html.matchAll(/<a [^>]*aria-current="page"[^>]*>/g)].map((m) => m[0]);
+    expect(current).toHaveLength(1);
+    expect(current[0]).toContain('href="/dashboard/patients/duplicates"');
+  });
+
+  it("shows Sorriso's privacy inbox to platform admins only", () => {
+    expect(sidebar("owner", true)).toContain('href="/dashboard/platform/privacy"');
+    expect(sidebar("owner", false)).not.toContain('href="/dashboard/platform/privacy"');
+    expect(sidebar("owner", true)).toContain(tDash("nav.platformPrivacy"));
+  });
+});
+
+describe("modal dialogs (modal.ts)", () => {
+  it("Escape closes only the topmost dialog: the cancel event is stopped there", () => {
+    const calls: string[] = [];
+    handleCancel({ preventDefault: () => calls.push("prevent"), stopPropagation: () => calls.push("stop") }, () => calls.push("close"));
+    expect(calls).toEqual(["prevent", "stop", "close"]);
+  });
+
+  it("closes on a backdrop click, not on a click inside", () => {
+    let closed = 0;
+    const box = {};
+    handleBackdropClick({ target: {}, currentTarget: box }, () => closed++);
+    expect(closed).toBe(0);
+    handleBackdropClick({ target: box, currentTarget: box }, () => closed++);
+    expect(closed).toBe(1);
+  });
+
+  it("prints a modal as a plain dialog and puts the modal back afterwards", () => {
+    const log: string[] = [];
+    const dialog = {
+      open: true,
+      modal: true,
+      matches(this: { modal: boolean }, q: string) {
+        return q === ":modal" && this.modal;
+      },
+      showModal(this: { open: boolean; modal: boolean }) {
+        this.open = true;
+        this.modal = true;
+        log.push("showModal");
+      },
+      show(this: { open: boolean; modal: boolean }) {
+        this.open = true;
+        this.modal = false;
+        log.push("show");
+      },
+      close(this: { open: boolean; modal: boolean }) {
+        this.open = false;
+        this.modal = false;
+        log.push("close");
+      },
+      querySelector: () => null,
+    };
+    const restore = modalForPrint(dialog as never);
+    expect(log).toEqual(["close", "show"]);
+    restore?.();
+    expect(log).toEqual(["close", "show", "close", "showModal"]);
+    expect(dialog.modal).toBe(true);
+    // Not open as a modal: nothing to do.
+    expect(modalForPrint({ ...dialog, open: false } as never)).toBeNull();
   });
 });

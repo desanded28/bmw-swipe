@@ -1,7 +1,6 @@
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import {
   appointments,
-  funds,
   locations,
   memberships,
   orgFunds,
@@ -11,7 +10,6 @@ import {
   reviewReports,
   reviews,
   services,
-  type FundKind,
   type FundMode,
   type LegalSpecialization,
   type LocationAccessibility,
@@ -27,7 +25,8 @@ import type { SeedContext } from "../seed";
 
 /**
  * Marketplace demo data (WP7), run by scripts/seed.ts after the core seed:
- * - funds the migration doesn't list yet (FISDE, Casagit, Allianz) and each practice's org_funds;
+ * - each practice's org_funds (the funds themselves, FISDE, Casagit and Allianz included, come
+ *   from the migrations: 0001 and 0003_integration);
  * - public profiles: spoken languages, care options, Albo registrations (some verified, some
  *   waiting in /dashboard/platform/practitioners), legal specialisations; one practitioner who
  *   removed themselves from the marketplace and one whose approval is pending;
@@ -39,12 +38,6 @@ import type { SeedContext } from "../seed";
  */
 
 const TZ = "Europe/Rome";
-
-const EXTRA_FUNDS: { id: string; slug: string; name: string; kind: FundKind }[] = [
-  { id: "fund_fisde", slug: "fisde", name: "FISDE", kind: "fund" },
-  { id: "fund_casagit", slug: "casagit", name: "Casagit Salute", kind: "fund" },
-  { id: "fund_allianz", slug: "allianz", name: "Allianz", kind: "insurer" },
-];
 
 /** Per practice (in seed order): the funds it works with. */
 const ORG_FUNDS: { fundId: string; mode: FundMode; firstServices?: number }[][] = [
@@ -128,8 +121,6 @@ const HELD_COMMENTS = [
 
 export async function seedMarketplace(ctx: SeedContext): Promise<void> {
   const { db, now } = ctx;
-  await db.insert(funds).values(EXTRA_FUNDS).onConflictDoNothing();
-
   for (const [orgIndex, orgId] of ctx.orgIds.entries()) {
     const svcIds = ctx.serviceIds[orgId] ?? [];
     // Health funds as the practice declares them.

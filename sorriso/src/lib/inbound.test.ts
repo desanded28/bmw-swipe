@@ -2,7 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import { appointments, consents, messages, organizations, patients } from "@/db/schema";
-import type { Locale } from "@/i18n/config";
+import { LOCALES, type Locale } from "@/i18n/config";
 import { createPractice, MONDAY, NOW, TZ } from "@/test/fixtures";
 import { createAppointment, type NewPatientInput } from "./booking";
 import { newId } from "./ids";
@@ -103,6 +103,15 @@ describe("parseIntent: every language's own words", () => {
       expect(parseIntent(yes, locale), `${locale} ${yes}`).toBe("confirm");
       expect(parseIntent(no, locale), `${locale} ${no}`).toBe("cancel");
       expect(KEYWORDS[locale].stop.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("accepts the yes word of every language from a patient of any language (SI, YES, JA, OUI, SIM, DA, TAK)", () => {
+    for (const locale of LOCALES) {
+      for (const yes of ["SI", "Sì", "YES", "JA", "OUI", "SIM", "DA", "TAK"]) {
+        expect(parseIntent(yes, locale), `${locale} ${yes}`).toBe("confirm");
+        expect(parseIntent(`${yes.toLowerCase()}!`, locale), `${locale} ${yes}!`).toBe("confirm");
+      }
     }
   });
 

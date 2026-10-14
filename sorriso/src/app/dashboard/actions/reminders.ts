@@ -73,9 +73,8 @@ export async function saveReminderSettings(input: {
 
 /**
  * Process this practice's due reminders now (never another practice's). It reads patients'
- * contacts and sends them messages, so the run is on the access log with its counts. The audit
- * list has no reminders action yet (requested as "reminders.run"); appointment.update on the
- * practice is the closest.
+ * contacts and sends them messages, so the run is on the access log (reminders.run on the
+ * practice) with its counts.
  */
 export async function runRemindersNow(): Promise<ActionResult> {
   return guard(
@@ -83,11 +82,10 @@ export async function runRemindersNow(): Promise<ActionResult> {
       const summary = await processDueReminders({ orgId: s.org.id });
       await auditStaff(
         s,
-        "appointment.update",
+        "reminders.run",
         { type: "org", id: s.org.id },
         {
           metadata: {
-            job: "reminders.run",
             due: summary.due,
             sent: summary.sent,
             skipped: summary.skipped,

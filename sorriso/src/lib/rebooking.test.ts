@@ -75,6 +75,8 @@ describe("rebooking assistant", () => {
       expect(sent[0].body).not.toMatch(/Visit|Anna/);
       const [row] = await db.select().from(appointments).where(eq(appointments.id, d.appointment.id));
       expect(row.needsAttention).toBe(true);
+      // The offer is stored for the visit's current start (rebook_offer_starts_at).
+      expect(row.rebookOfferStartsAt).toEqual(d.appointment.startsAt);
       // Reminders would announce a visit that can't take place.
       const pending = await db
         .select()
@@ -203,6 +205,7 @@ describe("rebooking assistant", () => {
     // Asking to be called declines nothing: the visit's confirmation is as it was.
     const [after] = await db.select().from(appointments).where(eq(appointments.id, a.appointment.id));
     expect(after).toMatchObject({ confirmation: before.confirmation, confirmedVia: before.confirmedVia, confirmedAt: before.confirmedAt, needsAttention: true });
+    expect(after.rebookCallStartsAt).toEqual(a.appointment.startsAt);
     expect(await rebookStatus(p.orgId, a.appointment.id, NOW)).toEqual({ needed: true, offerSent: true, callRequested: true });
     expect(await rebookState(manageTokenOf(a.appointment)!, NOW)).toMatchObject({ kind: "needed", callRequested: true });
     const calls = await frontDeskCallList(p.orgId, NOW, { contacts: true });
@@ -298,8 +301,12 @@ describe("rebooking assistant", () => {
     await rescheduleAppointment(moved.appointment.id, { startsAt: at(MONDAY, 15), by: "staff", force: true, notifyPatient: false, now: NOW });
     await db.update(appointments).set({ needsAttention: true }).where(eq(appointments.id, moved.appointment.id));
     const [row] = await db.select().from(appointments).where(eq(appointments.id, moved.appointment.id));
+    expect(row).toMatchObject({ rebookOfferStartsAt: null, rebookCallStartsAt: null });
     expect(await coveredByClosure(row, NOW)).toBe(true);
     expect((await patientRebook(row, NOW)).open).toBe(false);
+    // Even an offer column left behind about the old time doesn't count for the new one.
+    expect((await patientRebook({ ...row, rebookOfferStartsAt: at(MONDAY, 9) }, NOW)).open).toBe(false);
+    expect((await patientRebook({ ...row, rebookOfferStartsAt: row.startsAt }, NOW)).open).toBe(true);
   });
 
   it("accepts only a time the assistant offers: no crafted horizon, minute or office", async () => {

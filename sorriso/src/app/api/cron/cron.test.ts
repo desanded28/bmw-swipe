@@ -9,13 +9,17 @@ const jobs = vi.hoisted(() => ({
     orgs: 4,
     counts: { sessionsPurged: 2 },
   })),
+  purgeProviderCopies: vi.fn(async () => ({ deleted: 0, failed: 0 })),
+  expireAdultConfirmations: vi.fn(async (_now: Date) => 0),
   logError: vi.fn(),
+  logInfo: vi.fn(),
   auditHeads: vi.fn(async () => 2),
 }));
-vi.mock("@/lib/reminders", () => ({ processDueReminders: jobs.reminders }));
+vi.mock("@/lib/reminders", () => ({ processDueReminders: jobs.reminders, purgeProviderCopies: jobs.purgeProviderCopies }));
+vi.mock("@/lib/privacy/adult-confirmation", () => ({ expireAdultConfirmations: jobs.expireAdultConfirmations }));
 vi.mock("@/lib/recalls", () => ({ runCareJobs: jobs.care }));
 vi.mock("@/lib/privacy/retention", () => ({ runRetention: jobs.retention }));
-vi.mock("@/lib/log", () => ({ logError: jobs.logError }));
+vi.mock("@/lib/log", () => ({ logError: jobs.logError, logInfo: jobs.logInfo }));
 vi.mock("@/lib/audit", () => ({ logAuditHeads: jobs.auditHeads }));
 
 const { GET: reminders } = await import("./reminders/route");
@@ -38,6 +42,8 @@ describe("cron routes", () => {
     expect((await call(handler)).status).toBe(401);
     expect((await call(handler, "Bearer nope")).status).toBe(401);
     expect(jobs.reminders).not.toHaveBeenCalled();
+    expect(jobs.expireAdultConfirmations).not.toHaveBeenCalled();
+    expect(jobs.purgeProviderCopies).not.toHaveBeenCalled();
     expect(jobs.retention).not.toHaveBeenCalled();
   });
 
@@ -67,6 +73,30 @@ describe("cron routes", () => {
     });
     expect(jobs.reminders).toHaveBeenCalledWith({ limit: 500 });
     expect(jobs.care).toHaveBeenCalledTimes(1);
+    expect(jobs.purgeProviderCopies).toHaveBeenCalledTimes(1);
+  });
+
+  it("expires the bookings held for another adult's confirmation after sending the reminders (serverless hosts have no other runner)", async () => {
+    jobs.expireAdultConfirmations.mockResolvedValueOnce(2);
+    const res = await call(reminders, "Bearer s3cret");
+    expect(res.status).toBe(200);
+    expect(jobs.expireAdultConfirmations).toHaveBeenCalledTimes(1);
+    expect(jobs.expireAdultConfirmations.mock.calls[0][0]).toBeInstanceOf(Date);
+    expect(jobs.reminders.mock.invocationCallOrder[0]).toBeLessThan(jobs.expireAdultConfirmations.mock.invocationCallOrder[0]);
+    // Counts only in the log line; the response keeps its shape.
+    expect(jobs.logInfo).toHaveBeenCalledWith("cron", "adult confirmations expired", { expired: 2 });
+    expect(await res.json()).not.toHaveProperty("expired");
+  });
+
+  it("still reports the reminders and runs the other jobs when the expiry or the provider clean-up fails", async () => {
+    jobs.expireAdultConfirmations.mockRejectedValueOnce(new Error("db busy"));
+    jobs.purgeProviderCopies.mockRejectedValueOnce(new Error("twilio down"));
+    const res = await call(reminders, "Bearer s3cret");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, sent: 2, care: { recallsSent: 1 } });
+    expect(jobs.care).toHaveBeenCalledTimes(1);
+    expect(jobs.logError).toHaveBeenCalledWith("cron", expect.any(Error), { step: "adult-confirmations" });
+    expect(jobs.logError).toHaveBeenCalledWith("cron", expect.any(Error), { step: "provider-cleanup" });
   });
 
   it("still reports the reminders when the care jobs fail", async () => {

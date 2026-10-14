@@ -316,6 +316,37 @@ describe("provider copies the cron can't delete", () => {
     expect(await deletedAt(stuck.id)).not.toBeNull();
   });
 
+  it("keeps the back-off on the message row, so a restart or a serverless run doesn't retry early; the wait doubles", async () => {
+    vi.stubEnv("TWILIO_ACCOUNT_SID", "ACtest");
+    vi.stubEnv("TWILIO_US1_AUTH_TOKEN", "us1-token");
+    const stuck = await insert("twilio", 70);
+    reply = (url) =>
+      url.endsWith(`/${stuck.providerId}.json`)
+        ? new Response(JSON.stringify({ message: "Cannot delete message in progress", code: 20009 }), { status: 400 })
+        : new Response(null, { status: 204 });
+    const row = async () => (await db.select().from(messages).where(eq(messages.id, stuck.id)))[0];
+    const hours = (h: number) => new Date(NOW.getTime() + h * 3_600_000);
+
+    await purgeProviderCopies(NOW);
+    expect(await row()).toMatchObject({ providerDeleteAttempts: 1, providerDeleteFailedAt: NOW, providerDeletedAt: null });
+    // Nothing is remembered in the process: a fresh module (a restart, another serverless
+    // instance) reads the same back-off from the row.
+    vi.resetModules();
+    const fresh = (await import("../reminders")).purgeProviderCopies;
+    await fresh(hours(5));
+    expect(deletes(stuck.providerId)).toBe(1);
+    // 6 hours after the first failure it is tried again, and fails again: now 12 hours.
+    await fresh(hours(6));
+    expect(deletes(stuck.providerId)).toBe(2);
+    expect(await row()).toMatchObject({ providerDeleteAttempts: 2, providerDeleteFailedAt: hours(6) });
+    await fresh(hours(6 + 11));
+    expect(deletes(stuck.providerId)).toBe(2);
+    reply = () => new Response(null, { status: 204 });
+    await fresh(hours(6 + 12));
+    expect(deletes(stuck.providerId)).toBe(3);
+    expect((await row()).providerDeletedAt).toEqual(hours(18));
+  });
+
   it("stops on a provider that keeps failing, with one error line per run", async () => {
     vi.stubEnv("TWILIO_ACCOUNT_SID", "ACtest");
     vi.stubEnv("TWILIO_US1_AUTH_TOKEN", "wrong-token");

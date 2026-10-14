@@ -1,8 +1,8 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import type { MembershipRole } from "@/db/enums";
-import { appointments, auditLog, messages, organizations, patients, reminders, users, waitlist } from "@/db/schema";
+import { appointments, auditLog, memberships, messages, organizations, patients, reminders, sessions, users, waitlist } from "@/db/schema";
 import { getT } from "@/i18n/t";
 import { createPractice, TZ } from "@/test/fixtures";
 import type { StaffSession } from "./auth";
@@ -16,7 +16,7 @@ import { zonedToUtc } from "./time";
  * cookies, as a server action sees it.
  */
 
-const state = vi.hoisted(() => ({ session: null as unknown, withhold: new Set<string>() }));
+const state = vi.hoisted(() => ({ session: null as unknown, withhold: new Set<string>(), rebookOffer: false }));
 
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
 vi.mock("next/headers", () => ({
@@ -48,13 +48,33 @@ vi.mock("@/lib/permissions", async (importOriginal) => {
     },
   };
 });
+// WP8's rebooking status: an open offer is set up by its own tests; here the drawer only reads it.
+vi.mock("@/lib/rebooking", async (importOriginal) => {
+  const o = await importOriginal<typeof import("./rebooking")>();
+  return {
+    ...o,
+    rebookStatus: async (...args: Parameters<typeof o.rebookStatus>) =>
+      state.rebookOffer ? { needed: true, offerSent: true, callRequested: false } : o.rebookStatus(...args),
+  };
+});
 vi.mock("@/lib/privacy/gates", () => ({ enforceDashboardGates: async () => {}, gatePage: async () => null, canAcceptOnlineBookings: async () => true }));
 vi.mock("@/app/fonts", () => ({ jakarta: { variable: "font-jakarta" } }));
 
-const { listAppointments, listViewer, redactPatientLinks } = await import("./dashboard");
-const { getAppointmentDetail, getAppointmentPhone, openRestrictedAppointment, createStaffAppointment, moveAppointment, cancelByStaff, remindNow } =
-  await import("@/app/dashboard/actions/appointments");
-const { updateMyLocale } = await import("@/app/dashboard/actions/session");
+const { dashboardAction, listAppointments, listViewer, redactPatientLinks } = await import("./dashboard");
+const {
+  getAppointmentDetail,
+  getAppointmentPhone,
+  openRestrictedAppointment,
+  createStaffAppointment,
+  moveAppointment,
+  cancelByStaff,
+  clearAttention,
+  remindNow,
+} = await import("@/app/dashboard/actions/appointments");
+const { switchOrg, updateMyLocale } = await import("@/app/dashboard/actions/session");
+const { removeWaitlistEntry } = await import("@/app/dashboard/actions/waitlist");
+const { saveSchedule } = await import("@/app/dashboard/actions/schedules");
+const { STEP_UP_REQUIRED, StepUpRequiredError } = await import("./security/errors");
 
 /** A string that must never leave the server in a list. */
 const SECRET_NOTE = "ZEBRA-ANTICOAGULANT-7731";
@@ -131,6 +151,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   state.withhold.clear();
+  state.rebookOffer = false;
 });
 
 /**
@@ -523,5 +544,149 @@ describe("pages send no free text to the browser", () => {
     // The way to the data: the patient record, which asks for a reason.
     expect(json).toContain(getT("it", "dashboard")("waitlist.restricted"));
     expect(json).toContain(`/dashboard/patients/${lockedId}`);
+  });
+});
+
+describe("the drawer and a rebooking offer (WP8)", () => {
+  it("says when Mark handled would withdraw an open rebooking offer", async () => {
+    const flagged = await addAppointment(practice, { status: "scheduled", needsAttention: true });
+    await signIn("reception");
+    const plain = await getAppointmentDetail(flagged.id);
+    if (!plain.ok) throw new Error(plain.error);
+    expect(plain.data.rebookOfferSent).toBe(false);
+
+    state.rebookOffer = true;
+    const offered = await getAppointmentDetail(flagged.id);
+    if (!offered.ok) throw new Error(offered.error);
+    expect(offered.data.rebookOfferSent).toBe(true);
+    // A visit nobody flagged has no open offer; a role that can't clear the flag isn't told.
+    const calm = await addAppointment(practice, { status: "scheduled" });
+    const res = await getAppointmentDetail(calm.id);
+    if (!res.ok) throw new Error(res.error);
+    expect(res.data.rebookOfferSent).toBe(false);
+    state.withhold.add("appointment.write");
+    const readOnly = await getAppointmentDetail(flagged.id);
+    if (!readOnly.ok) throw new Error(readOnly.error);
+    expect(readOnly.data.rebookOfferSent).toBe(false);
+  });
+});
+
+describe("actions on another practice's records", () => {
+  it("clearAttention answers not_found and changes nothing", async () => {
+    const { id } = await addAppointment(other, { needsAttention: true });
+    await signIn("owner");
+    expect(await clearAttention(id)).toMatchObject({ ok: false, code: "not_found" });
+    const [row] = await db.select({ needsAttention: appointments.needsAttention }).from(appointments).where(eq(appointments.id, id));
+    expect(row.needsAttention).toBe(true);
+  });
+
+  it("removeWaitlistEntry answers not_found for another practice, and closes an own active entry once (waitlist.update)", async () => {
+    const entry = async (p: typeof practice) => {
+      const patientId = newId();
+      await db.insert(patients).values({ id: patientId, orgId: p.orgId, firstName: "Lucio", lastName: "Dalla" });
+      const id = newId();
+      await db.insert(waitlist).values({ id, orgId: p.orgId, patientId, serviceId: p.visit, earliestDate: "2030-03-01", latestDate: "2030-03-31" });
+      return { id, patientId };
+    };
+    const foreign = await entry(other);
+    const own = await entry(practice);
+    const s = await signIn("reception");
+
+    expect(await removeWaitlistEntry(foreign.id)).toMatchObject({ ok: false, code: "not_found" });
+    const [untouched] = await db.select().from(waitlist).where(eq(waitlist.id, foreign.id));
+    expect(untouched).toMatchObject({ status: "active", closedAt: null });
+
+    expect(await removeWaitlistEntry(own.id)).toMatchObject({ ok: true });
+    const [closed] = await db.select().from(waitlist).where(eq(waitlist.id, own.id));
+    expect(closed.status).toBe("removed");
+    expect(closed.closedAt).toBeInstanceOf(Date);
+    const rows = await db.select().from(auditLog).where(and(eq(auditLog.action, "waitlist.update"), eq(auditLog.entityId, own.id)));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ actorId: s.user.id, entityType: "waitlist", metadata: { status: "removed", patientId: own.patientId } });
+
+    // Already closed: refused, and the retention clock (closedAt) doesn't restart.
+    expect(await removeWaitlistEntry(own.id)).toMatchObject({ ok: false, code: "not_allowed" });
+    const [again] = await db.select().from(waitlist).where(eq(waitlist.id, own.id));
+    expect(again.closedAt?.getTime()).toBe(closed.closedAt?.getTime());
+  });
+});
+
+describe("audit actions of the scheduling screens", () => {
+  it("saveSchedule writes schedule.update on the practitioner", async () => {
+    const s = await signIn("owner");
+    const res = await saveSchedule(practice.drC, [{ weekday: 1, locationId: practice.milano, start: "09:00", end: "13:00" }]);
+    expect(res.ok).toBe(true);
+    const rows = await db.select().from(auditLog).where(and(eq(auditLog.action, "schedule.update"), eq(auditLog.entityId, practice.drC)));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ actorId: s.user.id, entityType: "practitioner", metadata: { schedule: 1 } });
+  });
+
+  it("the calendar writes appointment.list and the waitlist waitlist.view: no entity, a count, no names", async () => {
+    await addAppointment(practice, { status: "scheduled" });
+    const s = await signIn("owner");
+    const mine = (action: "appointment.list" | "waitlist.view") =>
+      db.select().from(auditLog).where(and(eq(auditLog.action, action), eq(auditLog.actorId, s.user.id)));
+    const views = async (action: "appointment.list" | "waitlist.view", view: string) =>
+      (await mine(action)).filter((r) => r.metadata?.view === view).length;
+
+    const calendarBefore = await views("appointment.list", "calendar");
+    const { default: CalendarPage } = await import("@/app/dashboard/calendar/page");
+    await CalendarPage({ searchParams: Promise.resolve({ date: "2030-03-04" }) });
+    expect(await views("appointment.list", "calendar")).toBe(calendarBefore + 1);
+
+    const waitlistBefore = await views("waitlist.view", "waitlist");
+    const { default: WaitlistPage } = await import("@/app/dashboard/waitlist/page");
+    await WaitlistPage();
+    expect(await views("waitlist.view", "waitlist")).toBe(waitlistBefore + 1);
+
+    for (const row of [...(await mine("appointment.list")), ...(await mine("waitlist.view"))]) {
+      expect(row).toMatchObject({ entityType: null, entityId: null, metadata: { count: expect.any(Number) } });
+      expect(row.metadata!.count).toBeGreaterThan(0);
+      expect(JSON.stringify(row.metadata)).not.toMatch(/Ottavia|Lucio|example\.org/);
+    }
+    // List views no longer borrow the per-record actions.
+    const borrowed = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.actorId, s.user.id), isNull(auditLog.entityId), eq(auditLog.action, "appointment.view")));
+    expect(borrowed).toEqual([]);
+    expect(await db.select().from(auditLog).where(and(eq(auditLog.actorId, s.user.id), eq(auditLog.action, "patient.view")))).toEqual([]);
+  });
+});
+
+describe("step-up inside a dashboard action", () => {
+  it("passes requireStepUp's own message through, with the code the UI acts on", async () => {
+    await signIn("owner");
+    const res = await dashboardAction(async () => {
+      throw new StepUpRequiredError("Bitte bestätigen Sie, dass Sie es sind.");
+    });
+    expect(res).toEqual({ ok: false, error: "Bitte bestätigen Sie, dass Sie es sind.", code: STEP_UP_REQUIRED });
+  });
+});
+
+describe("switchOrg", () => {
+  it("moves the session to the other practice under a fresh session id", async () => {
+    const s = await signIn("admin");
+    await db.insert(memberships).values({ userId: s.user.id, orgId: other.orgId, role: "reception" });
+    const [otherOrg] = await db.select().from(organizations).where(eq(organizations.id, other.orgId));
+    const { createSession } = await import("./auth");
+    const oldId = await createSession(s.user.id, practice.orgId, { mfaVerifiedAt: new Date() });
+    state.session = { ...s, sessionId: oldId, orgs: [...s.orgs, { org: otherOrg, role: "reception" }] };
+
+    // Not one of the user's practices: nothing happens.
+    expect(await switchOrg(newId())).toBeUndefined();
+    expect(await db.select().from(sessions).where(eq(sessions.id, oldId))).toHaveLength(1);
+
+    const redirected = await switchOrg(other.orgId).then(
+      () => null,
+      (err: { digest?: string }) => String(err.digest ?? ""),
+    );
+    expect(redirected?.split(";")[2]).toBe("/dashboard");
+    expect(await db.select().from(sessions).where(eq(sessions.id, oldId))).toEqual([]);
+    const now = await db.select().from(sessions).where(eq(sessions.userId, s.user.id));
+    expect(now).toHaveLength(1);
+    expect(now[0]).toMatchObject({ orgId: other.orgId });
+    expect(now[0].id).not.toBe(oldId);
+    expect(now[0].mfaVerifiedAt).toBeInstanceOf(Date);
   });
 });

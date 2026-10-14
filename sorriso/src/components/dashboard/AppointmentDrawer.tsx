@@ -43,6 +43,7 @@ import { useLocale, useT } from "@/i18n/provider";
 import { formatPhone } from "@/lib/phone";
 import { Badge, Button, Field, Input, Select, Textarea, cx } from "../ui";
 import { useNow } from "../useNow";
+import { DRAWER_DIALOG, useModalDialog } from "./modal";
 import { Pii } from "./PrivacyScreen";
 import { AppointmentCarePanel } from "./slots/AppointmentCarePanel";
 import { useToast } from "./Toast";
@@ -133,53 +134,6 @@ export function StatusBadge({ a }: { a: StatusFields }) {
   );
 }
 
-// ---------------------------------------------------------------- modal dialog
-
-/**
- * Open a native <dialog> as a modal (showModal: focus trap, inert page, Escape) while the
- * component is mounted, and give focus back to whatever opened it when it goes away. When that
- * element was re-rendered away meanwhile, `fallbackSelector` finds its replacement.
- */
-export function useModalDialog(onClose: () => void, fallbackSelector?: string) {
-  const ref = useRef<HTMLDialogElement>(null);
-  const close = useRef(onClose);
-  useEffect(() => {
-    close.current = onClose;
-  }, [onClose]);
-  useEffect(() => {
-    const dialog = ref.current;
-    if (!dialog) return;
-    const opener = document.activeElement instanceof HTMLElement && !dialog.contains(document.activeElement) ? document.activeElement : null;
-    if (!dialog.open) dialog.showModal();
-    dialog.querySelector<HTMLElement>("[data-autofocus]")?.focus();
-    return () => {
-      if (dialog.open) dialog.close();
-      requestAnimationFrame(() => {
-        const target = opener?.isConnected ? opener : fallbackSelector ? document.querySelector<HTMLElement>(fallbackSelector) : null;
-        target?.focus();
-      });
-    };
-  }, [fallbackSelector]);
-  return {
-    ref,
-    props: {
-      // Escape: the browser fires "cancel"; the parent unmounts us instead of the dialog closing itself.
-      onCancel: (e: React.SyntheticEvent) => {
-        e.preventDefault();
-        close.current();
-      },
-      // A click on the backdrop targets the <dialog> itself (its content fills the box).
-      onClick: (e: React.MouseEvent<HTMLDialogElement>) => {
-        if (e.target === e.currentTarget) close.current();
-      },
-    },
-  };
-}
-
-/** Class names of a drawer docked to the right edge (a native <dialog>). */
-export const DRAWER_DIALOG =
-  "fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-dvh w-full max-w-[460px] overflow-hidden bg-white p-0 text-ink shadow-pop backdrop:bg-slate-900/30 open:animate-slide-in";
-
 // ---------------------------------------------------------------- the drawer
 
 type Panel = "move" | "cancel" | null;
@@ -207,7 +161,7 @@ export function AppointmentDrawer({
   const locale = useLocale();
   const statusLabel = useStatusLabel();
   const titleId = useId();
-  const { ref, props: dialogProps } = useModalDialog(onClose, `[data-appt-id="${appt.id}"]`);
+  const { ref, props: dialogProps } = useModalDialog(onClose, { fallbackSelector: `[data-appt-id="${appt.id}"]` });
   const tz = appt.location.timezone;
   const { run, pending } = useRunAction();
   const toast = useToast();
@@ -422,7 +376,16 @@ export function AppointmentDrawer({
                 </Button>
               ) : null}
               {appt.needsAttention ? (
-                <Button size="sm" variant="secondary" disabled={pending} onClick={() => run(() => clearAttention(appt.id))}>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={pending}
+                  onClick={() => {
+                    // Clearing the flag also withdraws an open rebooking offer: the patient's link stops offering times.
+                    if (detail?.rebookOfferSent && !window.confirm(t("drawer.markHandledRebookConfirm"))) return;
+                    run(() => clearAttention(appt.id));
+                  }}
+                >
                   {t("drawer.markHandled")}
                 </Button>
               ) : null}

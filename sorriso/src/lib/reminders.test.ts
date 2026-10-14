@@ -1,7 +1,7 @@
 import { and, asc, eq } from "drizzle-orm";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
-import { appointments, messages, organizations, reminders, waitlist, type OrgSettings, type ReminderRule } from "@/db/schema";
+import { appointments, messages, noticeVersions, organizations, reminders, waitlist, type OrgSettings, type ReminderRule } from "@/db/schema";
 import { createPractice, MONDAY, NOW, TZ } from "@/test/fixtures";
 import { cancelAppointment, createAppointment, type NewPatientInput } from "./booking";
 import { appointmentLinks, getAppointmentDetails } from "./appointments";
@@ -9,6 +9,7 @@ import { newId } from "./ids";
 import { recordConsent, withdrawConsent } from "./privacy/consent";
 import { appointmentIcs, enqueueNow, processDueReminders, reminderRiskGate } from "./reminders";
 import { addDays, zonedToUtc } from "./time";
+import { joinWaitlist } from "./waitlist";
 
 /** Set to make the next deliver() throw, as a failed insert into the message log would. */
 const deliveryFailure = vi.hoisted(() => ({ error: null as Error | null }));
@@ -205,10 +206,29 @@ describe("risk-gated rules (onlyIfRisk)", () => {
     return { d, start };
   };
 
-  it("schedules the gate with the reminder", async () => {
+  it("schedules the gate with the reminder, in reminders.only_if_risk", async () => {
     const { d } = await risky("low");
     const rows = await reminderRows(d.appointment.id);
+    expect(rows.map((r) => r.onlyIfRisk)).toEqual([null, "high"]);
     expect(rows.map((r) => reminderRiskGate(r))).toEqual([null, "high"]);
+    // The id no longer carries it.
+    expect(rows.every((r) => !r.id.includes(".risk-"))).toBe(true);
+  });
+
+  it("still honours a gate scheduled before the column existed (the old id suffix)", async () => {
+    expect(reminderRiskGate({ id: "abc.risk-medium", onlyIfRisk: null })).toBe("medium");
+    expect(reminderRiskGate({ id: "abc", onlyIfRisk: null })).toBeNull();
+    // A legacy row whose id carries the gate but whose column was not backfilled.
+    const { d, start } = await risky("low");
+    const [gated] = (await reminderRows(d.appointment.id)).filter((r) => r.onlyIfRisk);
+    await db.delete(reminders).where(eq(reminders.id, gated.id));
+    await db.insert(reminders).values({ ...gated, id: `${gated.id}.risk-high`, onlyIfRisk: null });
+    await processDueReminders({ appointmentId: d.appointment.id, now: dayBefore(start) });
+    expect((await sentTo(d.appointment.id)).filter((m) => m.channel === "sms")).toHaveLength(0);
+    expect((await reminderRows(d.appointment.id)).find((r) => r.id === `${gated.id}.risk-high`)).toMatchObject({
+      status: "skipped",
+      error: "only for high no-show risk",
+    });
   });
 
   it("skips a high-risk-only rule for a low- or medium-risk appointment and sends it for a high one", async () => {
@@ -218,7 +238,7 @@ describe("risk-gated rules (onlyIfRisk)", () => {
       const sms = (await sentTo(d.appointment.id)).filter((m) => m.channel === "sms");
       expect(sms.length, `risk ${risk}`).toBe(sent ? 1 : 0);
       if (!sent) {
-        const gated = (await reminderRows(d.appointment.id)).find((r) => reminderRiskGate(r));
+        const gated = (await reminderRows(d.appointment.id)).find((r) => r.onlyIfRisk);
         expect(gated).toMatchObject({ status: "skipped", error: "only for high no-show risk" });
       }
     }
@@ -377,5 +397,32 @@ describe("the privacy-choices link without a manage link", () => {
       .where(and(eq(messages.patientId, waiting.patient.id), eq(messages.channel, "email")));
     expect(offer.html).toContain('href="https://sorriso.test/de/privacy"');
     expect(offer.html).not.toContain('href="https://sorriso.test/privacy"');
+  });
+});
+
+describe("joinWaitlist", () => {
+  it("records the notices the waitlist form showed, in its language; an entry made without the form records none", async () => {
+    const W = await createPractice();
+    const shown = () => db.select().from(noticeVersions).where(eq(noticeVersions.orgId, W.orgId));
+    const entry = (privacy?: Parameters<typeof joinWaitlist>[0]["privacy"]) =>
+      joinWaitlist({
+        orgId: W.orgId,
+        serviceId: W.visit,
+        earliestDate: MONDAY,
+        latestDate: addDays(MONDAY, 14),
+        partOfDay: "any",
+        patient: person({ locale: "pl" }),
+        privacy,
+        now: NOW,
+      });
+    await entry();
+    expect(await shown()).toEqual([]);
+    await entry({
+      choices: { feedback: false },
+      noticeVersion: null,
+      locale: "pl",
+      source: "waitlist",
+    });
+    expect((await shown()).map((n) => [n.kind, n.locale])).toEqual([["practice_patient", "pl"]]);
   });
 });

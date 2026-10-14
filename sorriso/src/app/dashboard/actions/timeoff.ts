@@ -95,7 +95,10 @@ export async function addTimeOff(_prev: unknown, fd: FormData): Promise<ActionRe
   );
 }
 
-/** Remove a block. Visits it covered (and no other closure does) get their reminders back. */
+/**
+ * Remove a block. Visits it covered (and no other closure does) get their reminders back. Another
+ * practice's id (or one already removed) changes nothing and answers not_found.
+ */
 export async function deleteTimeOff(id: string): Promise<ActionResult> {
   return guard(
     async (s) => {
@@ -104,7 +107,8 @@ export async function deleteTimeOff(id: string): Promise<ActionResult> {
         .delete(timeOff)
         .where(and(eq(timeOff.id, id), eq(timeOff.orgId, s.org.id)))
         .returning();
-      if (removed) await afterClosureRemoved(s.org.id, removed).catch((err) => logError("care", err, { step: "closure-removed" }));
+      if (!removed) return fail(t("timeOff.errors.notFound"), "not_found");
+      await afterClosureRemoved(s.org.id, removed).catch((err) => logError("care", err, { step: "closure-removed" }));
       return ok(t("timeOff.removed"));
     },
     { permission: "appointment.write" },

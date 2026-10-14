@@ -2,14 +2,17 @@
 
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { messages, patients } from "@/db/schema";
+import { appointments, messages, patients } from "@/db/schema";
 import { DEFAULT_LOCALE, isLocale, type Locale } from "@/i18n/config";
 import { getStaffLocale, getT } from "@/i18n/server";
 import { auditStaff } from "@/lib/audit";
 import type { StaffSession } from "@/lib/auth";
+import { redactPatientLinks } from "@/lib/dashboard";
 import { isDemoMode } from "@/lib/demo";
 import { handleInboundMessage } from "@/lib/inbound";
+import { can } from "@/lib/permissions";
 import { normalizePhone } from "@/lib/phone";
+import { hasRestrictedAccess } from "@/lib/privacy/erasure";
 import { fail, guard, ok, staff, type ActionResult } from "./_shared";
 
 /** Message log and the reply simulator (WP3). */
@@ -24,18 +27,57 @@ async function staffT(s: StaffSession) {
   return getT(locale, "reminders");
 }
 
-/** The message thread of one appointment (the drawer's history). Reading it is audited. */
+/**
+ * The message thread of one appointment, oldest first. The calendar drawer gets the thread with
+ * the appointment's detail (loadAppointmentDetail) and doesn't call this; it follows the same
+ * rules:
+ * - a restricted or erased patient's thread only with patient.restricted.read and a reason given
+ *   (hasRestrictedAccess), else nothing;
+ * - patients' personal links (manage page, calendar file) are replaced by a placeholder: staff get
+ *   those only through issuePatientLink(), which is audited;
+ * - reading it is audited as message.view on the appointment (not appointment.view: the drawer's
+ *   own row stays the only one), with the patient for their access log.
+ * Another practice's appointment gives nothing.
+ */
 export async function appointmentMessages(id: string) {
   const s = await staff("messages.read");
+  const [appt] = await db
+    .select({ patientId: patients.id, restrictedAt: patients.restrictedAt, erasedAt: patients.erasedAt })
+    .from(appointments)
+    .innerJoin(patients, and(eq(patients.id, appointments.patientId), eq(patients.orgId, s.org.id)))
+    .where(and(eq(appointments.id, id), eq(appointments.orgId, s.org.id)));
+  if (!appt) return [];
+  if (appt.restrictedAt || appt.erasedAt) {
+    const unlocked = can(s.role, "patient.restricted.read") && (await hasRestrictedAccess(s, appt.patientId));
+    if (!unlocked) return [];
+  }
   const rows = await db
-    .select()
+    .select({
+      id: messages.id,
+      channel: messages.channel,
+      direction: messages.direction,
+      status: messages.status,
+      intent: messages.intent,
+      createdAt: messages.createdAt,
+      subject: messages.subject,
+      body: messages.body,
+    })
     .from(messages)
     .where(and(eq(messages.appointmentId, id), eq(messages.orgId, s.org.id)))
     .orderBy(asc(messages.createdAt));
-  if (rows.length) {
-    await auditStaff(s, "appointment.view", { type: "appointment", id }, { metadata: { view: "messages", count: rows.length } });
-  }
-  return rows;
+  if (!rows.length) return [];
+  await auditStaff(
+    s,
+    "message.view",
+    { type: "appointment", id },
+    { metadata: { view: "thread", count: rows.length, patientId: appt.patientId } },
+  );
+  const linkLabel = (await staffT(s))("messages.linkRedacted");
+  return rows.map((m) => ({
+    ...m,
+    subject: m.subject === null ? null : redactPatientLinks(m.subject, linkLabel),
+    body: redactPatientLinks(m.body, linkLabel),
+  }));
 }
 
 /**

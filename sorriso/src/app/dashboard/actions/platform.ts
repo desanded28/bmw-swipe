@@ -50,13 +50,12 @@ export async function verifyAlbo(practitionerId: string): Promise<ActionResult> 
     if (!p) return fail(t("errors.notFound"), "not_found");
     if (!p.alboProvince || !p.alboNumber) return fail(t("platform.alboQueue.missing"), "invalid");
     await db.update(practitioners).set({ alboVerifiedAt: new Date(), alboVerifiedByUserId: s.user.id }).where(eq(practitioners.id, p.id));
-    // No dedicated audit action for the Albo check (closed list): recorded as a profile approval step.
     await audit({
       orgId: p.orgId,
       actor: { type: "platform_admin", id: s.user.id },
-      action: "practitioner.profile.approve",
+      action: "practitioner.albo.verify",
       entity: { type: "practitioner", id: p.id },
-      metadata: { albo: "verified" },
+      metadata: { verified: true },
     });
     return ok(t("platform.alboQueue.verified"));
   });
@@ -72,9 +71,9 @@ export async function revokeAlbo(practitionerId: string): Promise<ActionResult> 
     await audit({
       orgId: p.orgId,
       actor: { type: "platform_admin", id: s.user.id },
-      action: "practitioner.profile.approve",
+      action: "practitioner.albo.verify",
       entity: { type: "practitioner", id: p.id },
-      metadata: { albo: "revoked" },
+      metadata: { verified: false },
     });
     return ok(t("platform.alboQueue.revoked"));
   });

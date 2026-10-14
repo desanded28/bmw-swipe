@@ -153,10 +153,30 @@ WhatsApp message are free-form (inside the window).
    TWILIO_WHATSAPP_CONTENT_SIDS={"reminder":{"it":"HX…","en":"HX…"},"reminderAsk":{"it":"HX…"},"booked":{"it":"HX…"}}
    ```
 
-Kinds: `booked`, `approved`, `reminder`, `reminderAsk` (a reminder asking YES/NO; falls back to
-`reminder`), `cancelled`, `rescheduled`, `waitlist`, and `<namespace>.<kind>` for messages other
-packages send through `sendPatientMessage` (e.g. `careMessages.recall`). Staff notices sent by
-`src/lib/booking.ts` (cancelled/moved by the practice) pass no kind today, so they go by SMS.
+The keys of `TWILIO_WHATSAPP_CONTENT_SIDS` (one template per key and language). A key without an
+approved template in the patient's language is simply sent by SMS or email:
+
+| Key | Sent by | Variables |
+| --- | --- | --- |
+| `booked` | booking confirmation (`src/lib/reminders.ts`) | 1 name, 2 date and time, 3 practice, 4 appointment link |
+| `approved` | request approved by the practice | 1, 2, 3, 4 (appointment link) |
+| `reminder` | timed reminder | 1, 2, 3, 4 (appointment link) |
+| `reminderAsk` | timed reminder asking YES/NO (falls back to `reminder`) | 1, 2, 3, 4 (appointment link) |
+| `cancelled` | cancelled by the practice (`src/lib/booking.ts`) | 1, 2, 3, 4 (booking page, to rebook) |
+| `rescheduled` | moved by the practice (`src/lib/booking.ts`) | 1, 2, 3, 4 (appointment link) |
+| `waitlist` | a freed slot offered (`src/lib/waitlist.ts`) | 1, 2, 3, 4 (booking link for the slot) |
+| `careMessages.recall` | recall due (WP8, `src/lib/recalls.ts`) | 1 name, 3 practice, 4 booking link; no date. The template carries the opt-out itself, as static text: the privacy-center address of its language (`<APP_URL>/{locale}/privacy`), where recalls can be turned off |
+| `careMessages.practiceMoved` | practice closed during the visit (WP8, `src/lib/rebooking.ts`) | 1, 2 (the visit's date and time), 3, 4 (rebooking link) |
+| `careMessages.anamnesisInvite` | medical-history form before a visit (WP8, `src/lib/forms.ts`) | 1, 2 (the visit's date and time), 3, 4 (form link) |
+
+Any other message sent through `sendPatientMessage` has the key `<namespace>.<kind>` (e.g.
+`privacyMessages.confirmBooking`) and the same variables: 1 the first name, 2 its `{when}` or
+`{date}` if it has one, 3 the practice, 4 its link. Like the texts, a template stays discreet: no
+treatment, practitioner or reason, and "check-up" never says what for. Example:
+
+```
+TWILIO_WHATSAPP_CONTENT_SIDS={"reminder":{"it":"HX…"},"careMessages.recall":{"it":"HX…"},"careMessages.anamnesisInvite":{"it":"HX…"}}
+```
 
 Development: outside the live deployment (`isLiveMessaging()` false: a dev machine, demo mode, a
 preview), without `TWILIO_WHATSAPP_CONTENT_SIDS` and without WhatsApp credentials, every kind
@@ -256,8 +276,8 @@ out in that practice's name, in the patient's language.
 `processDueReminders({ orgId?, appointmentId?, now?, limit? })` sends what is due. The cron and
 the in-process worker run it for every practice; "Send due reminders now" (permission
 `reminders.run`) only for the signed-in practice, and the run is on the practice's access log with
-its counts (`appointment.update` on the practice, `metadata.job = "reminders.run"`, until the audit
-list has a reminders action).
+its counts (audit action `reminders.run` on the practice, metadata `due`, `sent`, `skipped`,
+`failed`, `retry`).
 
 - Recipients come from `recipientFor()`: under 14 with guardian contacts, the guardian.
   Restricted (Art. 18) and erased patients get nothing (the reminder is skipped).
@@ -267,8 +287,9 @@ list has a reminders action).
 - **`onlyIfRisk`** (`medium` or `high`, per rule in the Reminders page): the rule is skipped unless
   the appointment's no-show risk is at least that level. A practice without risk-based reminders
   (privacy settings) and a patient who objected to `adaptive_reminders` count as no risk. The gate
-  is fixed when the reminders are scheduled; the frozen schema has no column for it, so it travels
-  as a suffix of the reminder id (`<id>.risk-high`, `reminderRiskGate()`).
+  is fixed when the reminders are scheduled, in `reminders.only_if_risk` (`reminderRiskGate()`).
+  Rows scheduled before migration 0003 carried it as an id suffix (`<id>.risk-high`); 0003 copied
+  those into the column, and the suffix is still read as a fallback.
 - **Waiting-list offers** are discreet ("a slot opened on {date}"), in the patient's language,
   and skip restricted patients.
 
@@ -319,9 +340,14 @@ Use a neutral sender: a number or a generic alphanumeric ID, never the practice'
   `messages.providerDeletedAt`. Copies that can't be deleted don't hold up the others: a region
   whose credentials aren't set here (e.g. after leaving IE1) is not tried, and its copies wait
   until the credentials are back; a provider that fails five times in a row is left for the next
-  run; a copy that failed is skipped for six hours (remembered by the process: the schema has no
-  column for attempts yet). One error line per provider and run. Erasure (WP5) calls
-  `deleteProviderMessage()` directly.
+  run; a copy that failed is counted on its row (`messages.provider_delete_attempts`,
+  `provider_delete_failed_at`) and skipped for six hours, doubling with each further failure up to
+  a week, so the back-off holds across restarts and serverless runs. One error line per provider
+  and run. Erasure (WP5) calls `deleteProviderMessage()` directly.
+- Where it runs: the cron route `/api/cron/reminders` (serverless hosts: every run), the in-process
+  worker (`provider-copies`, daily at 03:15 UTC) and `scripts/run-reminders.ts` (once, daily with
+  `--watch`). The cron route also expires marketplace bookings held for another adult's
+  confirmation (`expireAdultConfirmations()`, WP4), as the worker's reminders tick does.
 - Email can't be recalled from an SMTP relay; choose an EU provider with short log retention.
 
 ### Fences and logs
@@ -349,5 +375,14 @@ of scope (see `docs/privacy/breach-runbook.md`). Draft wording: to be reviewed b
   all 8 languages at the practice's content level with the segment count, the table of understood
   replies, the reply number (owners), and the providers' status (SMS region, TLS, WhatsApp templates).
 - **Messages** (`messages.read`): the log with decrypted bodies and the understood intent of each
-  reply, in the staff member's language. Viewing it is audited. The reply simulator is shown, and
-  `simulateReply` works, only in demo mode with `messages.simulate`.
+  reply, in the staff member's language. Viewing it is audited as `message.view`: the list with no
+  entity and `{ view, filter, count }`, an email opened in full on that message with its
+  `patientId`. As in the calendar drawer, a restricted (Art. 18) or erased patient's messages show
+  as "Restricted patient" with no text unless the viewer has `patient.restricted.read` and gave a
+  reason for that record, and patients' personal links (`/a/<token>`, the calendar file) are
+  replaced by "[patient link]" (staff get those through the audited `issuePatientLink()`). The
+  reply simulator is shown, and `simulateReply` works, only in demo mode with `messages.simulate`.
+- `appointmentMessages(id)` (an appointment's thread; the calendar drawer gets it with the detail
+  instead) applies the drawer's rules: a restricted patient's thread only after a reason, patients'
+  personal links replaced by "[patient link]", audited as `message.view` on the appointment with
+  `patientId`.

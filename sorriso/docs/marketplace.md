@@ -62,7 +62,8 @@ literals keep compiling.
   "Dr." as a placeholder only).
 - **Albo verification queue**: `/dashboard/platform/practitioners` (platform admins). The
   moderator looks the registration up in the public FNOMCeO register (opened by hand: no
-  automated requests) and confirms it (`alboVerifiedAt`, `alboVerifiedByUserId`). Public badge:
+  automated requests) and confirms or withdraws it (`alboVerifiedAt`, `alboVerifiedByUserId`;
+  audited `practitioner.albo.verify` with `metadata.verified`). Public badge:
   "Registered with the Albo degli Odontoiatri of {province}: verified on {date}" (the number itself
   is not published).
 - `PractitionerForm` keeps its props (`practitioner?`, `services`, `offered`) and reads the viewer
@@ -124,7 +125,9 @@ identifier; bots, link previewers, headless browsers, scripts and router prefetc
 - `lang` attributes on practice-written text (description, service names, bios, directions,
   replies) when `contentLocale` differs from the page locale; `*_i18n` translations are used when
   the practice wrote them.
-- Medical director line, price labels (`fixed`, `from`, range, `quote`, on request, free),
+- Medical director line, price labels (`fixed`, `from`, range, `quote`, on request, free; the
+  practitioner page passes the same labels to `BookingFlow` as `labels`, via `bookingLabels()` in
+  `components/marketplace/price.ts`),
   "includes", declared health funds (direct billing / reimbursement, "as declared by the
   practice"), accessibility features and directions, the 19% tax-deduction note, the rating
   breakdown with the weighted score and "How we verify reviews" next to every rating.
@@ -264,10 +267,17 @@ email are kept inside the encrypted report details.
 ## Audit actions used
 
 `review.reply`, `review.report`, `review.moderate`, `review.withdraw`, `consent.record` (via
-`recordConsent`), `practitioner.profile.approve` (approval, approval withdrawn, opt-out with
-`metadata.marketplaceOptOut`, Albo verified/revoked with `metadata.albo`; the closed list has no
-dedicated actions for the last two), `settings.update` (funds), `platform.access`
-(`requirePlatformAdmin`).
+`recordConsent`), `practitioner.profile.approve` (approval given or withdrawn, `metadata.approved`),
+`practitioner.marketplace.opt_out` (the practitioner left or rejoined the marketplace,
+`metadata.optedOut`), `practitioner.albo.verify` (platform admin verified or withdrew the Albo
+check, `metadata.verified`; also `verified: false, via: "edit"` when a practice edit of the
+registration clears it), `settings.update` (funds), `platform.access` (`requirePlatformAdmin`).
+Rows written before the integration pass recorded the last two as `practitioner.profile.approve`
+with `metadata.marketplaceOptOut` / `metadata.albo`.
+
+Dashboard actions on another practice's id (`savePractitioner`, `saveService`, `saveLocation`,
+`addRoom`, `updateRoom`, `replyToReview`, `reportReview`, the profile approval and opt-out) answer
+`{ ok: false, code: "not_found" }` and change nothing.
 
 ## Data protection notes
 
@@ -287,29 +297,30 @@ dedicated actions for the last two), `settings.update` (funds), `platform.access
 
 ## Demo data (`scripts/seed/marketplace.ts`)
 
-Funds (+ FISDE, Casagit, Allianz) and each practice's declared funds; profiles with spoken
-languages, care options and Albo registrations (some verified, some waiting); one practitioner
+Each practice's declared funds (the funds list, FISDE, Casagit and Allianz included, comes from
+the migrations); profiles with spoken languages, care options and Albo registrations (some
+verified, some waiting); one practitioner
 pending approval (Elena Greco, Roma) and one who opted out (Rosa Esposito, Napoli); price types;
 office accessibility and directions; two reviews held by the health-term check, one reported by
 the practice and one notice from the public (flagship practice); two weeks of profile statistics.
 
 ## Requests to other packages
 
+Still open after the integration pass:
+
 - **WP6** `team/[id]` (**integration blocker**): render `<PractitionerForm>` also for the linked
-  practitioner (see above); CSP `frame-src https://www.openstreetmap.org`.
-- **WP6** `src/lib/security.test.ts` and the lead's `actions/_shared.test.ts` (**merge blocker**:
-  typecheck and 4 tests fail until then): `setReviewPublished` no longer exists (acceptance: only
-  `replyToReview` and `reportReview`); use `reportReview(id, "defamation", "details…")` instead.
+  practitioner (see above).
 - **WP1** `BookingFlow` (`time.practitionerOption`) and `a/[token]/page.tsx`, **WP6**
   `team/page.tsx` and `team/[id]/page.tsx`: `practitioner.specialty` may now be empty; fall back to
   `marketplace.profile.defaultSpecialty`.
-- **WP1** `sitemap.ts`: also require `profileApprovedAt IS NOT NULL` (use `listedPractitioner()`),
-  otherwise it lists practitioners whose page is a 404. `BookingFlow.test.ts`: add `"catalog"` (and
-  `"privacy"`) to the test's namespaces, as the booking pages do.
-- **WP5**: decrypt the encrypted review columns in exports (now five, with
-  `review_reports.decision_reason` and `reviews.removed_reason`); retention keys above;
-  Sorriso-controller processing in `roles.ts`. **WP6** `scripts/encrypt-existing.ts`: include the
-  five columns (with their AADs) in key rotation.
-- **Lead**: dedicated audit actions `practitioner.marketplace.opt_out` and
-  `practitioner.albo.verify` (currently recorded as `practitioner.profile.approve`); FISDE,
-  Casagit, Allianz in the funds data.
+- **WP5** `src/lib/privacy/export.ts`: decrypt the five encrypted review columns in exports;
+  retention for `profile_stats` and removed reviews' text (decided `review_reports` are done).
+  **WP6** `src/lib/security/reencrypt.ts` (`ENCRYPTED_COLUMNS`): include the five columns (with
+  their AADs) in key rotation.
+- **WP6** `src/lib/security.test.ts`: `saveLocation` and `saveService` answer `not_found` now; take
+  them off `SILENT_NO_OPS`.
+- **WP1** (optional) `book/[org]` and `embed/[org]` `serviceLabels`: use `bookingLabels()` so the
+  booking form shows starting prices, ranges and "price after an assessment" like the practice page.
+
+Done: the lead's audit actions (above) and the three funds in migration 0003; `setReviewPublished`
+removed from the tests; WP1's sitemap and `BookingFlow.test`; WP6's CSP `frame-src` for the map.

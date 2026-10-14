@@ -23,7 +23,7 @@ export async function generateMetadata(): Promise<Metadata> {
  * with appointment.notes.read. A restricted (Art. 18) or erased patient shows no contacts and no
  * note to anyone, only the name (a placeholder without patient.restricted.read) and a way to the
  * patient record, which asks for a reason. Showing the list is recorded in the access log
- * (patient.view, count).
+ * (waitlist.view, count).
  */
 export default async function WaitlistPage() {
   const s = await requirePermission("calendar.read");
@@ -84,7 +84,7 @@ export default async function WaitlistPage() {
       .where(and(eq(waitlist.orgId, s.org.id), inArray(waitlist.id, noteIds)));
     for (const r of noteRows) if (r.note) notes.set(r.id, r.note);
   }
-  await auditListView(s, "waitlist", rows.length, "patient.view");
+  await auditListView(s, "waitlist", rows.length, "waitlist.view");
 
   return (
     <div className="mx-auto max-w-5xl">

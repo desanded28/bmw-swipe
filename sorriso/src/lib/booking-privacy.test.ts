@@ -1,10 +1,23 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
-import { appointments, consents, funds, messages, orgFunds, organizations, patients, waitlist, type Locale } from "@/db/schema";
+import {
+  appointments,
+  consents,
+  funds,
+  messages,
+  noticeVersions,
+  orgFunds,
+  organizations,
+  patients,
+  reminders,
+  waitlist,
+  type Locale,
+} from "@/db/schema";
 import { LOCALE_MESSAGES } from "@/i18n/messages";
 import { createPractice, MONDAY, NOW, TZ } from "@/test/fixtures";
 import {
+  approveRequest,
   BookingError,
   createAppointment,
   planBookingPrivacy,
@@ -15,6 +28,7 @@ import {
   type NewPatientInput,
 } from "./booking";
 import { newId } from "./ids";
+import { recordConsent } from "./privacy/consent";
 import { NOTICE_VERSIONS } from "./privacy/versions";
 import { addDays, zonedToUtc } from "./time";
 import { joinWaitlist } from "./waitlist";
@@ -360,9 +374,89 @@ describe("booking for another adult", () => {
     expect(await consentsOf(d.patient.id)).toEqual([]);
   });
 
-  it("is refused on the marketplace until the adult can confirm themselves", async () => {
-    const err = await rejection(book(p, { processingContext: "marketplace", privacy: privacy(), relation }));
+  it("tells the adult booked through the practice's channels, at their own contact (Art. 14)", async () => {
+    const q = await createPractice();
+    const d = await book(q, { processingContext: "practice", privacy: privacy({ feedback: false }), patient: person({ firstName: "Bruno" }), relation });
+    const sent = await db.select().from(messages).where(eq(messages.appointmentId, d.appointment.id));
+    const notice = sent.find((m) => m.to === d.patient.phone);
+    expect(notice?.body).toContain("Marco Gialli");
+    expect(notice?.body).toContain(`/c/`);
+    // Nothing goes to the booker's own contacts.
+    expect(sent.some((m) => m.to === d.appointment.bookedByPhone || m.to === d.appointment.bookedByEmail)).toBe(false);
+  });
+
+  it("is held on the marketplace for the adult's own confirmation: requested, no consent, no reminders, a request to their own contact", async () => {
+    const d = await book(p, { processingContext: "marketplace", privacy: privacy({ whatsapp: true, marketing: true }), patient: person({ firstName: "Carla" }), relation });
+    expect(d.appointment).toMatchObject({ status: "requested", processingContext: "marketplace", bookedFor: "other_adult", bookedByName: "Marco Gialli" });
+    // Nothing the booker ticked is recorded: only the adult can consent.
+    expect(await consentsOf(d.patient.id)).toEqual([]);
+    // No reminders and no booking receipt while the booking waits for the adult.
+    expect(await db.select().from(reminders).where(eq(reminders.appointmentId, d.appointment.id))).toEqual([]);
+    const sent = await db.select().from(messages).where(eq(messages.appointmentId, d.appointment.id));
+    expect(sent.map((m) => m.to)).toEqual([d.patient.phone]);
+    expect(sent[0].body).toContain(`/a/${d.appointment.manageTokenEnc}/privacy/confirm`);
+
+    // The practice can't release it: only the adult's own consent does (confirmAdultBooking).
+    expect(await rejection(approveRequest(d.appointment.id, NOW))).toMatchObject({ code: "not_allowed", reason: "awaiting_adult_confirmation" });
+    await db.transaction((tx) =>
+      recordConsent(tx, {
+        orgId: p.orgId,
+        patientId: d.patient.id,
+        purpose: "platform_booking_art9",
+        granted: true,
+        locale: "it",
+        method: "web_checkbox",
+        source: "manage_link",
+        actorRelation: "self",
+        appointmentId: d.appointment.id,
+        now: NOW,
+      }),
+    );
+    expect(await approveRequest(d.appointment.id, NOW)).toBe(true);
+  });
+
+  it("refuses a marketplace hold the adult could never confirm: no contact of their own", async () => {
+    const shared = `+39${phoneSeq++}`;
+    const err = await rejection(
+      book(p, {
+        processingContext: "marketplace",
+        privacy: privacy(),
+        patient: person({ firstName: "Dario", email: null, phone: shared }),
+        relation: { bookedFor: "other_adult", bookedBy: { name: "Elena Gialli", phone: shared } },
+      }),
+    );
+    expect(err).toMatchObject({ code: "invalid", reason: "other_adult_contact_required", field: "phone" });
+    expect(await db.select().from(patients).where(eq(patients.phone, shared))).toEqual([]);
+  });
+
+  it("still refuses a marketplace waitlist entry for another adult: the waitlist has no hold", async () => {
+    const err = await rejection(
+      joinWaitlist({
+        orgId: p.orgId,
+        serviceId: p.visit,
+        earliestDate: MONDAY,
+        latestDate: MONDAY,
+        partOfDay: "any",
+        patient: person({ firstName: "Ettore" }),
+        processingContext: "marketplace",
+        relation,
+        privacy: { ...privacy(), source: "waitlist" },
+        now: NOW,
+      }),
+    );
     expect(err).toMatchObject({ reason: "other_adult_must_book_themselves", field: "bookedFor" });
+  });
+});
+
+describe("notice versions", () => {
+  it("a patient-facing booking records the notices it showed, in the form's language; a staff booking none", async () => {
+    const q = await createPractice();
+    const shown = (locale: Locale) =>
+      db.select().from(noticeVersions).where(and(eq(noticeVersions.orgId, q.orgId), eq(noticeVersions.kind, "practice_patient"), eq(noticeVersions.locale, locale)));
+    await book(q, { online: false, source: "staff", privacy: undefined });
+    expect(await db.select().from(noticeVersions).where(eq(noticeVersions.orgId, q.orgId))).toEqual([]);
+    await book(q, { processingContext: "practice", privacy: privacy({ feedback: false }, "fr") });
+    expect(await shown("fr")).toHaveLength(1);
   });
 });
 

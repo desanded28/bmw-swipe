@@ -154,6 +154,11 @@ export default {
     emailFrame: "Email: {subject}",
     unknownSender: "Unknown number",
     redacted: "Content removed by the retention policy",
+    /** Stands in for a patient's personal link (manage page, calendar file) in a message shown to staff. */
+    linkRedacted: "[patient link]",
+    /** Instead of the name and the text of a restricted (GDPR Art. 18) or erased patient's message. */
+    restrictedPatient: "Restricted patient",
+    restrictedBody: "This patient's data is restricted (GDPR Art. 18). Open their appointment in the calendar and give a reason to see these messages.",
     status: {
       sent: "Sent",
       delivered: "Delivered",

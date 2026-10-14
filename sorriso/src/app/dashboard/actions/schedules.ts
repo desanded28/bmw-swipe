@@ -25,7 +25,7 @@ const scheduleSchema = z
   )
   .max(70);
 
-/** Replace a practitioner's weekly hours. Needs team.manage; audited as settings.update. */
+/** Replace a practitioner's weekly hours. Needs team.manage; audited as schedule.update. */
 export async function saveSchedule(practitionerId: string, rows: z.input<typeof scheduleSchema>): Promise<ActionResult> {
   return dashboardAction(
     async (s, t, locale) => {
@@ -56,7 +56,7 @@ export async function saveSchedule(practitionerId: string, rows: z.input<typeof 
         await tx.delete(schedules).where(eq(schedules.practitionerId, practitionerId));
         if (values.length) await tx.insert(schedules).values(values);
       });
-      await auditStaff(s, "settings.update", { type: "practitioner", id: practitionerId }, { metadata: { schedule: values.length } });
+      await auditStaff(s, "schedule.update", { type: "practitioner", id: practitionerId }, { metadata: { schedule: values.length } });
       return ok(t("done.hoursSaved"));
     },
     { permission: "team.manage" },

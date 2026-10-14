@@ -4,7 +4,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { MapEmbed } from "@/components/MapEmbed";
 import { AccessibilityList } from "@/components/marketplace/AccessibilityList";
-import { priceLabel, TAX_DEDUCTION_RATE, TAX_DEDUCTION_THRESHOLD_CENTS } from "@/components/marketplace/price";
+import { priceLabel, priceTexts, TAX_DEDUCTION_RATE, TAX_DEDUCTION_THRESHOLD_CENTS } from "@/components/marketplace/price";
 import { RatingBreakdown } from "@/components/RatingBreakdown";
 import { ReviewList } from "@/components/ReviewList";
 import { Avatar, Badge, Card, LinkButton, Stars } from "@/components/ui";
@@ -73,14 +73,8 @@ export default async function ClinicPage({ params, searchParams }: { params: Par
   const funds = clinic.funds ?? [];
   const color = clinic.org.brandColor;
   const average = breakdown.count ? formatDecimal(breakdown.average, locale, 1) : null;
-  const price = (s: PublicClinic["services"][number]) =>
-    priceLabel(s, locale, {
-      onRequest: tc("price.onRequest"),
-      free: tc("price.free"),
-      from: (p) => tc("price.from", { price: p }),
-      range: (min, max) => tcat("price.range", { min, max }),
-      quote: tcat("price.quote"),
-    });
+  const texts = priceTexts(tc, tcat);
+  const price = (s: PublicClinic["services"][number]) => priceLabel(s, locale, texts);
   const serviceName = (id: string) => {
     const s = clinic.services.find((x) => x.id === id);
     return s ? localizedText(s.name, s.nameI18n, locale, contentLocale).text : null;

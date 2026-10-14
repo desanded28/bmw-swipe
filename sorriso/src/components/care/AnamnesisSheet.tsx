@@ -8,8 +8,8 @@ import { fmtDay, fmtWhen } from "@/i18n/datefmt";
 import { useLocale, useT } from "@/i18n/provider";
 import { DEFAULT_TIMEZONE } from "@/lib/config";
 import { Badge, Button } from "../ui";
+import { useModalDialog } from "../dashboard/modal";
 import { useRunAction } from "../dashboard/useRunAction";
-import { useNativeModal } from "./modal";
 import type { AnamnesisSheetData } from "./types";
 
 /**
@@ -23,7 +23,7 @@ export function AnamnesisSheet({ data, onClose }: { data: AnamnesisSheetData; on
 }
 
 /**
- * The sheet itself: a native <dialog> opened with showModal() (src/components/care/modal.ts), so
+ * The sheet itself: a native <dialog> opened with showModal() (src/components/dashboard/modal.ts), so
  * it stacks above the appointment drawer's own modal dialog (the drawer goes inert behind it, not
  * the other way round), keeps focus inside, and Escape closes the sheet only. Exported for tests.
  */
@@ -32,7 +32,7 @@ export function AnamnesisSheetDialog({ data, onClose }: { data: AnamnesisSheetDa
   const tc = useT("common");
   const locale = useLocale();
   const titleId = useId();
-  const { ref, props: dialogProps } = useNativeModal(onClose, { printable: true });
+  const { ref, props: dialogProps } = useModalDialog(onClose, { printable: true });
   const [exportedAt, setExportedAt] = useState(data.exportedAt);
   const { run, pending } = useRunAction();
   const tz = data.visit?.timezone ?? DEFAULT_TIMEZONE;

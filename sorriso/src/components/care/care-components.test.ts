@@ -8,7 +8,7 @@ import { getMessages } from "@/i18n/t";
 import { DEFAULT_ANAMNESIS_V1 } from "@/lib/forms";
 import { AnamnesisForm } from "./AnamnesisForm";
 import { AnamnesisSheetDialog } from "./AnamnesisSheet";
-import { handleBackdropClick, handleCancel, modalForPrint, openModal, type ModalDialog } from "./modal";
+import { handleBackdropClick, handleCancel, modalForPrint, openModal, type ModalDialog } from "../dashboard/modal";
 import { PatientCareView } from "./PatientCareView";
 import { RebookChooser } from "./RebookChooser";
 import { recallOptions, RECALL_INTERVALS, type AnamnesisSheetData, type PatientCareData } from "./types";

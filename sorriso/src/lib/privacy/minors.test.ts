@@ -61,15 +61,11 @@ describe("validateBookingRelation", () => {
     expect(validateBookingRelation(minor({ phone: null, email: "anna@example.com" }), "2020-06-01", AT, "practice", AT)).toEqual({ ok: true });
   });
 
-  it("refuses bookings for another adult on the marketplace only", () => {
-    expect(validateBookingRelation({ bookedFor: "other_adult" }, "1980-01-01", AT, "marketplace", AT)).toEqual({
-      ok: false,
-      code: "other_adult_must_book_themselves",
-      field: "bookedFor",
-    });
+  it("lets bookings for another adult through: the marketplace holds them for the adult's own confirmation", () => {
+    // The held booking (adult-confirmation.ts) is wired into booking.ts.
+    expect(OTHER_ADULT_ON_MARKETPLACE).toBe("held");
+    expect(validateBookingRelation({ bookedFor: "other_adult" }, "1980-01-01", AT, "marketplace", AT)).toEqual({ ok: true });
     expect(validateBookingRelation({ bookedFor: "other_adult" }, "1980-01-01", AT, "practice", AT)).toEqual({ ok: true });
-    // Until the held booking (adult-confirmation.ts) is wired into booking.ts.
-    expect(OTHER_ADULT_ON_MARKETPLACE).toBe("refused");
   });
 });
 
