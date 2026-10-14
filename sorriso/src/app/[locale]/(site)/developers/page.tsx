@@ -10,7 +10,6 @@ import { alternatesFor } from "@/i18n/seo";
 import { getT } from "@/i18n/server";
 import type siteMessages from "@/i18n/messages/en/site";
 import { APP_NAME, APP_URL } from "@/lib/config";
-import { isDemoMode } from "@/lib/demo";
 
 /** Open Graph in the page language, with the other languages as alternates. */
 const ogAlternates = (locale: Locale) => LOCALES.filter((l) => l !== locale).map((l) => OG_LOCALE[l]);
@@ -250,7 +249,6 @@ curl -X POST "${APP_URL}/api/v1/clinics/studio-bianchi/appointments" \\
       <h2 className="mb-3 mt-10 text-xl font-bold">{t("developers.sync.title")}</h2>
       <Card className="space-y-4 p-6">
         <p className="text-sm text-slate-600">{t("developers.sync.keys")}</p>
-        {isDemoMode() ? <p className="text-sm text-slate-600">{rich(t("developers.sync.demoKey"), { code })}</p> : null}
         <Code label={t("developers.codeSample")}>{`curl -H "Authorization: Bearer sk_…" \\
   "${APP_URL}/api/v1/partner/appointments?updatedSince=2026-10-01T00:00:00Z"
 

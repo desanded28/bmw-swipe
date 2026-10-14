@@ -106,6 +106,13 @@ export default {
     requestedBody: "{clinic} will confirm your request shortly. We'll message you as soon as they do.",
     confirmedBody: "We've sent you a confirmation and will remind you shortly before the visit.",
     pendingBody: "We've sent you a confirmation. We'll remind you before the visit: just reply {word} to confirm.",
+    /** Booked on Sorriso for another adult: held until that adult confirms it themselves (48 hours). */
+    heldTitle: "Waiting for the patient's confirmation",
+    heldBody:
+      "We've sent the patient a message asking them to confirm this booking and give their own consent. If they don't confirm within 48 hours, or before the visit if that is sooner, the booking is cancelled.",
+    /** Booked for another adult through the practice: the confirmation and reminders go to that adult, not to the booker. */
+    otherAdultBody: "Messages about this appointment go to the patient's own phone or email. Please let them know you booked it for them.",
+    otherAdultRequestedBody: "{clinic} will confirm the request shortly. We'll message the patient as soon as they do.",
     withAt: "{practitioner} · {office}, {address}, {city}",
     appleOutlook: "Apple / Outlook",
     google: "Google Calendar",

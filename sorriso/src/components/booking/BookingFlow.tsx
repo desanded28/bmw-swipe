@@ -28,8 +28,12 @@ export type BookingInitial = {
   waitlistEntryId?: string;
 };
 
-/** Texts the server formats for the flow, so client components never format money or units. */
-export type BookingLabels = { services: ServiceLabels };
+/**
+ * Texts the server formats or looks up for the flow, so client components never format money or
+ * units. `defaultSpecialty` (marketplace.profile.defaultSpecialty, "Dentist") stands in for a
+ * practitioner whose practice left the specialty empty; without it the name is shown alone.
+ */
+export type BookingLabels = { services: ServiceLabels; defaultSpecialty?: string };
 
 /**
  * Talking to the page that embeds the widget. Messages go only to `parentOrigin` (checked by the
@@ -198,6 +202,7 @@ export function BookingFlow({
   practiceRef = null,
   labels,
   embed,
+  search,
 }: {
   clinic: PublicClinic;
   initial: BookingInitial;
@@ -214,6 +219,8 @@ export function BookingFlow({
   labels?: BookingLabels;
   /** Embedded in the widget: where and what to post to the host page. */
   embed?: EmbedMessaging;
+  /** The page's query as the server saw it (x-search): the language switcher keeps it without JavaScript. */
+  search?: string;
 }) {
   const t = useT("booking");
   const tc = useT("common");
@@ -343,11 +350,15 @@ export function BookingFlow({
                 <Field label={t("time.practitioner")}>
                   <Select value={practitionerId} onChange={(e) => dispatch({ type: "setPractitioner", practitionerId: e.target.value })}>
                     <option value="">{t("time.firstAvailable")}</option>
-                    {eligiblePractitioners.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {t("time.practitionerOption", { name: practitionerName(p), specialty: p.specialty })}
-                      </option>
-                    ))}
+                    {eligiblePractitioners.map((p) => {
+                      // Left empty by the practice: the server's default ("Dentist"), else the name alone.
+                      const specialty = p.specialty.trim() || labels?.defaultSpecialty;
+                      return (
+                        <option key={p.id} value={p.id}>
+                          {specialty ? t("time.practitionerOption", { name: practitionerName(p), specialty }) : practitionerName(p)}
+                        </option>
+                      );
+                    })}
                   </Select>
                 </Field>
               ) : null}
@@ -427,6 +438,7 @@ export function BookingFlow({
             confirmWord={CONFIRM_WORD[form.details.locale]}
             headingId={headingId}
             embedded={embedded}
+            forOtherAdult={form.relationAsked && form.relation.bookedFor === "other_adult" ? context : "no"}
           />
         ) : null}
       </div>
@@ -440,7 +452,7 @@ export function BookingFlow({
             <h2 id={`${uid}-summary`} className="pt-2 text-xs font-bold uppercase tracking-wider text-slate-600">
               {t("summary.title")}
             </h2>
-            <LanguageSwitcher mode={embedded ? "url" : "cookie"} />
+            <LanguageSwitcher mode={embedded ? "url" : "cookie"} search={search} />
           </div>
           <dl className="space-y-3 text-sm">
             <SummaryRow icon={<Stethoscope size={16} />} label={t("summary.service")}>

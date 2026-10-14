@@ -20,6 +20,12 @@ type Props = {
   /** Which side the menu opens towards. */
   align?: "left" | "right";
   className?: string;
+  /**
+   * The page's query without "?" as the server saw it (the proxy's x-search header): used for the
+   * links rendered before useSearchParams is known, which are what a visitor without JavaScript
+   * gets. Once hydrated, the switcher reads the live query itself.
+   */
+  search?: string;
 };
 
 /**
@@ -27,23 +33,24 @@ type Props = {
  * link, so it works without JavaScript. The link keeps the page and its query. Choosing a language
  * is the only thing that sets the NEXT_LOCALE cookie.
  */
-export function LanguageSwitcher(props: Props) {
-  // useSearchParams needs a Suspense boundary on statically rendered pages; the fallback is the
-  // same switcher without the query (those pages have none worth keeping).
+export function LanguageSwitcher({ search = "", ...props }: Props) {
+  // useSearchParams suspends until the query is known; the fallback is the same switcher with the
+  // query the server passed (none passed: the links drop it, and /api/locale falls back on the
+  // Referer).
   return (
-    <Suspense fallback={<Switcher {...props} search="" />}>
+    <Suspense fallback={<Switcher {...props} search={search.replace(/^\?/, "")} />}>
       <WithSearch {...props} />
     </Suspense>
   );
 }
 
-function WithSearch(props: Props) {
+function WithSearch(props: Omit<Props, "search">) {
   // null outside an App Router tree (tests, some error pages): no query to keep.
   const search = useSearchParams()?.toString() ?? "";
   return <Switcher {...props} search={search} />;
 }
 
-function Switcher({ variant = "menu", mode = "cookie", align = "right", className, search }: Props & { search: string }) {
+function Switcher({ variant = "menu", mode = "cookie", align = "right", className, search }: Omit<Props, "search"> & { search: string }) {
   const locale = useLocale();
   const ta = useT("a11y");
   const pathname = usePathname() || "/";

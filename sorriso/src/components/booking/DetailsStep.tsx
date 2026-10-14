@@ -8,7 +8,8 @@ import { useLocale, useT } from "@/i18n/provider";
 import type { Translator } from "@/i18n/types";
 import type { PublicClinic } from "@/lib/directory";
 import { formatPhone, normalizePhone } from "@/lib/phone";
-import { noticeVersionFor } from "@/lib/privacy/booking-rules";
+import { bookingPrivacyFormErrors, noticeVersionFor } from "@/lib/privacy/booking-rules";
+import { relationFormIssue } from "@/lib/privacy/minors";
 import { Button, Field, Input, Select, Textarea, cx } from "../ui";
 import { BookingExtrasSection } from "./BookingExtrasSection";
 import {
@@ -166,6 +167,51 @@ export function NoticeOutdatedReload() {
   );
 }
 
+/** Texts for the privacy rule codes the forms check themselves (the same boxes' own wording). */
+const PRIVACY_FIELD_TEXT = {
+  platform_consent_required: "fields.consentRequired",
+  whatsapp_consent_required: "fields.whatsappRequired",
+} as const;
+
+/**
+ * The server's privacy and relation rules (booking-rules.ts, minors.ts), checked in the browser
+ * before posting, as form errors keyed by field in the page language. Someone booking for another
+ * adult is asked for no consent (the boxes aren't shown), so none is required of them. `relation`
+ * is null until PatientRelationSection reported a choice (it isn't posted before either).
+ */
+export function privacyFormErrors(
+  te: Translator<"errors">,
+  i: {
+    clinic: Pick<PublicClinic, "privacy">;
+    context: ProcessingContext;
+    preferredChannel: Channel;
+    privacy: BookingPrivacyState;
+    relation: RelationState | null;
+    birthDate: string;
+  },
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  const rules = bookingPrivacyFormErrors({
+    context: i.context,
+    preferredChannel: i.preferredChannel,
+    choices: i.privacy,
+    org: i.clinic.privacy,
+    bookedFor: i.relation?.bookedFor,
+  });
+  for (const [field, code] of Object.entries(rules)) {
+    out[field] = code in PRIVACY_FIELD_TEXT ? te(PRIVACY_FIELD_TEXT[code as keyof typeof PRIVACY_FIELD_TEXT]) : apiErrorText(te, code);
+  }
+  if (i.relation) {
+    const g = i.relation.guardian;
+    const issue = relationFormIssue(
+      { bookedFor: i.relation.bookedFor, guardian: { ...g, phone: g.phone.trim() || null, email: g.email.trim() || null } },
+      i.birthDate,
+    );
+    if (!issue.ok && issue.field) out[issue.field] ??= apiErrorText(te, issue.code);
+  }
+  return out;
+}
+
 /** Move focus to the first field marked invalid in `root`, else to `fallback` (the error summary). */
 export function focusFirstInvalid(root: HTMLElement | null, fallback: HTMLElement | null) {
   const invalid = root?.querySelector<HTMLElement>('[aria-invalid="true"]');
@@ -234,15 +280,19 @@ export function DetailsStep({
     setFocusRequest((n) => n + 1);
   };
 
+  // WhatsApp needs the patient's own consent: not offered to someone booking for another adult
+  // (PrivacySection tells them why), nor where the practice doesn't use it.
+  const forOther = form.relation.bookedFor === "other_adult";
+  const whatsappOffered = clinic.privacy.whatsappEnabled && !forOther;
   const channels = (
     [
       ["sms", <MessageCircle key="i" size={16} aria-hidden />],
       ["whatsapp", <MessageCircle key="i" size={16} aria-hidden />],
       ["email", <Mail key="i" size={16} aria-hidden />],
     ] as const
-  ).filter(([value]) => value !== "whatsapp" || clinic.privacy.whatsappEnabled);
-  // A WhatsApp choice can't outlive the practice turning WhatsApp off.
-  const channel: Channel = d.preferredChannel === "whatsapp" && !clinic.privacy.whatsappEnabled ? "sms" : d.preferredChannel;
+  ).filter(([value]) => value !== "whatsapp" || whatsappOffered);
+  // A WhatsApp choice can't outlive the practice turning WhatsApp off, or the switch to another adult.
+  const channel: Channel = d.preferredChannel === "whatsapp" && !whatsappOffered ? "sms" : d.preferredChannel;
 
   const normalized = d.phone.trim() ? normalizePhone(d.phone, d.phoneCountry) : null;
 
@@ -258,8 +308,15 @@ export function DetailsStep({
     if (channel === "email" && !d.email.trim()) errs.email = te("fields.emailForEmail");
     else if (d.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(d.email.trim())) errs.email = te("fields.invalidEmail");
     if (d.birthDate && !/^\d{4}-\d{2}-\d{2}$/.test(d.birthDate)) errs.birthDate = te("fields.invalidDate");
-    if (context === "marketplace" && !form.privacy.platformConsent) errs.platformConsent = te("fields.consentRequired");
-    if (channel === "whatsapp" && !form.privacy.whatsapp) errs.whatsapp = te("fields.whatsappRequired");
+    const rules = privacyFormErrors(te, {
+      clinic,
+      context,
+      preferredChannel: channel,
+      privacy: form.privacy,
+      relation: form.relationAsked ? form.relation : null,
+      birthDate: d.birthDate,
+    });
+    for (const [field, text] of Object.entries(rules)) errs[field] ??= text;
     setErrors(errs);
     const count = Object.keys(errs).length;
     if (count) return fail(te("checkFields", { count }));
@@ -339,6 +396,8 @@ export function DetailsStep({
         onChange={(relation) => onFormChange({ relation, relationAsked: true })}
         birthDate={d.birthDate}
         errors={errors}
+        context={context}
+        variant="booking"
       />
 
       <div className="grid gap-4 sm:grid-cols-2">

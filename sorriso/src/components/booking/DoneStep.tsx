@@ -38,6 +38,7 @@ export function DoneStep({
   confirmWord,
   headingId,
   embedded = false,
+  forOtherAdult = "no",
 }: {
   appointment: BookedAppointment;
   clinic: PublicClinic;
@@ -47,6 +48,13 @@ export function DoneStep({
   headingId: string;
   /** In the widget's iframe, pages of the site open in a new tab. */
   embedded?: boolean;
+  /**
+   * Booked for another adult (the posted relation): their messages go to their own contacts, not
+   * to the booker. "marketplace": on Sorriso such a booking comes back `requested` because it is
+   * held for that adult's own confirmation (48 hours, adult-confirmation.ts), not because the
+   * practice approves requests.
+   */
+  forOtherAdult?: "no" | "practice" | "marketplace";
 }) {
   const t = useT("booking");
   const ta = useT("a11y");
@@ -54,6 +62,8 @@ export function DoneStep({
   const tz = clinic.org.timezone;
   const when = fmtWhen(appointment.start, tz, locale);
   const requested = appointment.status === "requested";
+  const held = requested && forOtherAdult === "marketplace";
+  const forOther = forOtherAdult !== "no";
   const newTab = embedded ? ({ target: "_blank", rel: "noopener" } as const) : {};
   return (
     <div className="animate-fade-up mx-auto max-w-lg py-4 text-center">
@@ -67,14 +77,20 @@ export function DoneStep({
         {requested ? <Hourglass size={30} /> : <Check size={34} strokeWidth={3} />}
       </div>
       <h2 id={headingId} tabIndex={-1} className="text-2xl font-bold">
-        {requested ? t("done.requestedTitle") : t("done.bookedTitle")}
+        {held ? t("done.heldTitle") : requested ? t("done.requestedTitle") : t("done.bookedTitle")}
       </h2>
       <p className="mt-2 text-slate-600">
-        {requested
-          ? t("done.requestedBody", { clinic: clinic.org.name })
-          : appointment.confirmation === "confirmed"
-            ? t("done.confirmedBody")
-            : t("done.pendingBody", { word: confirmWord })}
+        {held
+          ? t("done.heldBody")
+          : requested
+            ? forOther
+              ? t("done.otherAdultRequestedBody", { clinic: clinic.org.name })
+              : t("done.requestedBody", { clinic: clinic.org.name })
+            : forOther
+              ? t("done.otherAdultBody")
+              : appointment.confirmation === "confirmed"
+                ? t("done.confirmedBody")
+                : t("done.pendingBody", { word: confirmWord })}
       </p>
       <div className="mt-6 rounded-2xl bg-slate-50 p-5 text-left ring-1 ring-slate-200/70">
         <p className="font-bold">{appointment.service.name}</p>

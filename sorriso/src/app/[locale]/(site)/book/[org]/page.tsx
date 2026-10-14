@@ -1,12 +1,13 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { BookingFlow, type BookingLabels } from "@/components/booking/BookingFlow";
+import { bookingLabels } from "@/components/marketplace/price";
 import { Avatar, Card } from "@/components/ui";
 import { toLocale, type Locale } from "@/i18n/config";
 import { ClientMessages } from "@/i18n/ClientMessages";
 import { lhref } from "@/i18n/href";
-import { formatMoney } from "@/i18n/number";
 import { alternatesFor } from "@/i18n/seo";
 import { getT } from "@/i18n/server";
 import { getPublicClinic, type PublicClinic } from "@/lib/directory";
@@ -39,14 +40,15 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
   };
 }
 
-/** Price and duration texts, formatted here so the client flow never formats numbers itself. */
-function serviceLabels(clinic: PublicClinic, locale: Locale): BookingLabels {
-  const tc = getT(locale, "common");
-  const price = (c: number | null) => (c == null ? tc("price.onRequest") : c === 0 ? tc("price.free") : formatMoney(c, locale));
+/**
+ * The flow's server-made texts: each treatment's price as patients read it (fixed, starting price,
+ * range, quote: the marketplace's own priceLabel) and duration, so the client never formats
+ * numbers; and the default specialty for practitioners whose practice left it empty.
+ */
+function flowLabels(clinic: PublicClinic, locale: Locale): BookingLabels {
   return {
-    services: Object.fromEntries(
-      clinic.services.map((s) => [s.id, { price: price(s.priceCents), duration: tc("units.minutesShort", { count: s.durationMinutes }) }]),
-    ),
+    ...bookingLabels(clinic.services, locale, getT(locale, "common"), getT(locale, "catalog")),
+    defaultSpecialty: getT(locale, "marketplace")("profile.defaultSpecialty"),
   };
 }
 
@@ -86,7 +88,8 @@ export default async function BookPage({ params, searchParams }: { params: Param
             today={todayIn(clinic.org.timezone)}
             context={context}
             practiceRef={practiceRef}
-            labels={serviceLabels(clinic, locale)}
+            labels={flowLabels(clinic, locale)}
+            search={(await headers()).get("x-search") ?? ""}
             initial={{
               serviceId: sp.service,
               practitionerId: sp.practitioner,

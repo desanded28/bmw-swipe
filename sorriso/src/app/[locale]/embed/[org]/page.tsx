@@ -4,12 +4,12 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { BookingFlow, type BookingLabels } from "@/components/booking/BookingFlow";
+import { bookingLabels } from "@/components/marketplace/price";
 import { db } from "@/db";
 import { organizations } from "@/db/schema";
 import { toLocale, type Locale } from "@/i18n/config";
 import { ClientMessages } from "@/i18n/ClientMessages";
 import { lhref } from "@/i18n/href";
-import { formatMoney } from "@/i18n/number";
 import { rich } from "@/i18n/rich";
 import { alternatesFor } from "@/i18n/seo";
 import { getT } from "@/i18n/server";
@@ -93,13 +93,11 @@ function allowedParent(
   return { origin: ok ? origin : null, blocked: !ok };
 }
 
-function serviceLabels(clinic: PublicClinic, locale: Locale): BookingLabels {
-  const tc = getT(locale, "common");
-  const price = (c: number | null) => (c == null ? tc("price.onRequest") : c === 0 ? tc("price.free") : formatMoney(c, locale));
+/** The flow's server-made texts, as on the book page: prices with their price type, durations, the default specialty. */
+function flowLabels(clinic: PublicClinic, locale: Locale): BookingLabels {
   return {
-    services: Object.fromEntries(
-      clinic.services.map((s) => [s.id, { price: price(s.priceCents), duration: tc("units.minutesShort", { count: s.durationMinutes }) }]),
-    ),
+    ...bookingLabels(clinic.services, locale, getT(locale, "common"), getT(locale, "catalog")),
+    defaultSpecialty: getT(locale, "marketplace")("profile.defaultSpecialty"),
   };
 }
 
@@ -173,7 +171,8 @@ export default async function EmbedPage({ params, searchParams }: { params: Para
           today={todayIn(clinic.org.timezone)}
           context={context}
           practiceRef={practiceRef}
-          labels={serviceLabels(clinic, locale)}
+          labels={flowLabels(clinic, locale)}
+          search={h.get("x-search") ?? ""}
           embed={{ parentOrigin: framed ? parent.origin : null, events: sp.events === "1", includeId: sp.id === "1" }}
           initial={{ serviceId: sp.service, practitionerId: sp.practitioner, locationId: sp.location }}
         />

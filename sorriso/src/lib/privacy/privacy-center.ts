@@ -50,9 +50,10 @@ import { OTP_MAX_FAILURES, OTP_TTL_MS, sendOtp, verifyOtp } from "../otp";
 import { normalizePhone } from "../phone";
 import { clientNetworkHash, rateLimit } from "../rate-limit";
 import { listPatientReviews, withdrawReview, type PatientReview } from "../reviews";
+import { clearRiskFor } from "../risk";
 import { resolveSettings } from "../settings";
 import { ConsentError, currentConsents, PURPOSE_BASIS, recordConsent, type ConsentState } from "./consent";
-import { buildPatientExport, type PatientExport } from "./export";
+import { buildPatientExport, patientAccessFilter, type PatientExport } from "./export";
 import { createPrivacyRequest } from "./requests";
 import type { PatientSession, VerifiedContact } from "./patient-session";
 
@@ -463,16 +464,17 @@ export async function loadRecordDetails(rec: CenterRecord, tx: Tx = db): Promise
     .where(and(eq(privacyRequests.patientId, pid), or(eq(privacyRequests.orgId, orgId), isNull(privacyRequests.orgId))))
     .orderBy(desc(privacyRequests.receivedAt));
 
-  // Access log: this record and its appointments in the practice's chain, plus Sorriso's own chain
-  // (platform consents) for the record. Staff appear by role only.
+  // Access log: the rows about this record in the practice's chain, plus Sorriso's own chain
+  // (platform consents and requests): filed on the record or one of its appointments, or on
+  // something else naming the patient in metadata.patientId (messages opened, waiting-list entries,
+  // recalls, forms, adult confirmations), as the Art. 15 export lists them (patientAccessFilter).
+  // Staff appear by role only.
   const apptIds = appts.map((a) => a.id);
-  const aboutRecord = and(eq(auditLog.entityType, "patient"), eq(auditLog.entityId, pid));
-  const aboutVisits = apptIds.length ? and(eq(auditLog.entityType, "appointment"), inArray(auditLog.entityId, apptIds)) : undefined;
   const log = await tx
     .select({ at: auditLog.at, actorType: auditLog.actorType, action: auditLog.action, role: memberships.role })
     .from(auditLog)
     .leftJoin(memberships, and(eq(memberships.userId, auditLog.actorId), eq(memberships.orgId, orgId)))
-    .where(or(and(eq(auditLog.orgId, orgId), or(aboutRecord, aboutVisits)), and(isNull(auditLog.orgId), aboutRecord)))
+    .where(and(or(eq(auditLog.orgId, orgId), isNull(auditLog.orgId)), patientAccessFilter(pid, apptIds)))
     .orderBy(desc(auditLog.at))
     .limit(MAX_ROWS);
 
@@ -690,7 +692,16 @@ export function linkStepUpContacts(d: { patient: Patient; appointment: LinkAppoi
   return out;
 }
 
-/** Record one choice for a record (a new ledger row, audited as consent.record), if the options allow it. */
+/**
+ * Objections that stop adaptive reminders (roles.ts): the no-show risk stored on future visits is
+ * then cleared at once (clearRiskFor), in the same transaction as the objection.
+ */
+const STOPS_RISK: readonly ConsentPurpose[] = ["adaptive_reminders", "no_show_tracking"];
+
+/**
+ * Record one choice for a record (a new ledger row, audited as consent.record), if the options
+ * allow it. An objection to adaptive reminders or no-show tracking also clears the stored risk.
+ */
 export async function applyConsentChoice(
   rec: CenterRecord,
   acting: Acting,
@@ -701,8 +712,8 @@ export async function applyConsentChoice(
   const option = consentOptions(rec, await currentConsents(rec.patient.id)).find((o) => o.purpose === i.purpose);
   if (!option || (i.on ? !option.canTurnOn : !option.canTurnOff)) return { ok: false, reason: "not_allowed" };
   try {
-    await db.transaction((tx) =>
-      recordConsent(tx, {
+    await db.transaction(async (tx) => {
+      await recordConsent(tx, {
         orgId: rec.org.id,
         patientId: rec.patient.id,
         purpose: i.purpose,
@@ -714,8 +725,9 @@ export async function applyConsentChoice(
         actor: acting.actor,
         headers: i.headers,
         now,
-      }),
-    );
+      });
+      if (!i.on && STOPS_RISK.includes(i.purpose)) await clearRiskFor(tx, rec.org.id, rec.patient.id, now);
+    });
   } catch (err) {
     if (err instanceof ConsentError && err.code === "guardian_required") return { ok: false, reason: "guardian_required" };
     throw err;

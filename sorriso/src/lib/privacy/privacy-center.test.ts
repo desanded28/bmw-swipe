@@ -309,6 +309,23 @@ describe("what a session can see and do", () => {
     expect(d.hasPlatformData).toBe(false);
   });
 
+  it("lists in the access log the rows filed elsewhere that name the patient, from this practice only", async () => {
+    const staff = { type: "system" as const, id: null };
+    // Filed on a waiting-list entry, a message and an appointment hold: they name Mario in metadata.
+    await audit({ orgId: a.orgId, actor: staff, action: "waitlist.update", entity: { type: "waitlist", id: newId() }, metadata: { status: "removed", patientId: ids.marioA }, at: NOW });
+    await audit({ orgId: a.orgId, actor: staff, action: "message.view", entity: { type: "message", id: newId() }, metadata: { patientId: ids.marioA }, at: NOW });
+    // About his son, and (wrongly) in another practice's chain: never in Mario's log at A.
+    await audit({ orgId: a.orgId, actor: staff, action: "recall.update", entity: { type: "recall", id: newId() }, metadata: { patientId: ids.luca }, at: NOW });
+    await audit({ orgId: b.orgId, actor: staff, action: "form.submit", entity: { type: "form_submission", id: newId() }, metadata: { patientId: ids.marioA }, at: NOW });
+    const d = await loadRecordDetails((await recordFor(s, ids.marioA, NOW))!);
+    const actions = d.accessLog.map((e) => e.action);
+    expect(actions).toEqual(expect.arrayContaining(["waitlist.update", "message.view", "patient.view"]));
+    expect(actions).not.toContain("recall.update");
+    expect(actions).not.toContain("form.submit");
+    const son = await loadRecordDetails((await recordFor(s, ids.luca, NOW))!);
+    expect(son.accessLog.map((e) => e.action)).toContain("recall.update");
+  });
+
   it("audits every record shown in full with actor type patient_session", async () => {
     const recs = await findRecords(s.contact, NOW);
     await auditView(s, recs, visitor());
@@ -450,6 +467,67 @@ describe("what a session can see and do", () => {
     expect(await fileRequest(stranger, { patientId: ids.marioA, type: "access", locale: "en", now: NOW })).toEqual({ ok: false, reason: "not_found" });
     expect(await setConsentChoice(stranger, { patientId: ids.marioA, purpose: "marketing", on: false, locale: "en", now: NOW })).toEqual({ ok: false, reason: "not_found" });
     expect(await updatePreferences(stranger, { patientId: ids.marioA, locale: "it", channel: "sms", shownIn: "it", now: NOW })).toEqual({ ok: false, reason: "not_found" });
+  });
+});
+
+describe("objections", () => {
+  it("offers objections to recalls, no-show tracking and adaptive reminders, and clears the stored risk on objection", async () => {
+    const q = await createPractice();
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, q.orgId));
+    await db
+      .update(organizations)
+      .set({ settings: { ...org.settings, privacy: { ...org.settings?.privacy, riskBasedReminders: true } } })
+      .where(eq(organizations.id, q.orgId));
+    const phone = freshPhone();
+    const pid = await patient(q.orgId, { firstName: "Sara", lastName: "Neri", phone, birthDate: "1985-03-03", verifiedContacts: [contactHash("phone", phone)!] });
+    const visit = (startsAt: Date) =>
+      createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt, patient: { id: pid }, source: "staff", online: false, now: NOW });
+    const future = (await visit(zonedToUtc(MONDAY, 11 * 60, TZ))).appointment.id;
+    const other = await patient(q.orgId, { firstName: "Ugo", lastName: "Neri", phone: freshPhone() });
+    const theirs = (
+      await createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt: zonedToUtc(MONDAY, 12 * 60, TZ), patient: { id: other }, source: "staff", online: false, now: NOW })
+    ).appointment.id;
+    await db.update(appointments).set({ riskLevel: "high", riskReasons: ["history"], riskComputedAt: NOW }).where(eq(appointments.orgId, q.orgId));
+
+    const s = await session(phone);
+    const rec = (await recordFor(s, pid, NOW))!;
+    const options = consentOptions(rec, (await loadRecordDetails(rec)).consents);
+    for (const purpose of ["recalls", "no_show_tracking", "adaptive_reminders"] as const) {
+      expect(options.find((o) => o.purpose === purpose)).toMatchObject({ kind: "objection", on: true, canTurnOff: true });
+    }
+
+    expect(await setConsentChoice(s, { patientId: pid, purpose: "recalls", on: false, locale: "en", now: NOW })).toEqual({ ok: true });
+    const risk = async (id: string) => (await db.select().from(appointments).where(eq(appointments.id, id)))[0].riskLevel;
+    // An objection to recalls leaves the risk alone; one to adaptive reminders clears it at once.
+    expect(await risk(future)).toBe("high");
+    expect(await setConsentChoice(s, { patientId: pid, purpose: "adaptive_reminders", on: false, locale: "en", now: NOW })).toEqual({ ok: true });
+    expect(await risk(future)).toBeNull();
+    // Another patient's visit keeps its risk.
+    expect(await risk(theirs)).toBe("high");
+    const [row] = await db.select().from(consents).where(eq(consents.patientId, pid)).orderBy(desc(consents.createdAt)).limit(1);
+    expect(row).toMatchObject({ purpose: "adaptive_reminders", granted: false, source: "privacy_center" });
+  });
+
+  it("clears the stored risk on an objection to no-show tracking too", async () => {
+    const q = await createPractice();
+    const phone = freshPhone();
+    const pid = await patient(q.orgId, { firstName: "Teo", lastName: "Neri", phone, birthDate: "1975-03-03", verifiedContacts: [contactHash("phone", phone)!] });
+    const { appointment } = await createAppointment({
+      orgId: q.orgId,
+      serviceId: q.visit,
+      practitionerId: q.drA,
+      locationId: q.milano,
+      startsAt: zonedToUtc(MONDAY, 11 * 60, TZ),
+      patient: { id: pid },
+      source: "staff",
+      online: false,
+      now: NOW,
+    });
+    await db.update(appointments).set({ riskLevel: "medium", riskReasons: ["history"], riskComputedAt: NOW }).where(eq(appointments.id, appointment.id));
+    const s = await session(phone);
+    expect(await setConsentChoice(s, { patientId: pid, purpose: "no_show_tracking", on: false, locale: "en", now: NOW })).toEqual({ ok: true });
+    const [after] = await db.select().from(appointments).where(eq(appointments.id, appointment.id));
+    expect(after.riskLevel).toBeNull();
   });
 });
 

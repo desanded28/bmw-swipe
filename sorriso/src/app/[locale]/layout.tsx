@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
+import { connection } from "next/server";
 import { SkipLink } from "@/components/SkipLink";
 import { DIR, isLocale, LOCALES, OG_LOCALE, toLocale } from "@/i18n/config";
 import { ClientMessages } from "@/i18n/ClientMessages";
@@ -49,6 +50,11 @@ export const viewport: Viewport = { width: "device-width", initialScale: 1, them
  * Root layout for every public page: /{locale}/... The skip link comes first; each public page
  * renders <main id="content" tabIndex={-1}> as its target. The namespaces below are available to
  * client components on every public page (booking: other packages render the booking flow too).
+ *
+ * Every public page renders per request (connection()): the CSP nonce is per request
+ * (src/lib/security/headers.ts), and a page prerendered at build time would carry none, so the
+ * browser would block its scripts. Explicit here rather than left to the headers() read in
+ * generateMetadata, so pages without request data (developers, for-clinics, legal/*) stay dynamic.
  */
 export default async function LocaleLayout({
   children,
@@ -57,6 +63,7 @@ export default async function LocaleLayout({
   children: React.ReactNode;
   params: Promise<{ locale: string }>;
 }) {
+  await connection();
   const { locale } = await params;
   if (!isLocale(locale)) notFound();
   return (

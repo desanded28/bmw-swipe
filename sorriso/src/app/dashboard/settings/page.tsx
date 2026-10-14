@@ -22,7 +22,7 @@ export async function generateMetadata(): Promise<Metadata> {
  * the booking widget, and the way to the compliance pages. Every staff member can see it; saving
  * needs settings.manage. API keys are on /dashboard/settings/api, team members on /dashboard/team.
  */
-export default async function SettingsPage() {
+export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ emailVerified?: string }> }) {
   const s = await requireStaff();
   const locale = await getStaffLocale();
   const t = getT(locale, "privacyAdmin");
@@ -30,6 +30,8 @@ export default async function SettingsPage() {
   const org = s.org;
   const settings = resolveSettings(org.settings);
   const canManage = can(s.role, "settings.manage");
+  // Back from the practice email's confirmation link (auth-actions.ts verifyEmail).
+  const emailConfirmed = (await searchParams).emailVerified === "1" && Boolean(org.emailVerifiedAt);
   const snippet = `<script src="${APP_URL}/widget.js" data-clinic="${org.slug}" async></script>`;
   const compliance = [
     { href: "/dashboard/settings/privacy", label: t("settingsPrivacy.title"), show: can(s.role, "privacy.settings") },
@@ -44,6 +46,11 @@ export default async function SettingsPage() {
   return (
     <div className="mx-auto max-w-5xl space-y-6">
       <PageHeader title={t("settings.title")} />
+      {emailConfirmed ? (
+        <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-900 ring-1 ring-emerald-200">
+          {t("settings.profile.emailConfirmed", { email: org.email ?? "" })}
+        </p>
+      ) : null}
       {!canManage ? <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{t("settings.managersOnly")}</p> : null}
 
       <div className="grid gap-6 lg:grid-cols-2">

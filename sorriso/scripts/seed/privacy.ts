@@ -145,6 +145,8 @@ export async function seedPrivacy(ctx: SeedContext): Promise<void> {
       type: "access",
       channel: "privacy_center",
       details: "Quali dati ha Sorriso sulle mie prenotazioni dal sito?",
+      // Linked to no record: the answer goes to the contact the privacy center verified.
+      answerContact: "lucia.marchetti@example.org",
       requesterLocale: "it",
       receivedAt: ago(5),
       now: ago(5),

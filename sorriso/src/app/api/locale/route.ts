@@ -21,10 +21,11 @@ function safeNext(next: string): boolean {
 }
 
 /**
- * The query of the page the visitor came from, when `next` is that page without one. With
- * JavaScript the switcher's links carry the query themselves; without it they are server-rendered
- * before the query is known (useSearchParams streams in later), and the browser's same-origin
- * Referer still has it. Only a Referer from this host for the same page counts.
+ * The query of the page the visitor came from, when `next` is that page without one. A safety net:
+ * the switcher's links carry the query themselves (with JavaScript from useSearchParams, without it
+ * from the proxy's x-search header, which the layouts pass down), so this only helps a switcher
+ * rendered without the server's query. The browser's same-origin Referer still has it then (not on
+ * no-referrer pages). Only a Referer from this host for the same page counts.
  */
 function refererQuery(req: NextRequest, next: string): string {
   if (next.includes("?") || next.includes("#")) return "";

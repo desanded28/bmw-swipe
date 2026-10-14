@@ -131,7 +131,7 @@ export default async function Home({ params }: { params: Params }) {
           <ClientMessages locale={locale} ns={["marketplace"]}>
             <div className="grid gap-4">
               {available.map((r) => (
-                <PractitionerCard key={r.practitioner.id} result={r} />
+                <PractitionerCard key={r.practitioner.id} result={r} headingLevel={3} />
               ))}
             </div>
           </ClientMessages>

@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import type { MembershipRole } from "@/db/enums";
@@ -168,20 +168,27 @@ describe("practice email", () => {
     const base = { name: "Studio Test", brandColor: "#0d9488" };
     await db.update(organizations).set({ email: ownerEmail, emailVerifiedAt: new Date() }).where(eq(organizations.id, orgId));
 
-    // To an address nobody verified: unverified (bookings pause), and the owner is told.
-    await signIn("owner");
+    // Saved by an admin, to an address nobody verified: unverified (bookings pause), no link (only
+    // an owner may confirm the practice's address), and the admin is told.
+    const admin = await signIn("admin");
+    await db.insert(memberships).values({ userId: admin.user.id, orgId, role: "admin" }).onConflictDoNothing();
     const res = await saveProfile(null, form({ ...base, email: "Info@Altro-Studio.it" }));
     expect(res).toMatchObject({ ok: true });
     expect(res.ok && res.message).toContain("isn't verified");
     expect(await stored()).toMatchObject({ email: "info@altro-studio.it", emailVerifiedAt: null });
+    expect(await db.select().from(authTokens).where(eq(authTokens.email, "info@altro-studio.it"))).toEqual([]);
 
-    // An owner whose own address is verified gets a confirmation link at the new address.
-    const s = await signIn("owner");
-    state.session = { ...s, auth: { pending: false, mfaEnabled: true, mfaVerifiedAt: new Date(), createdAt: new Date(), expiresAt: new Date(Date.now() + 3_600_000), emailVerified: true } } as StaffSession;
+    // Saved by an owner (whether or not their own address is verified): the practice's own
+    // confirmation message goes to the new address (WP6's sendPracticeEmailVerification).
+    const sentBefore = (await db.select().from(messages).where(eq(messages.to, "segreteria@altro-studio.it"))).length;
+    await signIn("owner");
     const sent = await saveProfile(null, form({ ...base, email: "segreteria@altro-studio.it" }));
     expect(sent.ok && sent.message).toContain("We sent a link");
     const [token] = await db.select().from(authTokens).where(and(eq(authTokens.email, "segreteria@altro-studio.it"), eq(authTokens.kind, "email_verify")));
     expect(token).toMatchObject({ orgId, userId: owner.user.id });
+    const mails = await db.select().from(messages).where(eq(messages.to, "segreteria@altro-studio.it"));
+    expect(mails).toHaveLength(sentBefore + 1);
+    expect(mails.at(-1)!.subject).toBe("Confirm the email address of Studio Test");
     expect((await stored()).emailVerifiedAt).toBeNull();
 
     // Back to the owner's own verified address: verified again at once.
@@ -244,8 +251,11 @@ describe("privacy requests inbox", () => {
     const base = { type: "access", channel: "email", receivedAt: today, details: "Lettera di un ex paziente", language: "it" };
     expect(await logPrivacyRequest(null, form({ ...base, answerContact: "non un contatto" }))).toMatchObject({ ok: false, code: "invalid_contact" });
     expect((await logPrivacyRequest(null, form({ ...base, answerContact: " Ex.Paziente@Example.org " }))).ok).toBe(true);
-    const [r] = await db.select().from(privacyRequests).where(eq(privacyRequests.answerContact, "ex.paziente@example.org"));
+    // answerContact is encrypted (non-deterministically): find the row by its decrypted value.
+    const r = (await db.select().from(privacyRequests).where(eq(privacyRequests.orgId, orgId))).find((x) => x.answerContact === "ex.paziente@example.org")!;
     expect(r).toMatchObject({ patientId: null, details: "Lettera di un ex paziente" });
+    const [raw] = await db.all<{ answer_contact: string }>(sql`select answer_contact from privacy_requests where id = ${r.id}`);
+    expect(raw.answer_contact).not.toContain("example.org");
     const res = await completePrivacyRequestAction(r.id, null, form({ decision: "granted", reason: "Non risultano dati." }));
     expect(res).toMatchObject({ ok: true, message: "Request closed; the answer was sent." });
     const [sent] = await db.select().from(messages).where(eq(messages.to, "ex.paziente@example.org"));

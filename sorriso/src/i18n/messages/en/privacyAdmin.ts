@@ -770,6 +770,7 @@ export default {
       savedVerify: "Profile saved. We sent a link to the new email address: online booking pauses until it is confirmed.",
       savedUnverified:
         "Profile saved. The new email address isn't verified: online booking pauses until it is. Use an owner's verified address, or ask an owner to save it to receive a confirmation link.",
+      emailConfirmed: "The practice's email address {email} is confirmed.",
     },
     legal: {
       title: "Data controller",

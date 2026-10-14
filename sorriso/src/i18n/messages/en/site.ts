@@ -224,7 +224,6 @@ export default {
     sync: {
       title: "3. Sync with your practice software",
       keys: "Create an API key in Dashboard, Settings, API, choose its scopes and send it as a bearer token. Keys can expire and be revoked at any time.",
-      demoKey: "The demo practice has the key <code>sk_demo_studio_bianchi_local_only</code>.",
       scopesTitle: "Scopes",
     },
     scopes: {

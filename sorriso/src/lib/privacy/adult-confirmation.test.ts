@@ -2,7 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import { appointments, auditLog, consents, messages, patients, reminders } from "@/db/schema";
-import { createAppointment } from "@/lib/booking";
+import { BookingError, createAppointment } from "@/lib/booking";
 import { isContactVerified } from "@/lib/contact";
 import { manageTokenOf } from "@/lib/links";
 import { addDays, zonedToUtc } from "@/lib/time";
@@ -42,17 +42,19 @@ const visitor = () => new Headers({ "x-real-ip": `203.0.113.${(ip++ % 250) + 1}`
 const codeIn = (text: string) => text.match(/\b\d{6}\b/)![0];
 const lastTo = (to: string) => sent.filter((m) => m.to === to).at(-1);
 
-/** A booking for another adult; `held` turns it into a marketplace booking waiting for that adult. */
-async function bookForAdult(held: boolean, opts: { createdAt?: Date; startsAt?: Date; phone?: string | null; email?: string | null } = {}) {
+type BookOpts = { createdAt?: Date; startsAt?: Date; firstName?: string; phone?: string | null; email?: string | null };
+
+/** The booking for another adult, as createAppointment makes it. */
+function book(held: boolean, opts: BookOpts = {}) {
   const k = n++;
-  const d = await createAppointment({
+  return createAppointment({
     orgId: p.orgId,
     serviceId: p.visit,
     practitionerId: p.drA,
     locationId: p.milano,
     startsAt: opts.startsAt ?? zonedToUtc(addDays(MONDAY, 7 * (1 + Math.floor(k / 8))), 9 * 60 + (k % 8) * 30, TZ),
     patient: {
-      firstName: "Nonna",
+      firstName: opts.firstName ?? "Nonna",
       lastName: "Pina",
       phone: opts.phone === undefined ? `+39340777${String(1000 + k)}` : opts.phone,
       email: opts.email === undefined ? `pina${k}@example.com` : opts.email,
@@ -60,22 +62,28 @@ async function bookForAdult(held: boolean, opts: { createdAt?: Date; startsAt?: 
     },
     relation: { bookedFor: "other_adult", bookedBy: { name: "Marco Pina", phone: BOOKER_PHONE, email: "marco@example.com" } },
     privacy: { choices: {}, noticeVersion: "2026-10", locale: "it", source: "booking" },
-    processingContext: "practice",
+    processingContext: held ? "marketplace" : "practice",
     source: "online",
     online: false,
     notifyPatient: false,
     now: NOW,
   });
-  if (held) {
-    await db
-      .update(appointments)
-      .set({ processingContext: "marketplace", status: "requested", createdAt: opts.createdAt ?? NOW })
-      .where(eq(appointments.id, d.appointment.id));
-    await db.delete(reminders).where(eq(reminders.appointmentId, d.appointment.id));
-  }
+}
+
+/**
+ * A booking for another adult. `held`: on the marketplace, so createAppointment holds it for that
+ * adult ('requested', no consent, no reminders) and sends the confirmation request itself;
+ * otherwise through the practice's channels, where it sends the Art. 14 notice.
+ */
+async function bookForAdult(held: boolean, opts: BookOpts = {}) {
+  const d = await book(held, opts);
+  if (opts.createdAt) await db.update(appointments).set({ createdAt: opts.createdAt }).where(eq(appointments.id, d.appointment.id));
   const [a] = await db.select().from(appointments).where(eq(appointments.id, d.appointment.id));
   return { a, token: manageTokenOf(a)!, patient: d.patient };
 }
+
+const auditOf = async (appointmentId: string, action: string) =>
+  db.select().from(auditLog).where(and(eq(auditLog.entityId, appointmentId), eq(auditLog.action, action)));
 
 /** What the adult does on the confirmation page: ask for a code to their phone and read it. */
 async function codeFor(token: string, phone: string) {
@@ -97,15 +105,27 @@ beforeEach(() => {
 
 describe("practice bookings for another adult (Art. 14)", () => {
   it("send the practice's notice to the adult's own contact, never to the booker", async () => {
+    // createAppointment sends it right after booking.
     const { a, patient } = await bookForAdult(false);
-    expect(a.bookedByName).toBe("Marco Pina");
-    expect(await sendBookedForYouNotice(a.id)).toBe(true);
+    expect(a).toMatchObject({ bookedByName: "Marco Pina", status: "scheduled", processingContext: "practice" });
     const out = sent.filter((m) => m.to === patient.phone || m.to === patient.email);
     expect(out).toHaveLength(1);
     expect(out[0].text).toContain("Marco Pina");
     expect(out[0].text).toContain("/it/c/");
     expect(out[0].text).toContain("/privacy");
     expect(sent.some((m) => m.to === BOOKER_PHONE || m.to === "marco@example.com")).toBe(false);
+  });
+
+  it("never send the notice to a contact that is the booker's", async () => {
+    // The booker typed their own number as the patient's: the notice goes to the patient's email.
+    const { a, patient } = await bookForAdult(false, { firstName: "Zia", phone: BOOKER_PHONE });
+    expect(sent.some((m) => m.to === BOOKER_PHONE)).toBe(false);
+    expect(lastTo(patient.email!)!.text).toContain("Marco Pina");
+    // Only the booker's contacts on the record: nothing is sent at all.
+    await db.update(patients).set({ email: "marco@example.com" }).where(eq(patients.id, patient.id));
+    sent.length = 0;
+    expect(await sendBookedForYouNotice(a.id)).toBe(false);
+    expect(sent).toEqual([]);
   });
 });
 
@@ -121,14 +141,22 @@ describe("marketplace bookings for another adult", () => {
     expect(adultConfirmationDeadline(a)).toEqual(new Date(NOW.getTime() + ADULT_CONFIRMATION_HOURS * HOUR));
   });
 
-  it("ask the adult to confirm through a link to their own contact", async () => {
+  it("are held for the adult, who is asked to confirm through a link to their own contact", async () => {
+    // createAppointment holds the booking and sends the request itself.
     const { a, token, patient } = await bookForAdult(true);
-    expect(await requestAdultConfirmation(a.id, NOW)).toBe(true);
-    const out = sent.find((m) => m.to === patient.phone || m.to === patient.email)!;
-    expect(out.text).toContain(`/a/${token}/privacy/confirm`);
-    expect(sent.some((m) => m.to === BOOKER_PHONE)).toBe(false);
+    expect(a).toMatchObject({ status: "requested", processingContext: "marketplace", bookedFor: "other_adult" });
+    expect(await art9Rows(a.id)).toHaveLength(0);
+    expect(await db.select().from(reminders).where(eq(reminders.appointmentId, a.id))).toEqual([]);
+    const out = sent.filter((m) => m.to === patient.phone || m.to === patient.email);
+    expect(out).toHaveLength(1);
+    expect(out[0].text).toContain(`/a/${token}/privacy/confirm`);
+    expect(sent.some((m) => m.to === BOOKER_PHONE || m.to === "marco@example.com")).toBe(false);
     const [logged] = await db.select().from(messages).where(eq(messages.appointmentId, a.id)).orderBy(desc(messages.createdAt));
     expect(logged.body).not.toMatch(/Visit|Anna A/);
+    // Audited on the appointment, naming the patient for their access log.
+    const [request] = await auditOf(a.id, "adult_confirmation.request");
+    expect(request).toMatchObject({ actorType: "system", entityType: "appointment" });
+    expect(request.metadata).toMatchObject({ step: "link", patientId: patient.id, channel: "sms" });
   });
 
   it("can't be confirmed or declined with the booker's manage link alone", async () => {
@@ -145,19 +173,32 @@ describe("marketplace bookings for another adult", () => {
     expect(after.status).toBe("requested");
   });
 
-  it("send the code only to the adult's own contact, never to one that is the booker's", async () => {
-    const { token, patient } = await bookForAdult(true);
+  it("send the link and the code only to the adult's own contact, never to one that is the booker's", async () => {
+    const { a, token, patient } = await bookForAdult(true);
     const { masked } = await codeFor(token, patient.phone!);
     expect(masked).not.toContain(patient.phone!.slice(4, 9));
     expect(sent.some((m) => m.to === BOOKER_PHONE || m.to === "marco@example.com")).toBe(false);
+    const codeRows = (await auditOf(a.id, "adult_confirmation.request")).filter((r) => r.metadata?.step === "code");
+    expect(codeRows).toHaveLength(1);
+    expect(codeRows[0]).toMatchObject({ actorType: "patient_link" });
+    expect(codeRows[0].metadata).toMatchObject({ patientId: patient.id, kind: "phone" });
 
-    // The booker typed their own number as the patient's: only the patient's email can get a code.
-    const same = await bookForAdult(true, { phone: BOOKER_PHONE });
+    // The booker typed their own number as the patient's: the link and the code go to the
+    // patient's email only, whatever channel the patient prefers.
+    const same = await bookForAdult(true, { firstName: "Cugina", phone: BOOKER_PHONE });
     const [d] = await db.select().from(patients).where(eq(patients.id, same.patient.id));
+    expect(d.preferredChannel).not.toBe("email");
     expect(adultContacts({ patient: d, appointment: same.a }).map((c) => c.kind)).toEqual(["email"]);
+    expect(lastTo(d.email!)!.text).toContain(`/a/${same.token}/privacy/confirm`);
+    expect(await requestAdultConfirmation(same.a.id, NOW)).toBe(true);
     expect(await requestAdultConfirmationCode({ token: same.token, kind: "phone", locale: "it", headers: visitor(), now: NOW })).toEqual({ ok: false, reason: "no_contact" });
     expect(sent.some((m) => m.to === BOOKER_PHONE)).toBe(false);
     expect((await requestAdultConfirmationCode({ token: same.token, kind: "email", locale: "it", headers: visitor(), now: NOW })).ok).toBe(true);
+
+    // A hold the adult could never confirm (only the booker's contacts) isn't made at all.
+    const err = await book(true, { firstName: "Zio", phone: BOOKER_PHONE, email: "marco@example.com" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BookingError);
+    expect(err).toMatchObject({ code: "invalid", reason: "other_adult_contact_required", field: "phone" });
   });
 
   it("record the adult's own Art. 9 consent with the code and release the hold", async () => {
@@ -174,8 +215,9 @@ describe("marketplace bookings for another adult", () => {
     expect((await db.select().from(reminders).where(eq(reminders.appointmentId, a.id))).length).toBeGreaterThan(0);
     const [pt] = await db.select().from(patients).where(eq(patients.id, patient.id));
     expect(isContactVerified(pt, "phone", patient.phone)).toBe(true);
-    const [log] = await db.select().from(auditLog).where(and(eq(auditLog.entityId, a.id), eq(auditLog.action, "appointment.update")));
-    expect(log.metadata).toMatchObject({ change: "adult_confirmed", proof: "otp_phone" });
+    const [log] = await auditOf(a.id, "adult_confirmation.confirm");
+    expect(log).toMatchObject({ actorType: "patient_link" });
+    expect(log.metadata).toMatchObject({ status: "scheduled", proof: "otp_phone", patientId: patient.id });
     // The code is used up, and the booking no longer waits.
     expect(await confirmAdultBooking({ token, ticket, code, consent: true, locale: "en", now: NOW })).toEqual({ ok: false, reason: "not_waiting" });
   });
@@ -195,6 +237,10 @@ describe("marketplace bookings for another adult", () => {
     const [after] = await db.select().from(appointments).where(eq(appointments.id, a.id));
     expect(after).toMatchObject({ status: "cancelled", cancelledBy: null, confirmation: "declined" });
     expect(await art9Rows(a.id)).toHaveLength(0);
+    const [log] = await auditOf(a.id, "adult_confirmation.decline");
+    expect(log).toMatchObject({ actorType: "patient_link" });
+    expect(log.metadata).toMatchObject({ proof: "otp_phone", patientId: patient.id });
+    expect(await auditOf(a.id, "appointment.cancel")).toEqual([]);
   });
 
   it("cancel holds nobody confirmed in time as a system cancellation (not the practice's), and tell the booker", async () => {
@@ -210,7 +256,9 @@ describe("marketplace bookings for another adult", () => {
     const toBooker = sent.filter((m) => m.to === BOOKER_PHONE);
     expect(toBooker.length).toBeGreaterThanOrEqual(2);
     expect(toBooker[0].text).toContain("Nonna");
-    const [log] = await db.select().from(auditLog).where(and(eq(auditLog.entityId, stale.id), eq(auditLog.action, "appointment.cancel")));
+    const [log] = await auditOf(stale.id, "adult_confirmation.expire");
     expect(log).toMatchObject({ actorType: "system" });
+    expect(log.metadata).toMatchObject({ patientId: stale.patientId });
+    expect(await auditOf(fresh.id, "adult_confirmation.expire")).toEqual([]);
   });
 });

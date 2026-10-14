@@ -1,6 +1,6 @@
 import { and, eq, lt, lte, or } from "drizzle-orm";
 import { db } from "@/db";
-import { appointments, consents, type Appointment, type Locale } from "@/db/schema";
+import { appointments, consents, type Appointment, type Locale, type Patient } from "@/db/schema";
 import { fmtWhen } from "@/i18n/datefmt";
 import { lhref } from "@/i18n/href";
 import { getT } from "@/i18n/t";
@@ -43,12 +43,17 @@ import { checkTicketCode, maskContact, openTicket, sealTicket } from "./privacy-
  * as a system cancellation (cancelled_by stays empty: neither the practice nor the patient
  * cancelled, so neither's statistics count it), and the booker is told (expireAdultConfirmations).
  *
- * Wiring (requested from WP8/the lead, see the TODO(WP4) in src/lib/booking.ts): booking.ts lets
- * validateBookingRelation pass other_adult on the marketplace as a held booking, creates it as
- * 'requested' without recording any consent, then calls requestAdultConfirmation(); practice
- * bookings for another adult call sendBookedForYouNotice(); the reminders cron calls
- * expireAdultConfirmations(). Until then the marketplace path stays refused
- * (other_adult_must_book_themselves) and this module is dormant there.
+ * Wiring: createAppointment (src/lib/booking.ts) creates a marketplace booking for another adult
+ * as a hold ('requested', no consent recorded, no reminders; refused with
+ * other_adult_contact_required when the adult has no contact of their own) and then calls
+ * requestAdultConfirmation(); a practice-channel booking for another adult calls
+ * sendBookedForYouNotice(). expireAdultConfirmations() runs with the reminders (the in-process
+ * worker, scripts/run-reminders.ts and /api/cron/reminders). The waitlist has no hold, so a
+ * marketplace waitlist entry for another adult is still refused (other_adult_must_book_themselves).
+ *
+ * Messages to the adult go only to their own contacts (ownContactsOnly), and every step is audited
+ * on the appointment as adult_confirmation.request | confirm | decline | expire, with the patient
+ * in metadata.patientId (the access logs of the privacy center and the Art. 15 export).
  */
 
 /** How long a marketplace booking for another adult waits for that adult. */
@@ -97,6 +102,19 @@ export function adultContacts(d: Pick<AppointmentDetails, "patient" | "appointme
   return out;
 }
 
+/**
+ * The patient as messages to them must see them: with only their own contacts (adultContacts), so
+ * that a booker who typed their own number or email as the patient's never gets the confirmation
+ * link or the notice through it. Null when the patient has no contact of their own.
+ */
+function ownContactsOnly(d: Pick<AppointmentDetails, "patient" | "appointment">): Patient | null {
+  const own = adultContacts(d);
+  const phone = own.some((c) => c.kind === "phone") ? d.patient.phone : null;
+  const email = own.some((c) => c.kind === "email") ? d.patient.email : null;
+  if (!phone && !email) return null;
+  return { ...d.patient, phone, email, preferredChannel: phone ? d.patient.preferredChannel : "email" };
+}
+
 /** The contacts the confirmation page offers, masked ("+39•••4567"). */
 export function adultContactChoices(d: Pick<AppointmentDetails, "patient" | "appointment">): { kind: ContactKind; label: string }[] {
   return adultContacts(d).map((c) => ({ kind: c.kind, label: maskContact(c) }));
@@ -118,11 +136,13 @@ function vars(d: AppointmentDetails) {
 export async function sendBookedForYouNotice(appointmentId: string): Promise<boolean> {
   const d = await getAppointmentDetails({ id: appointmentId });
   if (!d || d.appointment.bookedFor !== "other_adult") return false;
+  const patient = ownContactsOnly(d);
+  if (!patient) return false;
   try {
     const url = practiceNoticeUrl(d.org, d.patient.locale);
     const r = await sendPatientMessage({
       orgId: d.org.id,
-      patient: d.patient,
+      patient,
       ns: "privacyMessages",
       kind: "bookedForYou",
       vars: { ...vars(d), url },
@@ -142,23 +162,35 @@ export function confirmationUrl(d: Pick<AppointmentDetails, "appointment">, loca
   return token ? absoluteUrl(lhref(locale, `/a/${token}/privacy/confirm`)) : null;
 }
 
-/** Ask the adult a marketplace booking was made for to confirm it, at their own contact. */
+/**
+ * Ask the adult a marketplace booking was made for to confirm it, at their own contact (never one
+ * that is also the booker's). Audited as adult_confirmation.request (step link) by the system.
+ */
 export async function requestAdultConfirmation(appointmentId: string, now: Date = new Date()): Promise<boolean> {
   const d = await getAppointmentDetails({ id: appointmentId });
   if (!d || !(await awaitsAdultConfirmation(d.appointment, now))) return false;
-  if (!adultContacts(d).length) return false;
+  const patient = ownContactsOnly(d);
+  if (!patient) return false;
   const url = confirmationUrl(d, d.patient.locale);
   if (!url) return false;
   try {
     const r = await sendPatientMessage({
       orgId: d.org.id,
-      patient: d.patient,
+      patient,
       ns: "privacyMessages",
       kind: "confirmBooking",
       vars: { ...vars(d), hours: ADULT_CONFIRMATION_HOURS, url },
       url,
       appointmentId: d.appointment.id,
       now,
+    });
+    await audit({
+      orgId: d.org.id,
+      actor: { type: "system", id: null },
+      action: "adult_confirmation.request",
+      entity: { type: "appointment", id: d.appointment.id },
+      metadata: { step: "link", patientId: d.patient.id, channel: r.ok ? r.message.channel : null, skipped: r.ok ? null : r.reason },
+      at: now,
     });
     return r.ok;
   } catch (err) {
@@ -192,6 +224,15 @@ export async function requestAdultConfirmationCode(i: { token: string; kind: Con
     now,
   });
   if (!sent.ok) return sent;
+  await audit({
+    orgId: d.org.id,
+    actor: { type: "patient_link", id: null },
+    action: "adult_confirmation.request",
+    entity: { type: "appointment", id: d.appointment.id },
+    metadata: { step: "code", patientId: d.patient.id, kind: contact.kind },
+    headers: i.headers,
+    at: now,
+  });
   const ticket = sealTicket({ c: sent.challengeId, k: contact.kind, v: contact.value, p: "adult_confirmation", pid: d.patient.id, a: d.appointment.id }, now);
   return { ok: true, ticket, masked: maskContact(contact) };
 }
@@ -277,9 +318,9 @@ export async function confirmAdultBooking(i: ProofInput & { consent: boolean; lo
       {
         orgId: d.org.id,
         actor,
-        action: "appointment.update",
+        action: "adult_confirmation.confirm",
         entity: { type: "appointment", id: d.appointment.id },
-        metadata: { change: "adult_confirmed", status, proof: `otp_${contact.kind}` },
+        metadata: { status, proof: `otp_${contact.kind}`, patientId: d.patient.id },
         headers: i.headers,
         at: now,
       },
@@ -296,25 +337,39 @@ export async function declineAdultBooking(i: ProofInput): Promise<AdultConfirmat
   const now = i.now ?? new Date();
   const proof = await prove(i, now);
   if (!proof.ok) return proof;
-  const done = await cancelHold(proof.d.appointment, { declined: true, actor: { type: "patient_link", id: null }, change: "adult_declined", headers: i.headers, now });
+  const done = await cancelHold(proof.d.appointment, {
+    action: "adult_confirmation.decline",
+    actor: { type: "patient_link", id: null },
+    metadata: { proof: `otp_${proof.contact.kind}` },
+    headers: i.headers,
+    now,
+  });
   return done ? { ok: true, status: "cancelled" } : { ok: false, reason: "not_waiting" };
 }
 
 /**
  * Cancel a held booking as the system: cancelled_by stays empty (neither 'staff', which would
  * count against the practice's reliability ranking, nor 'patient', which would count as the
- * patient's late cancellation), pending reminders go, a recall it had booked reopens. Audited.
+ * patient's late cancellation), pending reminders go, a recall it had booked reopens. Audited as
+ * adult_confirmation.decline (the adult said no) or adult_confirmation.expire (nobody answered).
  */
 async function cancelHold(
-  a: Pick<Appointment, "id" | "orgId">,
-  i: { declined: boolean; actor: { type: "patient_link" | "system"; id: null }; change: string; headers?: Headers; now: Date },
+  a: Pick<Appointment, "id" | "orgId" | "patientId">,
+  i: {
+    action: "adult_confirmation.decline" | "adult_confirmation.expire";
+    actor: { type: "patient_link" | "system"; id: null };
+    metadata?: Record<string, string>;
+    headers?: Headers;
+    now: Date;
+  },
 ): Promise<boolean> {
+  const declined = i.action === "adult_confirmation.decline";
   return db.transaction(async (tx) => {
     const [row] = await tx
       .update(appointments)
       .set({
         status: "cancelled",
-        ...(i.declined ? { confirmation: "declined" as const, confirmedVia: i.change } : {}),
+        ...(declined ? { confirmation: "declined" as const, confirmedVia: "adult_declined" } : {}),
         cancelledAt: i.now,
         cancelledBy: null,
         needsAttention: false,
@@ -326,7 +381,15 @@ async function cancelHold(
     await cancelPendingReminders(tx, a.id);
     await reopenRecallsFor(tx, a.orgId, a.id, i.now);
     await audit(
-      { orgId: a.orgId, actor: i.actor, action: "appointment.cancel", entity: { type: "appointment", id: a.id }, metadata: { change: i.change }, headers: i.headers, at: i.now },
+      {
+        orgId: a.orgId,
+        actor: i.actor,
+        action: i.action,
+        entity: { type: "appointment", id: a.id },
+        metadata: { ...i.metadata, patientId: a.patientId },
+        headers: i.headers,
+        at: i.now,
+      },
       tx,
     );
     return true;
@@ -365,7 +428,7 @@ async function notifyBooker(appointmentId: string): Promise<boolean> {
 export async function expireAdultConfirmations(now: Date = new Date()): Promise<number> {
   const cutoff = new Date(now.getTime() - ADULT_CONFIRMATION_HOURS * HOUR_MS);
   const stale = await db
-    .select({ id: appointments.id, orgId: appointments.orgId })
+    .select({ id: appointments.id, orgId: appointments.orgId, patientId: appointments.patientId })
     .from(appointments)
     .where(
       and(
@@ -378,7 +441,7 @@ export async function expireAdultConfirmations(now: Date = new Date()): Promise<
   let n = 0;
   for (const a of stale) {
     if (await adultConsented(a.id)) continue;
-    if (!(await cancelHold(a, { declined: false, actor: { type: "system", id: null }, change: "adult_not_confirmed", now }))) continue;
+    if (!(await cancelHold(a, { action: "adult_confirmation.expire", actor: { type: "system", id: null }, now }))) continue;
     n++;
     await notifyBooker(a.id);
   }

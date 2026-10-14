@@ -7,11 +7,9 @@ import { memberships, organizations, users } from "@/db/schema";
 import { DEFAULT_LOCALE } from "@/i18n/config";
 import { getStaffLocale, getT } from "@/i18n/server";
 import type { StaffSession } from "@/lib/auth";
-import { absoluteUrl } from "@/lib/config";
 import { logError } from "@/lib/log";
 import { recordPracticeNotices } from "@/lib/privacy/notices";
-import { sendAuthEmail, staffEmailLocale } from "@/lib/security/emails";
-import { issueAuthToken } from "@/lib/security/tokens";
+import { sendPracticeEmailVerification } from "@/lib/security/emails";
 import { fail, guard, ok, optional, str, updateSettings, type ActionResult } from "./_shared";
 
 /** Practice profile, controller identity and booking rules (WP5). */
@@ -50,9 +48,10 @@ async function isVerifiedOwnerEmail(orgId: string, email: string): Promise<boole
 /**
  * The practice email gates online booking (canAcceptOnlineBookings needs emailVerifiedAt) and
  * receives patients' replies and privacy answers, so changing it drops the verification — unless
- * the new address is the verified sign-in address of an owner. An owner whose own address is
- * verified gets a confirmation link sent to the new address (WP6's email_verify token: confirming
- * it marks the practice email verified when it still matches).
+ * the new address is the verified sign-in address of an owner. When an owner saves it, a
+ * confirmation link goes to the new address (WP6's sendPracticeEmailVerification: the practice's
+ * own message, and confirming it marks only the practice email verified, while it still matches
+ * and the owner is still an owner).
  */
 async function reverifyPracticeEmail(s: StaffSession, email: string | null): Promise<"verified" | "sent" | "unverified"> {
   if (email && (await isVerifiedOwnerEmail(s.org.id, email))) {
@@ -60,11 +59,9 @@ async function reverifyPracticeEmail(s: StaffSession, email: string | null): Pro
     return "verified";
   }
   await db.update(organizations).set({ emailVerifiedAt: null }).where(eq(organizations.id, s.org.id));
-  if (!email || s.role !== "owner" || !s.auth?.emailVerified) return "unverified";
+  if (!email || s.role !== "owner") return "unverified";
   try {
-    const { token } = await issueAuthToken({ kind: "email_verify", userId: s.user.id, email, orgId: s.org.id });
-    const locale = staffEmailLocale(s.user, s.org);
-    await sendAuthEmail({ to: email, name: s.org.name, locale, kind: "verifyEmail", vars: { practice: s.org.name }, url: absoluteUrl(`/${locale}/verify-email/${token}`) });
+    await sendPracticeEmailVerification({ org: s.org, owner: { id: s.user.id, name: s.user.name, locale: s.user.locale }, email });
     return "sent";
   } catch (err) {
     logError("settings", err, { step: "practice-email-verify", orgId: s.org.id });

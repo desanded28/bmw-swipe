@@ -63,6 +63,9 @@ export default {
     guardian_relation_required: "Please say whether you are a parent or a legal guardian.",
     guardian_contact_required: "Please enter a phone number or an email address for the parent or guardian.",
     other_adult_must_book_themselves: "Adults book their own appointments here. You can also book directly with the practice.",
+    /** A booking held for another adult needs a contact of their own: they confirm it through that. */
+    other_adult_contact_required:
+      "Please enter the patient's own mobile number or email, not yours: they confirm the booking through it.",
     /** The privacy notice changed while the form was open (e.g. a release); the page still shows the old one. */
     notice_outdated: "The privacy information has been updated since you opened this page. Please reload the page to read the new version, then send the form again.",
   },

@@ -4,13 +4,16 @@
  */
 import { eq } from "drizzle-orm";
 import type { Metadata } from "next";
+import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { SiteFooter, SiteHeader } from "@/components/SiteChrome";
 import { db } from "@/db";
 import { organizations } from "@/db/schema";
 import { LOCALES, OG_LOCALE } from "@/i18n/config";
 import { createPractice } from "@/test/fixtures";
 
-vi.mock("next/headers", () => ({ headers: async () => new Headers(), cookies: async () => ({ get: () => undefined }) }));
+let requestHeaders = new Headers();
+vi.mock("next/headers", () => ({ headers: async () => requestHeaders, cookies: async () => ({ get: () => undefined }) }));
 
 const pages = {
   "/": () => import("./page"),
@@ -56,5 +59,20 @@ describe("WP1 page metadata", () => {
       expect(languages["x-default"]).toBe(`/book/${org.slug}`);
       expect(meta.title).toBe("Book an appointment at Studio Test");
     }
+  });
+});
+
+describe("the (site) layout", () => {
+  it("passes the query the proxy saw (x-search) to the header and footer language switchers", async () => {
+    const { default: SiteLayout } = await import("./layout");
+    const chrome = async () => {
+      const tree = (await SiteLayout({ children: null })) as ReactElement<{ children: ReactNode }>;
+      const kids = Children.toArray(tree.props.children).filter(isValidElement) as ReactElement<{ search?: string }>[];
+      return [kids.find((k) => k.type === SiteHeader)?.props.search, kids.find((k) => k.type === SiteFooter)?.props.search];
+    };
+    requestHeaders = new Headers({ "x-search": "?category=hygiene&city=Milano" });
+    expect(await chrome()).toEqual(["?category=hygiene&city=Milano", "?category=hygiene&city=Milano"]);
+    requestHeaders = new Headers();
+    expect(await chrome()).toEqual(["", ""]);
   });
 });

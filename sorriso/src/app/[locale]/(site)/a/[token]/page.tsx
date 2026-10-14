@@ -196,7 +196,8 @@ export default async function ManagePage({
           <Avatar name={d.practitioner.name} color={d.practitioner.color} size={52} />
           <div>
             <p className="text-lg font-bold">{practitionerName(d.practitioner)}</p>
-            <p className="text-sm text-slate-600">{d.practitioner.specialty}</p>
+            {/* Left empty by the practice: the marketplace's default in the page's language. */}
+            <p className="text-sm text-slate-600">{d.practitioner.specialty.trim() || getT(locale, "marketplace")("profile.defaultSpecialty")}</p>
           </div>
         </div>
         <dl className="mt-5 grid gap-3 text-sm sm:grid-cols-2">

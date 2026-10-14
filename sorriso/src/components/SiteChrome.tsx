@@ -7,7 +7,11 @@ import { APP_NAME } from "@/lib/config";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { LinkButton, Logo } from "./ui";
 
-export function SiteHeader() {
+/**
+ * `search`: the page's query as the server saw it (x-search), so the language switcher keeps it
+ * without JavaScript (LanguageSwitcher).
+ */
+export function SiteHeader({ search }: { search?: string } = {}) {
   const t = useT("site");
   const ta = useT("a11y");
   const locale = useLocale();
@@ -38,7 +42,7 @@ export function SiteHeader() {
           </ul>
         </nav>
         <div className="flex items-center gap-1 sm:gap-2">
-          <LanguageSwitcher />
+          <LanguageSwitcher search={search} />
           <LinkButton href={href("/login")} variant="ghost" size="sm">
             {t("header.login")}
           </LinkButton>
@@ -54,8 +58,9 @@ export function SiteHeader() {
 /**
  * The site footer: patient and practice links, every legal page and the privacy center, the
  * language list, and (demo deployments only) the notice that people shown are fictional.
+ * `search` as for SiteHeader.
  */
-export function SiteFooter({ demo = false, year }: { demo?: boolean; year: number }) {
+export function SiteFooter({ demo = false, year, search }: { demo?: boolean; year: number; search?: string }) {
   const t = useT("site");
   const ta = useT("a11y");
   const locale = useLocale();
@@ -137,7 +142,7 @@ export function SiteFooter({ demo = false, year }: { demo?: boolean; year: numbe
         </nav>
       </div>
       <div className="mx-auto max-w-6xl border-t border-slate-100 px-4 py-6 text-sm text-slate-600">
-        <LanguageSwitcher variant="inline" />
+        <LanguageSwitcher variant="inline" search={search} />
       </div>
       <div className="border-t border-slate-100 px-4 py-5 text-center text-xs text-slate-600">
         <p>{t("footer.copyright", { year, app: APP_NAME })}</p>

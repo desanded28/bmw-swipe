@@ -26,6 +26,7 @@ import {
   apiErrorText,
   apiFieldErrors,
   focusFirstInvalid,
+  privacyFormErrors,
   type ApiError,
   type DetailsForm,
 } from "./DetailsStep";
@@ -226,7 +227,20 @@ export function WaitlistOffer({
     if (!isDateString(value.earliestDate)) errs.earliestDate = te("fields.invalidDate");
     if (value.latestDate && !isDateString(value.latestDate)) errs.latestDate = te("fields.invalidDate");
     else if (value.latestDate && value.latestDate < value.earliestDate) errs.latestDate = te("fields.dateOrder");
-    if (context === "marketplace" && !value.privacy.platformConsent) errs.platformConsent = te("fields.consentRequired");
+    const rules = privacyFormErrors(te, {
+      clinic,
+      context,
+      preferredChannel: "sms",
+      privacy: value.privacy,
+      relation: value.relationAsked ? value.relation : null,
+      birthDate: contact.birthDate,
+    });
+    for (const [field, text] of Object.entries(rules)) errs[field] ??= text;
+    // The waitlist can't hold an entry for another adult's own confirmation the way a booking can:
+    // on Sorriso the server refuses it (planBookingPrivacy), so say so before sending.
+    if (context === "marketplace" && value.relationAsked && value.relation.bookedFor === "other_adult") {
+      errs.bookedFor ??= apiErrorText(te, "other_adult_must_book_themselves");
+    }
     setErrors(errs);
     const count = Object.keys(errs).length;
     if (count) return fail(te("checkFields", { count }));
@@ -267,6 +281,8 @@ export function WaitlistOffer({
         onChange={(relation) => onChange({ relation, relationAsked: true })}
         birthDate={contact.birthDate}
         errors={errors}
+        context={context}
+        variant="waitlist"
       />
       <div className="grid gap-3 sm:grid-cols-3">
         <Field label={t("waitlist.from")} error={errors.earliestDate}>
