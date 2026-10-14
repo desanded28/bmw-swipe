@@ -112,3 +112,17 @@ export async function sendWhatsApp(input: { to: string; text: string; variables?
   });
   return { status: "sent", provider: "twilio", providerId, from };
 }
+
+/**
+ * Delete a sent message's copy at the provider (data minimisation; also called by erasure, WP5).
+ * `provider` and `providerId` are the values stored on the messages row. Never throws for a
+ * message that is already gone.
+ *
+ * STUB with its final signature (WP3): a no-op. WP3 implements the Twilio Message DELETE (SMS and
+ * WhatsApp) through the configured region and edge, and the cleanup step that sets
+ * messages.providerDeletedAt. Email can't be recalled from an SMTP relay: a no-op there too.
+ */
+export async function deleteProviderMessage(provider: string, providerId: string): Promise<void> {
+  void provider;
+  void providerId;
+}

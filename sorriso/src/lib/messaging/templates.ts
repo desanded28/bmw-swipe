@@ -1,5 +1,6 @@
 import type { Locale as AppLocale } from "@/i18n/config";
 import { formatDate, formatTime } from "../time";
+import { renderEmailLayout, type EmailButton } from "./layout";
 
 export type Locale = AppLocale;
 
@@ -177,22 +178,12 @@ export function whenLabel(d: AppointmentTemplateData, style: "long" | "short" = 
   return d.locale === "it" ? `${date} alle ${time}` : `${date} at ${time}`;
 }
 
-function esc(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-type Button = { label: string; url: string; variant?: "primary" | "secondary" | "danger" };
-
+/** The appointment emails' layout: greeting, appointment details and the practice footer. */
 function layout(opts: {
   d: AppointmentTemplateData;
   intro: string;
   showDetails?: boolean;
-  buttons?: Button[];
+  buttons?: EmailButton[];
   details?: [string, string][];
 }): { html: string; text: string } {
   const { d } = opts;
@@ -207,61 +198,21 @@ function layout(opts: {
           [t.with, d.practitionerName],
           [t.where, `${d.locationName}, ${d.address}`],
         ]);
-  const buttons = opts.buttons ?? [];
-  const color = /^#[0-9a-f]{6}$/i.test(d.brandColor) ? d.brandColor : "#0d9488";
-
-  const btnStyle = (v: Button["variant"]) =>
-    v === "danger"
-      ? "background:#fff;color:#b91c1c;border:1px solid #fecaca;"
-      : v === "secondary"
-        ? "background:#fff;color:#0f172a;border:1px solid #e2e8f0;"
-        : `background:${color};color:#fff;border:1px solid ${color};`;
-
-  const html = `<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
-<tr><td style="background:${color};padding:20px 28px;color:#fff;font-size:18px;font-weight:700">${esc(d.clinicName)}</td></tr>
-<tr><td style="padding:28px">
-<p style="margin:0 0 12px;font-size:16px">${esc(t.greeting(d.patientFirstName))}</p>
-<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">${esc(opts.intro)}</p>
-${
-  details.length
-    ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px">${details
-        .map(
-          ([k, v]) =>
-            `<tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">${esc(k)}</td><td style="padding:5px 0;font-size:14px;font-weight:600">${esc(v)}</td></tr>`,
-        )
-        .join("")}</table>`
-    : ""
-}
-${buttons
-  .map(
-    (b) =>
-      `<a href="${esc(b.url)}" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;${btnStyle(b.variant)}">${esc(b.label)}</a>`,
-  )
-  .join("")}
-</td></tr>
-<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">${esc(t.footer(d.clinicName, d.clinicPhone))}</td></tr>
-</table></td></tr></table></body></html>`;
-
-  const text = [
-    t.greeting(d.patientFirstName),
-    "",
-    opts.intro,
-    "",
-    ...details.map(([k, v]) => `${k}: ${v}`),
-    "",
-    ...buttons.map((b) => `${b.label}: ${b.url}`),
-    "",
-    t.footer(d.clinicName, d.clinicPhone),
-  ].join("\n");
-
-  return { html, text };
+  return renderEmailLayout({
+    locale: d.locale,
+    brandColor: d.brandColor,
+    brandName: d.clinicName,
+    greeting: t.greeting(d.patientFirstName),
+    intro: opts.intro,
+    details,
+    buttons: opts.buttons ?? [],
+    footerLines: [t.footer(d.clinicName, d.clinicPhone)],
+  });
 }
 
-function manageButtons(d: AppointmentTemplateData, opts: { confirm?: boolean } = {}): Button[] {
+function manageButtons(d: AppointmentTemplateData, opts: { confirm?: boolean } = {}): EmailButton[] {
   const t = T[tableFor(d.locale)];
-  const cancel: Button = { label: t.cancelBtn, url: `${d.manageUrl}?do=cancel`, variant: "danger" };
+  const cancel: EmailButton = { label: t.cancelBtn, url: `${d.manageUrl}?do=cancel`, variant: "danger" };
   if (opts.confirm) {
     return [
       { label: t.confirmBtn, url: `${d.manageUrl}?do=confirm` },

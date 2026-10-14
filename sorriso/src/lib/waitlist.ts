@@ -1,12 +1,37 @@
 import { and, asc, eq, gte, lte, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { locations, organizations, patients, practitioners, services, waitlist } from "@/db/schema";
+import {
+  locations,
+  organizations,
+  patients,
+  practitioners,
+  services,
+  waitlist,
+  type ProcessingContext,
+  type WaitlistEntry,
+} from "@/db/schema";
 import { evaluateSlot, loadAvailabilityContext } from "./availability";
 import { canReachByEmail, canReachByPhone } from "./appointments";
+// booking.ts imports offerFreedSlot from here: the cycle is safe because neither module uses the
+// other's exports while loading.
+import {
+  BookingError,
+  checkBookingRelation,
+  patientForBooking,
+  planBookingPrivacy,
+  recordBookingChoices,
+  upsertPatient,
+  type BookingPrivacy,
+  type BookingRelation,
+  type NewPatientInput,
+} from "./booking";
 import { absoluteUrl } from "./config";
 import { practitionerName } from "./format";
+import { newId } from "./ids";
 import { deliver } from "./messaging";
 import { templates, type AppointmentTemplateData } from "./messaging/templates";
+import { signPracticeRef } from "./privacy/context";
+import { getPrivacy } from "./privacy/settings";
 import { resolveSettings } from "./settings";
 import { zonedParts } from "./time";
 
@@ -23,7 +48,11 @@ export type FreedSlot = {
   startsAt: Date;
 };
 
-export function bookSlotUrl(orgSlug: string, slot: FreedSlot, entryId?: string) {
+/**
+ * Link to book a freed slot. `practiceRef` (signPracticeRef) keeps a practice-context waitlist entry
+ * in the practice context: the book page is Sorriso-hosted and is marketplace without it.
+ */
+export function bookSlotUrl(orgSlug: string, slot: FreedSlot, entryId?: string, practiceRef?: string | null) {
   const params = new URLSearchParams({
     service: slot.serviceId,
     practitioner: slot.practitionerId,
@@ -31,7 +60,76 @@ export function bookSlotUrl(orgSlug: string, slot: FreedSlot, entryId?: string) 
     start: slot.startsAt.toISOString(),
   });
   if (entryId) params.set("wl", entryId);
+  if (practiceRef) params.set("ref", practiceRef);
   return absoluteUrl(`/book/${orgSlug}?${params.toString()}`);
+}
+
+export type JoinWaitlistInput = {
+  orgId: string;
+  /** Checked against the practice by the caller (the waitlist route). */
+  serviceId: string;
+  practitionerId?: string | null;
+  locationId?: string | null;
+  /** YYYY-MM-DD, inclusive. */
+  earliestDate: string;
+  latestDate: string;
+  partOfDay: WaitlistEntry["partOfDay"];
+  note?: string | null;
+  patient: NewPatientInput;
+  /** Decided by the server (processingContextFor), never by the client. Default 'practice'. */
+  processingContext?: ProcessingContext;
+  relation?: BookingRelation;
+  /** The form's privacy choices; required by the route for calls without an API key. */
+  privacy?: BookingPrivacy;
+  now?: Date;
+};
+
+/**
+ * Put a patient on the waitlist (patient-facing: the record is matched or created in public mode).
+ * Runs the same privacy and relation checks as a booking, stores the context, who it is for and the
+ * notice version, and records the choices against the entry. A failed check throws
+ * BookingError('invalid', code) and leaves nothing behind.
+ */
+export async function joinWaitlist(input: JoinWaitlistInput): Promise<{ id: string; patientId: string }> {
+  const now = input.now ?? new Date();
+  const context = input.processingContext ?? "practice";
+  const [org] = await db.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, input.orgId));
+  if (!org) throw new BookingError("not_found", "Clinic not found.");
+  // Ages are checked for the start of the range (midday UTC is that calendar day in Europe).
+  const at = new Date(`${input.earliestDate}T12:00:00Z`);
+
+  const id = newId();
+  const patientId = await db.transaction(async (tx) => {
+    const plan = planBookingPrivacy({
+      context,
+      relation: input.relation,
+      privacy: input.privacy,
+      preferredChannel: input.patient.preferredChannel ?? (input.patient.phone ? "sms" : "email"),
+      org: getPrivacy(org),
+    });
+    const { patient } = await upsertPatient(tx, input.orgId, patientForBooking(input.patient, input.relation, plan, true), "public");
+    checkBookingRelation(input.relation, patient.birthDate || input.patient.birthDate, at, context, now);
+    await tx.insert(waitlist).values({
+      id,
+      orgId: input.orgId,
+      patientId: patient.id,
+      serviceId: input.serviceId,
+      practitionerId: input.practitionerId || null,
+      locationId: input.locationId || null,
+      earliestDate: input.earliestDate,
+      latestDate: input.latestDate,
+      partOfDay: input.partOfDay,
+      note: input.note || null,
+      processingContext: context,
+      bookedFor: plan.bookedFor,
+      noticeVersion: plan.noticeVersion,
+    });
+    if (input.privacy) {
+      await recordBookingChoices(tx, { orgId: input.orgId, patientId: patient.id, waitlistId: id, plan, privacy: input.privacy, now });
+    }
+    return patient.id;
+  });
+  return { id, patientId };
 }
 
 /**
@@ -99,7 +197,7 @@ export async function offerFreedSlot(slot: FreedSlot, now = new Date()): Promise
 
   let sent = 0;
   for (const { entry, patient } of matches) {
-    const url = bookSlotUrl(org.slug, slot, entry.id);
+    const url = bookSlotUrl(org.slug, slot, entry.id, entry.processingContext === "practice" ? signPracticeRef(org.id) : null);
     const data: AppointmentTemplateData = {
       locale: patient.locale,
       patientFirstName: patient.firstName,

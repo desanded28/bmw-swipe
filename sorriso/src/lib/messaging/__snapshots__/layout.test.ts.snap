@@ -1,0 +1,880 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`appointment templates > render unchanged in de 1`] = `
+{
+  "bookingApproved": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">the practice has accepted your request. Here are your appointment details.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dienstag, 3. November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Manage appointment</a><a href="https://sorriso.test/api/ics/appointment/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#0f172a;border:1px solid #e2e8f0;">Add to calendar</a><a href="https://sorriso.test/a/tok123?do=cancel" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Cancel</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appointment confirmed by the practice: Igiene <professionale>, Di., 3. Nov. at 09:30",
+    "text": "Hi Giulia <b>,
+
+the practice has accepted your request. Here are your appointment details.
+
+When: Dienstag, 3. November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Manage appointment: https://sorriso.test/a/tok123
+Add to calendar: https://sorriso.test/api/ics/appointment/tok123
+Cancel: https://sorriso.test/a/tok123?do=cancel
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "bookingConfirmation": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">your appointment is booked. We&#39;ll send you a reminder before your visit.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dienstag, 3. November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Manage appointment</a><a href="https://sorriso.test/api/ics/appointment/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#0f172a;border:1px solid #e2e8f0;">Add to calendar</a><a href="https://sorriso.test/a/tok123?do=cancel" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Cancel</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appointment booked: Igiene <professionale>, Di., 3. Nov. at 09:30",
+    "text": "Hi Giulia <b>,
+
+your appointment is booked. We'll send you a reminder before your visit.
+
+When: Dienstag, 3. November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Manage appointment: https://sorriso.test/a/tok123
+Add to calendar: https://sorriso.test/api/ics/appointment/tok123
+Cancel: https://sorriso.test/a/tok123?do=cancel
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "bookingConfirmationSms": "Studio "Rossi" & Figli: booked, Igiene <professionale> with Dr. Marco Rossi Di., 3. Nov. at 09:30. Manage: https://sorriso.test/a/tok123",
+  "bookingRequested": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">we&#39;ve received your request. The practice will confirm it shortly and you&#39;ll get an email.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dienstag, 3. November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Manage appointment</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Request received: Igiene <professionale>",
+    "text": "Hi Giulia <b>,
+
+we've received your request. The practice will confirm it shortly and you'll get an email.
+
+When: Dienstag, 3. November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Manage appointment: https://sorriso.test/a/tok123
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "cancelledEmailPatient": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">your appointment has been cancelled as requested.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dienstag, 3. November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/book/x" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Book again</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appointment cancelled: Di., 3. Nov. at 09:30",
+    "text": "Hi Giulia <b>,
+
+your appointment has been cancelled as requested.
+
+When: Dienstag, 3. November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Book again: https://sorriso.test/book/x
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "cancelledEmailStaff": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">unfortunately the practice had to cancel your appointment. You can book a new time whenever you like.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dienstag, 3. November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/book/x" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Book again</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appointment cancelled: Di., 3. Nov. at 09:30",
+    "text": "Hi Giulia <b>,
+
+unfortunately the practice had to cancel your appointment. You can book a new time whenever you like.
+
+When: Dienstag, 3. November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Book again: https://sorriso.test/book/x
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "cancelledSms": "Studio "Rossi" & Figli: your appointment on Di., 3. Nov. at 09:30 was cancelled. Book again: https://sorriso.test/book/x",
+  "reminderEmail": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">this is a reminder of your upcoming appointment.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dienstag, 3. November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Manage appointment</a><a href="https://sorriso.test/api/ics/appointment/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#0f172a;border:1px solid #e2e8f0;">Add to calendar</a><a href="https://sorriso.test/a/tok123?do=cancel" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Cancel</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appointment reminder: Di., 3. Nov. at 09:30",
+    "text": "Hi Giulia <b>,
+
+this is a reminder of your upcoming appointment.
+
+When: Dienstag, 3. November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Manage appointment: https://sorriso.test/a/tok123
+Add to calendar: https://sorriso.test/api/ics/appointment/tok123
+Cancel: https://sorriso.test/a/tok123?do=cancel
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "reminderEmailAsk": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">this is a reminder of your upcoming appointment. Could you confirm you&#39;ll be there with one click?</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dienstag, 3. November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123?do=confirm" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Confirm I&#39;ll be there</a><a href="https://sorriso.test/a/tok123?do=reschedule" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#0f172a;border:1px solid #e2e8f0;">Reschedule</a><a href="https://sorriso.test/a/tok123?do=cancel" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Cancel</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appointment reminder: Di., 3. Nov. at 09:30",
+    "text": "Hi Giulia <b>,
+
+this is a reminder of your upcoming appointment. Could you confirm you'll be there with one click?
+
+When: Dienstag, 3. November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Confirm I'll be there: https://sorriso.test/a/tok123?do=confirm
+Reschedule: https://sorriso.test/a/tok123?do=reschedule
+Cancel: https://sorriso.test/a/tok123?do=cancel
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "reminderSms": "Studio "Rossi" & Figli: hi Giulia <b>, reminder: Igiene <professionale> with Dr. Marco Rossi Di., 3. Nov. at 09:30, Via Roma 1, Milano. Manage: https://sorriso.test/a/tok123",
+  "reminderSmsAsk": "Studio "Rossi" & Figli: hi Giulia <b>, reminder: Igiene <professionale> with Dr. Marco Rossi Di., 3. Nov. at 09:30, Via Roma 1, Milano. Reply YES to confirm or NO to cancel. Manage: https://sorriso.test/a/tok123",
+  "replyCancelled": "Studio "Rossi" & Figli: your appointment on Di., 3. Nov. at 09:30 is cancelled. Book a new time: https://sorriso.test/book/x",
+  "replyConfirmed": "Studio "Rossi" & Figli: thanks! You're confirmed for Di., 3. Nov. at 09:30. See you soon!",
+  "replyNone": "Studio "Rossi" & Figli: we couldn't find an upcoming appointment for this number.",
+  "replyReschedule": "Studio "Rossi" & Figli: pick a new time here: https://sorriso.test/a/tok123?do=reschedule",
+  "replyStop": "Studio "Rossi" & Figli: you won't receive more texts. Reminders will continue by email.",
+  "replyUnknown": "Studio "Rossi" & Figli: sorry, we didn't understand. Reply YES to confirm or NO to cancel, or visit: https://sorriso.test/a/tok123",
+  "rescheduledEmail": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">your appointment has been moved. Here is the new time.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dienstag, 3. November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Manage appointment</a><a href="https://sorriso.test/api/ics/appointment/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#0f172a;border:1px solid #e2e8f0;">Add to calendar</a><a href="https://sorriso.test/a/tok123?do=cancel" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Cancel</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appointment moved: Di., 3. Nov. at 09:30",
+    "text": "Hi Giulia <b>,
+
+your appointment has been moved. Here is the new time.
+
+When: Dienstag, 3. November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Manage appointment: https://sorriso.test/a/tok123
+Add to calendar: https://sorriso.test/api/ics/appointment/tok123
+Cancel: https://sorriso.test/a/tok123?do=cancel
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "rescheduledSms": "Studio "Rossi" & Figli: your appointment was moved to Di., 3. Nov. at 09:30. Details: https://sorriso.test/a/tok123",
+  "reviewRequest": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">thanks for visiting Dr. Marco Rossi. A verified review helps other patients choose with confidence. It takes a minute.</p>
+
+<a href="https://sorriso.test/a/tok123/review" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Leave a review</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "How was your visit to Studio "Rossi" & Figli?",
+    "text": "Hi Giulia <b>,
+
+thanks for visiting Dr. Marco Rossi. A verified review helps other patients choose with confidence. It takes a minute.
+
+
+Leave a review: https://sorriso.test/a/tok123/review
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "waitlistOfferEmail": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">a slot just opened up for Igiene &lt;professionale&gt;. It goes to whoever books first, so grab it now if it works for you.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dienstag, 3. November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/book/x?slot=1" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Book this slot</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "A slot just opened up: Di., 3. Nov. at 09:30",
+    "text": "Hi Giulia <b>,
+
+a slot just opened up for Igiene <professionale>. It goes to whoever books first, so grab it now if it works for you.
+
+When: Dienstag, 3. November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Book this slot: https://sorriso.test/book/x?slot=1
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "waitlistOfferSms": "Studio "Rossi" & Figli: a slot opened for Igiene <professionale> Di., 3. Nov. at 09:30. First to book gets it: https://sorriso.test/book/x?slot=1",
+}
+`;
+
+exports[`appointment templates > render unchanged in en 1`] = `
+{
+  "bookingApproved": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">the practice has accepted your request. Here are your appointment details.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Tuesday 3 November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Manage appointment</a><a href="https://sorriso.test/api/ics/appointment/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#0f172a;border:1px solid #e2e8f0;">Add to calendar</a><a href="https://sorriso.test/a/tok123?do=cancel" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Cancel</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appointment confirmed by the practice: Igiene <professionale>, Tue 3 Nov at 09:30",
+    "text": "Hi Giulia <b>,
+
+the practice has accepted your request. Here are your appointment details.
+
+When: Tuesday 3 November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Manage appointment: https://sorriso.test/a/tok123
+Add to calendar: https://sorriso.test/api/ics/appointment/tok123
+Cancel: https://sorriso.test/a/tok123?do=cancel
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "bookingConfirmation": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">your appointment is booked. We&#39;ll send you a reminder before your visit.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Tuesday 3 November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Manage appointment</a><a href="https://sorriso.test/api/ics/appointment/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#0f172a;border:1px solid #e2e8f0;">Add to calendar</a><a href="https://sorriso.test/a/tok123?do=cancel" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Cancel</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appointment booked: Igiene <professionale>, Tue 3 Nov at 09:30",
+    "text": "Hi Giulia <b>,
+
+your appointment is booked. We'll send you a reminder before your visit.
+
+When: Tuesday 3 November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Manage appointment: https://sorriso.test/a/tok123
+Add to calendar: https://sorriso.test/api/ics/appointment/tok123
+Cancel: https://sorriso.test/a/tok123?do=cancel
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "bookingConfirmationSms": "Studio "Rossi" & Figli: booked, Igiene <professionale> with Dr. Marco Rossi Tue 3 Nov at 09:30. Manage: https://sorriso.test/a/tok123",
+  "bookingRequested": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">we&#39;ve received your request. The practice will confirm it shortly and you&#39;ll get an email.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Tuesday 3 November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Manage appointment</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Request received: Igiene <professionale>",
+    "text": "Hi Giulia <b>,
+
+we've received your request. The practice will confirm it shortly and you'll get an email.
+
+When: Tuesday 3 November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Manage appointment: https://sorriso.test/a/tok123
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "cancelledEmailPatient": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">your appointment has been cancelled as requested.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Tuesday 3 November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/book/x" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Book again</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appointment cancelled: Tue 3 Nov at 09:30",
+    "text": "Hi Giulia <b>,
+
+your appointment has been cancelled as requested.
+
+When: Tuesday 3 November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Book again: https://sorriso.test/book/x
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "cancelledEmailStaff": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">unfortunately the practice had to cancel your appointment. You can book a new time whenever you like.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Tuesday 3 November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/book/x" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Book again</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appointment cancelled: Tue 3 Nov at 09:30",
+    "text": "Hi Giulia <b>,
+
+unfortunately the practice had to cancel your appointment. You can book a new time whenever you like.
+
+When: Tuesday 3 November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Book again: https://sorriso.test/book/x
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "cancelledSms": "Studio "Rossi" & Figli: your appointment on Tue 3 Nov at 09:30 was cancelled. Book again: https://sorriso.test/book/x",
+  "reminderEmail": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">this is a reminder of your upcoming appointment.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Tuesday 3 November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Manage appointment</a><a href="https://sorriso.test/api/ics/appointment/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#0f172a;border:1px solid #e2e8f0;">Add to calendar</a><a href="https://sorriso.test/a/tok123?do=cancel" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Cancel</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appointment reminder: Tue 3 Nov at 09:30",
+    "text": "Hi Giulia <b>,
+
+this is a reminder of your upcoming appointment.
+
+When: Tuesday 3 November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Manage appointment: https://sorriso.test/a/tok123
+Add to calendar: https://sorriso.test/api/ics/appointment/tok123
+Cancel: https://sorriso.test/a/tok123?do=cancel
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "reminderEmailAsk": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">this is a reminder of your upcoming appointment. Could you confirm you&#39;ll be there with one click?</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Tuesday 3 November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123?do=confirm" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Confirm I&#39;ll be there</a><a href="https://sorriso.test/a/tok123?do=reschedule" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#0f172a;border:1px solid #e2e8f0;">Reschedule</a><a href="https://sorriso.test/a/tok123?do=cancel" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Cancel</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appointment reminder: Tue 3 Nov at 09:30",
+    "text": "Hi Giulia <b>,
+
+this is a reminder of your upcoming appointment. Could you confirm you'll be there with one click?
+
+When: Tuesday 3 November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Confirm I'll be there: https://sorriso.test/a/tok123?do=confirm
+Reschedule: https://sorriso.test/a/tok123?do=reschedule
+Cancel: https://sorriso.test/a/tok123?do=cancel
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "reminderSms": "Studio "Rossi" & Figli: hi Giulia <b>, reminder: Igiene <professionale> with Dr. Marco Rossi Tue 3 Nov at 09:30, Via Roma 1, Milano. Manage: https://sorriso.test/a/tok123",
+  "reminderSmsAsk": "Studio "Rossi" & Figli: hi Giulia <b>, reminder: Igiene <professionale> with Dr. Marco Rossi Tue 3 Nov at 09:30, Via Roma 1, Milano. Reply YES to confirm or NO to cancel. Manage: https://sorriso.test/a/tok123",
+  "replyCancelled": "Studio "Rossi" & Figli: your appointment on Tue 3 Nov at 09:30 is cancelled. Book a new time: https://sorriso.test/book/x",
+  "replyConfirmed": "Studio "Rossi" & Figli: thanks! You're confirmed for Tue 3 Nov at 09:30. See you soon!",
+  "replyNone": "Studio "Rossi" & Figli: we couldn't find an upcoming appointment for this number.",
+  "replyReschedule": "Studio "Rossi" & Figli: pick a new time here: https://sorriso.test/a/tok123?do=reschedule",
+  "replyStop": "Studio "Rossi" & Figli: you won't receive more texts. Reminders will continue by email.",
+  "replyUnknown": "Studio "Rossi" & Figli: sorry, we didn't understand. Reply YES to confirm or NO to cancel, or visit: https://sorriso.test/a/tok123",
+  "rescheduledEmail": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">your appointment has been moved. Here is the new time.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Tuesday 3 November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Manage appointment</a><a href="https://sorriso.test/api/ics/appointment/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#0f172a;border:1px solid #e2e8f0;">Add to calendar</a><a href="https://sorriso.test/a/tok123?do=cancel" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Cancel</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appointment moved: Tue 3 Nov at 09:30",
+    "text": "Hi Giulia <b>,
+
+your appointment has been moved. Here is the new time.
+
+When: Tuesday 3 November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Manage appointment: https://sorriso.test/a/tok123
+Add to calendar: https://sorriso.test/api/ics/appointment/tok123
+Cancel: https://sorriso.test/a/tok123?do=cancel
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "rescheduledSms": "Studio "Rossi" & Figli: your appointment was moved to Tue 3 Nov at 09:30. Details: https://sorriso.test/a/tok123",
+  "reviewRequest": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">thanks for visiting Dr. Marco Rossi. A verified review helps other patients choose with confidence. It takes a minute.</p>
+
+<a href="https://sorriso.test/a/tok123/review" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Leave a review</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "How was your visit to Studio "Rossi" & Figli?",
+    "text": "Hi Giulia <b>,
+
+thanks for visiting Dr. Marco Rossi. A verified review helps other patients choose with confidence. It takes a minute.
+
+
+Leave a review: https://sorriso.test/a/tok123/review
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "waitlistOfferEmail": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Hi Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">a slot just opened up for Igiene &lt;professionale&gt;. It goes to whoever books first, so grab it now if it works for you.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">When</td><td style="padding:5px 0;font-size:14px;font-weight:600">Tuesday 3 November 2026 at 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Service</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">With</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Where</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/book/x?slot=1" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Book this slot</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — You&#39;re receiving this email because you have an appointment with this practice.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "A slot just opened up: Tue 3 Nov at 09:30",
+    "text": "Hi Giulia <b>,
+
+a slot just opened up for Igiene <professionale>. It goes to whoever books first, so grab it now if it works for you.
+
+When: Tuesday 3 November 2026 at 09:30
+Service: Igiene <professionale>
+With: Dr. Marco Rossi
+Where: Milano Centro, Via Roma 1, Milano
+
+Book this slot: https://sorriso.test/book/x?slot=1
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — You're receiving this email because you have an appointment with this practice.",
+  },
+  "waitlistOfferSms": "Studio "Rossi" & Figli: a slot opened for Igiene <professionale> Tue 3 Nov at 09:30. First to book gets it: https://sorriso.test/book/x?slot=1",
+}
+`;
+
+exports[`appointment templates > render unchanged in it 1`] = `
+{
+  "bookingApproved": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Ciao Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">lo studio ha confermato la tua richiesta. Ecco i dettagli del tuo appuntamento.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Quando</td><td style="padding:5px 0;font-size:14px;font-weight:600">martedì 3 novembre 2026 alle 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Prestazione</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Con</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Dove</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Gestisci appuntamento</a><a href="https://sorriso.test/api/ics/appointment/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#0f172a;border:1px solid #e2e8f0;">Aggiungi al calendario</a><a href="https://sorriso.test/a/tok123?do=cancel" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Disdici</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appuntamento confermato dallo studio: Igiene <professionale>, mar 3 nov alle 09:30",
+    "text": "Ciao Giulia <b>,
+
+lo studio ha confermato la tua richiesta. Ecco i dettagli del tuo appuntamento.
+
+Quando: martedì 3 novembre 2026 alle 09:30
+Prestazione: Igiene <professionale>
+Con: Dr. Marco Rossi
+Dove: Milano Centro, Via Roma 1, Milano
+
+Gestisci appuntamento: https://sorriso.test/a/tok123
+Aggiungi al calendario: https://sorriso.test/api/ics/appointment/tok123
+Disdici: https://sorriso.test/a/tok123?do=cancel
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.",
+  },
+  "bookingConfirmation": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Ciao Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">il tuo appuntamento è prenotato. Ti invieremo un promemoria prima della visita.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Quando</td><td style="padding:5px 0;font-size:14px;font-weight:600">martedì 3 novembre 2026 alle 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Prestazione</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Con</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Dove</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Gestisci appuntamento</a><a href="https://sorriso.test/api/ics/appointment/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#0f172a;border:1px solid #e2e8f0;">Aggiungi al calendario</a><a href="https://sorriso.test/a/tok123?do=cancel" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Disdici</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appuntamento prenotato: Igiene <professionale>, mar 3 nov alle 09:30",
+    "text": "Ciao Giulia <b>,
+
+il tuo appuntamento è prenotato. Ti invieremo un promemoria prima della visita.
+
+Quando: martedì 3 novembre 2026 alle 09:30
+Prestazione: Igiene <professionale>
+Con: Dr. Marco Rossi
+Dove: Milano Centro, Via Roma 1, Milano
+
+Gestisci appuntamento: https://sorriso.test/a/tok123
+Aggiungi al calendario: https://sorriso.test/api/ics/appointment/tok123
+Disdici: https://sorriso.test/a/tok123?do=cancel
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.",
+  },
+  "bookingConfirmationSms": "Studio "Rossi" & Figli: appuntamento prenotato, Igiene <professionale> con Dr. Marco Rossi mar 3 nov alle 09:30. Gestisci: https://sorriso.test/a/tok123",
+  "bookingRequested": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Ciao Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">abbiamo ricevuto la tua richiesta. Lo studio la confermerà a breve e riceverai un&#39;email.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Quando</td><td style="padding:5px 0;font-size:14px;font-weight:600">martedì 3 novembre 2026 alle 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Prestazione</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Con</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Dove</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Gestisci appuntamento</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Richiesta ricevuta: Igiene <professionale>",
+    "text": "Ciao Giulia <b>,
+
+abbiamo ricevuto la tua richiesta. Lo studio la confermerà a breve e riceverai un'email.
+
+Quando: martedì 3 novembre 2026 alle 09:30
+Prestazione: Igiene <professionale>
+Con: Dr. Marco Rossi
+Dove: Milano Centro, Via Roma 1, Milano
+
+Gestisci appuntamento: https://sorriso.test/a/tok123
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.",
+  },
+  "cancelledEmailPatient": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Ciao Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">il tuo appuntamento è stato annullato come richiesto.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Quando</td><td style="padding:5px 0;font-size:14px;font-weight:600">martedì 3 novembre 2026 alle 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Prestazione</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Con</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Dove</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/book/x" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Prenota di nuovo</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appuntamento annullato: mar 3 nov alle 09:30",
+    "text": "Ciao Giulia <b>,
+
+il tuo appuntamento è stato annullato come richiesto.
+
+Quando: martedì 3 novembre 2026 alle 09:30
+Prestazione: Igiene <professionale>
+Con: Dr. Marco Rossi
+Dove: Milano Centro, Via Roma 1, Milano
+
+Prenota di nuovo: https://sorriso.test/book/x
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.",
+  },
+  "cancelledEmailStaff": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Ciao Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">purtroppo lo studio ha dovuto annullare il tuo appuntamento. Puoi prenotare un nuovo orario quando vuoi.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Quando</td><td style="padding:5px 0;font-size:14px;font-weight:600">martedì 3 novembre 2026 alle 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Prestazione</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Con</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Dove</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/book/x" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Prenota di nuovo</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appuntamento annullato: mar 3 nov alle 09:30",
+    "text": "Ciao Giulia <b>,
+
+purtroppo lo studio ha dovuto annullare il tuo appuntamento. Puoi prenotare un nuovo orario quando vuoi.
+
+Quando: martedì 3 novembre 2026 alle 09:30
+Prestazione: Igiene <professionale>
+Con: Dr. Marco Rossi
+Dove: Milano Centro, Via Roma 1, Milano
+
+Prenota di nuovo: https://sorriso.test/book/x
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.",
+  },
+  "cancelledSms": "Studio "Rossi" & Figli: il tuo appuntamento del mar 3 nov alle 09:30 è stato annullato. Prenota di nuovo: https://sorriso.test/book/x",
+  "reminderEmail": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Ciao Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">ti ricordiamo il tuo prossimo appuntamento.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Quando</td><td style="padding:5px 0;font-size:14px;font-weight:600">martedì 3 novembre 2026 alle 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Prestazione</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Con</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Dove</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Gestisci appuntamento</a><a href="https://sorriso.test/api/ics/appointment/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#0f172a;border:1px solid #e2e8f0;">Aggiungi al calendario</a><a href="https://sorriso.test/a/tok123?do=cancel" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Disdici</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Promemoria appuntamento: mar 3 nov alle 09:30",
+    "text": "Ciao Giulia <b>,
+
+ti ricordiamo il tuo prossimo appuntamento.
+
+Quando: martedì 3 novembre 2026 alle 09:30
+Prestazione: Igiene <professionale>
+Con: Dr. Marco Rossi
+Dove: Milano Centro, Via Roma 1, Milano
+
+Gestisci appuntamento: https://sorriso.test/a/tok123
+Aggiungi al calendario: https://sorriso.test/api/ics/appointment/tok123
+Disdici: https://sorriso.test/a/tok123?do=cancel
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.",
+  },
+  "reminderEmailAsk": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Ciao Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">ti ricordiamo il tuo prossimo appuntamento. Puoi confermare la tua presenza con un clic?</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Quando</td><td style="padding:5px 0;font-size:14px;font-weight:600">martedì 3 novembre 2026 alle 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Prestazione</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Con</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Dove</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123?do=confirm" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Confermo la presenza</a><a href="https://sorriso.test/a/tok123?do=reschedule" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#0f172a;border:1px solid #e2e8f0;">Sposta</a><a href="https://sorriso.test/a/tok123?do=cancel" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Disdici</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Promemoria appuntamento: mar 3 nov alle 09:30",
+    "text": "Ciao Giulia <b>,
+
+ti ricordiamo il tuo prossimo appuntamento. Puoi confermare la tua presenza con un clic?
+
+Quando: martedì 3 novembre 2026 alle 09:30
+Prestazione: Igiene <professionale>
+Con: Dr. Marco Rossi
+Dove: Milano Centro, Via Roma 1, Milano
+
+Confermo la presenza: https://sorriso.test/a/tok123?do=confirm
+Sposta: https://sorriso.test/a/tok123?do=reschedule
+Disdici: https://sorriso.test/a/tok123?do=cancel
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.",
+  },
+  "reminderSms": "Studio "Rossi" & Figli: ciao Giulia <b>, promemoria Igiene <professionale> con Dr. Marco Rossi mar 3 nov alle 09:30, Via Roma 1, Milano. Gestisci: https://sorriso.test/a/tok123",
+  "reminderSmsAsk": "Studio "Rossi" & Figli: ciao Giulia <b>, promemoria Igiene <professionale> con Dr. Marco Rossi mar 3 nov alle 09:30, Via Roma 1, Milano. Rispondi SI per confermare o NO per disdire. Gestisci: https://sorriso.test/a/tok123",
+  "replyCancelled": "Studio "Rossi" & Figli: appuntamento del mar 3 nov alle 09:30 annullato. Per prenotare un nuovo orario: https://sorriso.test/book/x",
+  "replyConfirmed": "Studio "Rossi" & Figli: grazie! Presenza confermata per mar 3 nov alle 09:30. A presto!",
+  "replyNone": "Studio "Rossi" & Figli: non abbiamo trovato appuntamenti futuri associati a questo numero.",
+  "replyReschedule": "Studio "Rossi" & Figli: scegli un nuovo orario qui: https://sorriso.test/a/tok123?do=reschedule",
+  "replyStop": "Studio "Rossi" & Figli: non riceverai più SMS. Continuerai a ricevere promemoria via email.",
+  "replyUnknown": "Studio "Rossi" & Figli: non abbiamo capito la risposta. Rispondi SI per confermare o NO per disdire, oppure: https://sorriso.test/a/tok123",
+  "rescheduledEmail": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Ciao Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">il tuo appuntamento è stato spostato. Ecco il nuovo orario.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Quando</td><td style="padding:5px 0;font-size:14px;font-weight:600">martedì 3 novembre 2026 alle 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Prestazione</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Con</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Dove</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/a/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Gestisci appuntamento</a><a href="https://sorriso.test/api/ics/appointment/tok123" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#0f172a;border:1px solid #e2e8f0;">Aggiungi al calendario</a><a href="https://sorriso.test/a/tok123?do=cancel" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Disdici</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Appuntamento spostato: mar 3 nov alle 09:30",
+    "text": "Ciao Giulia <b>,
+
+il tuo appuntamento è stato spostato. Ecco il nuovo orario.
+
+Quando: martedì 3 novembre 2026 alle 09:30
+Prestazione: Igiene <professionale>
+Con: Dr. Marco Rossi
+Dove: Milano Centro, Via Roma 1, Milano
+
+Gestisci appuntamento: https://sorriso.test/a/tok123
+Aggiungi al calendario: https://sorriso.test/api/ics/appointment/tok123
+Disdici: https://sorriso.test/a/tok123?do=cancel
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.",
+  },
+  "rescheduledSms": "Studio "Rossi" & Figli: il tuo appuntamento è stato spostato a mar 3 nov alle 09:30. Dettagli: https://sorriso.test/a/tok123",
+  "reviewRequest": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Ciao Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">grazie per la visita con Dr. Marco Rossi. La tua recensione verificata aiuta altri pazienti a scegliere. Ci vuole un minuto.</p>
+
+<a href="https://sorriso.test/a/tok123/review" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Lascia una recensione</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Com'è andata da Studio "Rossi" & Figli?",
+    "text": "Ciao Giulia <b>,
+
+grazie per la visita con Dr. Marco Rossi. La tua recensione verificata aiuta altri pazienti a scegliere. Ci vuole un minuto.
+
+
+Lascia una recensione: https://sorriso.test/a/tok123/review
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.",
+  },
+  "waitlistOfferEmail": {
+    "html": "<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+<tr><td style="background:#1d4ed8;padding:20px 28px;color:#fff;font-size:18px;font-weight:700">Studio &quot;Rossi&quot; &amp; Figli</td></tr>
+<tr><td style="padding:28px">
+<p style="margin:0 0 12px;font-size:16px">Ciao Giulia &lt;b&gt;,</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">si è liberato un posto per Igiene &lt;professionale&gt;. È di chi prenota per primo: se ti interessa, prenotalo ora.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:16px 18px;margin-bottom:22px"><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Quando</td><td style="padding:5px 0;font-size:14px;font-weight:600">martedì 3 novembre 2026 alle 09:30</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Prestazione</td><td style="padding:5px 0;font-size:14px;font-weight:600">Igiene &lt;professionale&gt;</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Con</td><td style="padding:5px 0;font-size:14px;font-weight:600">Dr. Marco Rossi</td></tr><tr><td style="padding:5px 0;color:#64748b;font-size:13px;width:110px;vertical-align:top">Dove</td><td style="padding:5px 0;font-size:14px;font-weight:600">Milano Centro, Via Roma 1, Milano</td></tr></table>
+<a href="https://sorriso.test/book/x?slot=1" style="display:inline-block;margin:0 8px 10px 0;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;background:#1d4ed8;color:#fff;border:1px solid #1d4ed8;">Prenota questo orario</a>
+</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.5">Studio &quot;Rossi&quot; &amp; Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.</td></tr>
+</table></td></tr></table></body></html>",
+    "subject": "Si è liberato un posto: mar 3 nov alle 09:30",
+    "text": "Ciao Giulia <b>,
+
+si è liberato un posto per Igiene <professionale>. È di chi prenota per primo: se ti interessa, prenotalo ora.
+
+Quando: martedì 3 novembre 2026 alle 09:30
+Prestazione: Igiene <professionale>
+Con: Dr. Marco Rossi
+Dove: Milano Centro, Via Roma 1, Milano
+
+Prenota questo orario: https://sorriso.test/book/x?slot=1
+
+Studio "Rossi" & Figli · Tel. +39 02 1234 5678 — Hai ricevuto questa email perché hai un appuntamento presso questo studio.",
+  },
+  "waitlistOfferSms": "Studio "Rossi" & Figli: si è liberato un posto per Igiene <professionale> mar 3 nov alle 09:30. Primo che prenota: https://sorriso.test/book/x?slot=1",
+}
+`;
