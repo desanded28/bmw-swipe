@@ -9,7 +9,7 @@ export const OPTIONS = preflight;
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(req: Request, { params }: Ctx) {
-  const org = await authenticateApiKey(req);
+  const org = (await authenticateApiKey(req))?.org ?? null;
   if (!org) return apiError(401, "unauthorized", "Missing or invalid API key.");
   const { id } = await params;
   const d = await getOrgAppointmentDetails(org.id, id);
@@ -37,7 +37,7 @@ const patchSchema = z.object({
  */
 export async function PATCH(req: Request, { params }: Ctx) {
   try {
-    const org = await authenticateApiKey(req);
+    const org = (await authenticateApiKey(req))?.org ?? null;
     if (!org) return apiError(401, "unauthorized", "Missing or invalid API key.");
     const { id } = await params;
     const d = await getOrgAppointmentDetails(org.id, id);

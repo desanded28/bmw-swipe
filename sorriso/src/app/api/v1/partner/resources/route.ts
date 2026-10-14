@@ -7,7 +7,7 @@ export const OPTIONS = preflight;
 
 /** GET /api/v1/partner/resources — everything needed to map your system to ours. */
 export async function GET(req: Request) {
-  const org = await authenticateApiKey(req);
+  const org = (await authenticateApiKey(req))?.org ?? null;
   if (!org) return apiError(401, "unauthorized", "Missing or invalid API key.");
   const locs = await db.select().from(locations).where(eq(locations.orgId, org.id));
   const locIds = locs.map((l) => l.id);

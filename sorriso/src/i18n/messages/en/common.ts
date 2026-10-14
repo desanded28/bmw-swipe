@@ -160,4 +160,12 @@ export default {
     rateLimited: "Too many attempts. Please wait a few minutes and try again.",
     unexpected: "Something went wrong. Please try again.",
   },
+  /** Last-resort pages (global-not-found, global-error) outside both root layouts. */
+  pages: {
+    notFoundTitle: "Page not found",
+    notFoundBody: "The link may be old or mistyped.",
+    errorTitle: "Something went wrong",
+    errorBody: "Please try again. If it keeps happening, contact the practice directly.",
+    home: "Go to the home page",
+  },
 } as const satisfies Contract;

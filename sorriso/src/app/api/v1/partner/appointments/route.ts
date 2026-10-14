@@ -15,7 +15,7 @@ export const OPTIONS = preflight;
  * Lists the practice's appointments (max 500). Use updatedSince for incremental sync.
  */
 export async function GET(req: Request) {
-  const org = await authenticateApiKey(req);
+  const org = (await authenticateApiKey(req))?.org ?? null;
   if (!org) return apiError(401, "unauthorized", "Missing or invalid API key.");
   const p = new URL(req.url).searchParams;
   const conditions: SQL[] = [eq(appointments.orgId, org.id)];
@@ -63,7 +63,7 @@ const partnerBookingSchema = z.object({
 /** POST /api/v1/partner/appointments — create an appointment with front-desk powers. */
 export async function POST(req: Request) {
   try {
-    const org = await authenticateApiKey(req);
+    const org = (await authenticateApiKey(req))?.org ?? null;
     if (!org) return apiError(401, "unauthorized", "Missing or invalid API key.");
     const input = partnerBookingSchema.parse(await req.json());
     const details = await createAppointment({

@@ -2,7 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { db } from "@/db";
-import { apiKeys, organizations } from "@/db/schema";
+import { apiKeys, organizations, type ApiKey, type ApiScope, type Organization } from "@/db/schema";
 import { BookingError } from "./booking";
 import { newId, newToken, sha256 } from "./ids";
 import { logError } from "./log";
@@ -50,8 +50,10 @@ export async function createApiKey(orgId: string, name: string) {
   return { prefix, secret };
 }
 
-/** Resolve `Authorization: Bearer sk_…` to the owning practice. */
-export async function authenticateApiKey(req: Request) {
+export type ApiAuth = { org: Organization; key: ApiKey };
+
+/** Resolve `Authorization: Bearer sk_…` to the key and its practice; null if unknown, revoked or expired. */
+export async function authenticateApiKey(req: Request): Promise<ApiAuth | null> {
   const header = req.headers.get("authorization") ?? "";
   const m = header.match(/^Bearer\s+(sk_[A-Za-z0-9_-]+)$/);
   if (!m) return null;
@@ -61,8 +63,19 @@ export async function authenticateApiKey(req: Request) {
     .innerJoin(organizations, eq(organizations.id, apiKeys.orgId))
     .where(and(eq(apiKeys.keyHash, sha256(m[1])), isNull(apiKeys.revokedAt)));
   if (!row) return null;
+  if (row.key.expiresAt && row.key.expiresAt.getTime() <= Date.now()) return null;
   await db.update(apiKeys).set({ lastUsedAt: new Date() }).where(eq(apiKeys.id, row.key.id));
-  return row.org;
+  return row;
+}
+
+/**
+ * 403 unless the key was granted `scope`; null when the call may proceed.
+ *   const denied = requireScope(auth, "patients:erase"); if (denied) return denied;
+ * WP6 extends it (IP allow-lists, audit of denials) without changing the signature.
+ */
+export function requireScope(auth: ApiAuth, scope: ApiScope): NextResponse | null {
+  if (auth.key.scopes.includes(scope)) return null;
+  return apiError(403, "insufficient_scope", `This API key lacks the ${scope} scope.`, { scope });
 }
 
 // ---- naive in-memory rate limit for public endpoints (per instance) ----

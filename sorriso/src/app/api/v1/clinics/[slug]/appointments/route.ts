@@ -19,7 +19,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
     const [org] = await db.select().from(organizations).where(eq(organizations.slug, slug));
     if (!org) return apiError(404, "not_found", "Clinic not found.");
 
-    const partner = await authenticateApiKey(req);
+    const partner = (await authenticateApiKey(req))?.org ?? null;
     if (partner && partner.id !== org.id) return apiError(403, "forbidden", "This API key belongs to another practice.");
     if (!partner && !rateLimit(req, "book", 10, 10 * 60_000))
       return apiError(429, "rate_limited", "Too many booking attempts. Please try again in a few minutes.");
