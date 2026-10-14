@@ -24,6 +24,9 @@ export async function submitReview(token: string, _prev: { error?: string } | nu
     rating,
     comment,
     authorName: showName ? `${d.patient.firstName} ${d.patient.lastName.charAt(0)}.` : "Verified patient",
+    // Published right away, as before; WP7 adds the publication consent and moderation.
+    status: "published",
+    publishedAt: new Date(),
   });
   redirect(`/a/${token}/review?thanks=1`);
 }

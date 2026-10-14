@@ -19,8 +19,36 @@ import {
 import { absoluteUrl } from "./config";
 import { practitionerName } from "./format";
 import type { AppointmentTemplateData } from "./messaging/templates";
+import { pickTextChannel } from "./contact";
 import { hashToken, isManageLinkValid, manageTokenOf } from "./links";
+import { isAllowed } from "./privacy/consent";
+import { signPracticeRef } from "./privacy/context";
+import { getPrivacy } from "./privacy/settings";
 import { resolveSettings } from "./settings";
+
+/**
+ * Opt-in, restriction and guardian routing (under 14) live in contact.ts; address the message to
+ * recipientFor(patient), not to the patient's own fields.
+ */
+export { canReachByEmail, canReachByPhone } from "./contact";
+
+/**
+ * The text channel for a message to this patient, or null when they can't be texted. Every text
+ * sender decides through here: pickTextChannel() gives WhatsApp only where the practice enabled it
+ * and the patient chose it, and on top of that WhatsApp needs a current whatsapp_channel grant in
+ * the consent ledger. A WhatsApp preference without one (a record from before the ledger, or one
+ * set by staff without recording the patient's consent) gets SMS, so nothing reaches Meta without
+ * the consent. WP3 adds the per-locale template fallback behind this.
+ */
+export async function textChannelFor(
+  patient: Patient,
+  org: Pick<Organization, "settings">,
+  now: Date = new Date(),
+): Promise<"sms" | "whatsapp" | null> {
+  const whatsappEnabled =
+    getPrivacy(org).whatsappEnabled && patient.preferredChannel === "whatsapp" && (await isAllowed(patient.id, "whatsapp_channel"));
+  return pickTextChannel(patient, { whatsappEnabled }, now);
+}
 
 export type AppointmentDetails = {
   appointment: Appointment;
@@ -73,12 +101,14 @@ export async function getOrgAppointmentDetails(orgId: string, id: string, tx: Tx
 export function appointmentLinks(d: Pick<AppointmentDetails, "appointment" | "org">) {
   const token = manageTokenOf(d.appointment);
   const clinicUrl = absoluteUrl(`/c/${d.org.slug}`);
+  // A practice booking's "book again" link stays with the practice as controller.
+  const ref = d.appointment.processingContext === "practice" ? `&ref=${signPracticeRef(d.org.id)}` : "";
   return {
     manageUrl: token ? absoluteUrl(`/a/${token}`) : clinicUrl,
     icsUrl: token ? absoluteUrl(`/api/ics/appointment/${token}`) : clinicUrl,
     reviewUrl: token ? absoluteUrl(`/a/${token}/review`) : clinicUrl,
     rebookUrl: absoluteUrl(
-      `/book/${d.org.slug}?service=${d.appointment.serviceId}&practitioner=${d.appointment.practitionerId}`,
+      `/book/${d.org.slug}?service=${d.appointment.serviceId}&practitioner=${d.appointment.practitionerId}${ref}`,
     ),
   };
 }
@@ -100,14 +130,6 @@ export function templateData(d: AppointmentDetails): AppointmentTemplateData {
     manageUrl: links.manageUrl,
     icsUrl: links.icsUrl,
   };
-}
-
-export function canReachByEmail(p: Patient) {
-  return Boolean(p.email && p.emailOptIn);
-}
-
-export function canReachByPhone(p: Patient) {
-  return Boolean(p.phone && p.smsOptIn);
 }
 
 /** Is the patient still allowed to reschedule online? */

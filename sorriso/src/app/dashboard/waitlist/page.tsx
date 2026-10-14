@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { Hourglass } from "lucide-react";
 import type { Metadata } from "next";
-import { removeWaitlistEntry } from "@/app/dashboard/actions";
+import { removeWaitlistEntry } from "@/app/dashboard/actions/waitlist";
 import { ActionButton } from "@/components/dashboard/ActionButton";
 import { Badge, Card, EmptyState, PageHeader } from "@/components/ui";
 import { db } from "@/db";

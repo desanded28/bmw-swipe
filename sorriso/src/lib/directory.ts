@@ -16,6 +16,7 @@ import {
   type ServiceCategory,
 } from "@/db/schema";
 import { getAvailability, type Slot } from "./availability";
+import { getPrivacy } from "./privacy/settings";
 import { resolveSettings } from "./settings";
 import { todayIn } from "./time";
 
@@ -26,7 +27,7 @@ export async function getRatings(practitionerIds: string[]): Promise<Map<string,
   const rows = await db
     .select({ practitionerId: reviews.practitionerId, average: avg(reviews.rating), count: count() })
     .from(reviews)
-    .where(and(inArray(reviews.practitionerId, practitionerIds), eq(reviews.published, true)))
+    .where(and(inArray(reviews.practitionerId, practitionerIds), eq(reviews.status, "published")))
     .groupBy(reviews.practitionerId);
   return new Map(rows.map((r) => [r.practitionerId, { average: Number(r.average ?? 0), count: r.count }]));
 }
@@ -50,6 +51,10 @@ export type PublicClinic = {
     "id" | "slug" | "title" | "name" | "specialty" | "bio" | "languages" | "color" | "acceptsNewPatients"
   > & { serviceIds: string[]; locationIds: string[]; rating: Rating | null })[];
   services: Pick<Service, "id" | "name" | "category" | "description" | "durationMinutes" | "priceCents">[];
+  /** What the booking form may offer: the WhatsApp channel and the marketing opt-in are off unless the practice enabled them. */
+  privacy: { whatsappEnabled: boolean; marketingEnabled: boolean };
+  /** The practice as data controller, for the first-layer privacy notice. */
+  legal: { controllerName: string; hasDpo: boolean };
 };
 
 /** Everything the public pages and the booking widget need about a practice. */
@@ -57,6 +62,7 @@ export async function getPublicClinic(slug: string): Promise<PublicClinic | null
   const [org] = await db.select().from(organizations).where(eq(organizations.slug, slug));
   if (!org) return null;
   const settings = resolveSettings(org.settings);
+  const privacy = getPrivacy(org);
 
   const [locationRows, practitionerRows, serviceRows] = await Promise.all([
     db
@@ -143,6 +149,8 @@ export async function getPublicClinic(slug: string): Promise<PublicClinic | null
       durationMinutes: s.durationMinutes,
       priceCents: s.priceCents,
     })),
+    privacy: { whatsappEnabled: privacy.whatsappEnabled, marketingEnabled: privacy.marketingEnabled },
+    legal: { controllerName: org.legalName ?? org.name, hasDpo: Boolean(org.dpoName || org.dpoEmail) },
   };
 }
 
@@ -164,7 +172,7 @@ export async function getPublicReviews(orgId: string, practitionerId?: string, l
     .where(
       and(
         eq(reviews.orgId, orgId),
-        eq(reviews.published, true),
+        eq(reviews.status, "published"),
         practitionerId ? eq(reviews.practitionerId, practitionerId) : undefined,
       ),
     )

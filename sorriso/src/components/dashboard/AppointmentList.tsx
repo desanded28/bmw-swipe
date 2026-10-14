@@ -2,13 +2,14 @@
 
 import { BellRing, Check, Phone, UserX } from "lucide-react";
 import { useState } from "react";
-import { approve, confirmByPhone, remindNow } from "@/app/dashboard/actions";
+import { approve, confirmByPhone, remindNow } from "@/app/dashboard/actions/appointments";
 import { fmtDay } from "@/lib/datefmt";
 import { formatPhone } from "@/lib/phone";
 import { Badge, Button, EmptyState, cx } from "../ui";
 import { useNow } from "../useNow";
-import { AppointmentDrawer, StatusBadge, localDate, localTime, useRunAction } from "./AppointmentDrawer";
+import { AppointmentDrawer, StatusBadge, localDate, localTime } from "./AppointmentDrawer";
 import type { ApptDTO, Resources } from "./types";
+import { useRunAction } from "./useRunAction";
 
 export function AppointmentList({
   appointments,

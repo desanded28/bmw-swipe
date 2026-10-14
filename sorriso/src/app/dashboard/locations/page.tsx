@@ -1,6 +1,6 @@
 import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import type { Metadata } from "next";
-import { saveLocation } from "@/app/dashboard/actions";
+import { saveLocation } from "@/app/dashboard/actions/locations";
 import { ActionForm } from "@/components/dashboard/ActionForm";
 import { RoomManager } from "@/components/dashboard/RoomManager";
 import { TimeOffForm, TimeOffList } from "@/components/dashboard/TimeOff";

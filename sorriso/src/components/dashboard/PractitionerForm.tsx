@@ -1,4 +1,4 @@
-import { savePractitioner } from "@/app/dashboard/actions";
+import { savePractitioner } from "@/app/dashboard/actions/practitioners";
 import type { Practitioner, Service } from "@/db/schema";
 import { CATEGORY_LABELS } from "@/lib/format";
 import { Field, Input, Textarea } from "../ui";

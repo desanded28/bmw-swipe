@@ -1,40 +1,19 @@
 "use client";
 
-import {
-  ArrowLeft,
-  BellRing,
-  CalendarCheck,
-  CalendarPlus,
-  Check,
-  Clock,
-  Hourglass,
-  LoaderCircle,
-  MapPin,
-  MessageCircle,
-  Stethoscope,
-} from "lucide-react";
+import { ArrowLeft, Check, Clock, MapPin, Stethoscope } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import type { ProcessingContext } from "@/db/enums";
 import type { PublicClinic } from "@/lib/directory";
-import { CATEGORY_LABELS, formatPrice, practitionerName } from "@/lib/format";
-import { googleCalendarUrl } from "@/lib/calendar-links";
+import { formatPrice, practitionerName } from "@/lib/format";
 import { fmtWhen, zonedDate, zonedTime } from "@/lib/datefmt";
-import { Avatar, Button, Field, Input, Select, Textarea, buttonClass, cx } from "../ui";
+import { Avatar, Field, Select, cx } from "../ui";
+import { DetailsStep } from "./DetailsStep";
+import { DoneStep, type BookedAppointment } from "./DoneStep";
+import { ServiceStep } from "./ServiceStep";
 import { SlotPicker, type PickedSlot } from "./SlotPicker";
+import { WaitlistOffer } from "./WaitlistOffer";
 
 type Step = "service" | "time" | "details" | "done";
-
-type BookedAppointment = {
-  id: string;
-  status: "requested" | "scheduled";
-  confirmation: "pending" | "confirmed";
-  start: string;
-  end: string;
-  manageUrl: string;
-  icsUrl: string;
-  practitioner: { name: string };
-  location: { name: string; address: string; city: string };
-  service: { name: string };
-};
 
 export type BookingInitial = {
   serviceId?: string;
@@ -49,11 +28,20 @@ export function BookingFlow({
   initial,
   today,
   embedded = false,
+  context,
+  practiceRef = null,
 }: {
   clinic: PublicClinic;
   initial: BookingInitial;
   today: string;
   embedded?: boolean;
+  /**
+   * Who is controller for this booking, decided by the server page (processingContextFor): the
+   * embed and links carrying a valid practice ref are 'practice', other Sorriso pages 'marketplace'.
+   */
+  context: ProcessingContext;
+  /** The page's verified practice ref (signPracticeRef), posted with the booking; null on the marketplace. */
+  practiceRef?: string | null;
 }) {
   const tz = clinic.org.timezone;
   const practitionerById = useMemo(() => new Map(clinic.practitioners.map((p) => [p.id, p])), [clinic]);
@@ -215,7 +203,15 @@ export function BookingFlow({
                 setStep("details");
               }}
             />
-            <WaitlistOffer clinic={clinic} serviceId={service.id} practitionerId={practitionerId} locationId={locationId} today={today} />
+            <WaitlistOffer
+              clinic={clinic}
+              serviceId={service.id}
+              practitionerId={practitionerId}
+              locationId={locationId}
+              today={today}
+              context={context}
+              practiceRef={practiceRef}
+            />
           </div>
         ) : null}
 
@@ -226,6 +222,8 @@ export function BookingFlow({
             slot={slot}
             waitlistEntryId={initial.waitlistEntryId}
             source={embedded ? "widget" : "online"}
+            context={context}
+            practiceRef={practiceRef}
             onBack={() => setStep("time")}
             onBooked={(a) => {
               setBooked(a);
@@ -310,463 +308,5 @@ function SummaryRow({ icon, label, children }: { icon: React.ReactNode; label: s
         <div className="font-semibold text-slate-800">{children}</div>
       </div>
     </div>
-  );
-}
-
-function ServiceStep({
-  services,
-  selected,
-  onSelect,
-}: {
-  services: PublicClinic["services"];
-  selected: string;
-  onSelect: (id: string) => void;
-}) {
-  const groups = new Map<string, PublicClinic["services"]>();
-  for (const s of services) groups.set(s.category, [...(groups.get(s.category) ?? []), s]);
-  return (
-    <div className="animate-fade-up space-y-5">
-      <h2 className="text-lg font-bold">What do you need?</h2>
-      {[...groups.entries()].map(([category, list]) => (
-        <div key={category}>
-          <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">{CATEGORY_LABELS[category] ?? category}</p>
-          <div className="grid gap-2">
-            {list.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => onSelect(s.id)}
-                className={cx(
-                  "flex items-start justify-between gap-4 rounded-xl bg-white p-4 text-left ring-1 transition hover:ring-brand-400",
-                  selected === s.id ? "ring-2 ring-brand-600" : "ring-slate-200",
-                )}
-              >
-                <div>
-                  <div className="font-semibold text-slate-900">{s.name}</div>
-                  {s.description ? <div className="mt-0.5 text-sm text-slate-500">{s.description}</div> : null}
-                </div>
-                <div className="shrink-0 text-right">
-                  <div className="font-bold text-slate-900">{formatPrice(s.priceCents)}</div>
-                  <div className="text-xs text-slate-500">{s.durationMinutes} min</div>
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-type FormState = {
-  firstName: string;
-  lastName: string;
-  email: string;
-  phone: string;
-  birthDate: string;
-  note: string;
-  isNewPatient: "yes" | "no";
-  preferredChannel: "sms" | "whatsapp" | "email";
-  locale: "it" | "en";
-  consent: boolean;
-  website: string;
-};
-
-function DetailsStep({
-  clinic,
-  service,
-  slot,
-  waitlistEntryId,
-  source,
-  onBack,
-  onBooked,
-  onSlotTaken,
-}: {
-  clinic: PublicClinic;
-  service: PublicClinic["services"][number];
-  slot: PickedSlot;
-  waitlistEntryId?: string;
-  source: "online" | "widget";
-  onBack: () => void;
-  onBooked: (a: BookedAppointment) => void;
-  onSlotTaken: () => void;
-}) {
-  const [form, setForm] = useState<FormState>(() => ({
-    firstName: "",
-    lastName: "",
-    email: "",
-    phone: "",
-    birthDate: "",
-    note: "",
-    isNewPatient: "yes",
-    preferredChannel: "sms",
-    locale: "it",
-    consent: false,
-    website: "",
-  }));
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((f) => ({ ...f, [key]: value }));
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    const errs: Record<string, string> = {};
-    if (!form.firstName.trim()) errs.firstName = "Required";
-    if (!form.lastName.trim()) errs.lastName = "Required";
-    if (!form.email.trim() && !form.phone.trim()) errs.phone = "Add a mobile number or an email";
-    if (form.preferredChannel !== "email" && !form.phone.trim()) errs.phone = "Needed for SMS / WhatsApp reminders";
-    if (form.preferredChannel === "email" && !form.email.trim()) errs.email = "Needed for email reminders";
-    if (!form.consent) errs.consent = "Please accept to continue";
-    setErrors(errs);
-    if (Object.keys(errs).length) return;
-
-    setSubmitting(true);
-    try {
-      const res = await fetch(`/api/v1/clinics/${clinic.org.slug}/appointments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          serviceId: service.id,
-          practitionerId: slot.practitionerId,
-          locationId: slot.locationId,
-          start: slot.start,
-          note: form.note || null,
-          isNewPatient: form.isNewPatient === "yes",
-          waitlistEntryId: waitlistEntryId ?? null,
-          source,
-          website: form.website,
-          patient: {
-            firstName: form.firstName,
-            lastName: form.lastName,
-            email: form.email || null,
-            phone: form.phone || null,
-            birthDate: form.birthDate || null,
-            locale: form.locale,
-            preferredChannel: form.preferredChannel,
-            smsOptIn: true,
-            emailOptIn: true,
-          },
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok) {
-        const code = json?.error?.code as string | undefined;
-        if (code === "practitioner_busy" || code === "no_room" || code === "too_soon" || code === "time_off") {
-          setError("Sorry, someone just booked that time. Please pick another slot.");
-          setTimeout(onSlotTaken, 1800);
-        } else if (json?.error?.issues) {
-          const fieldErrors: Record<string, string> = {};
-          for (const issue of json.error.issues as { path: string; message: string }[])
-            fieldErrors[issue.path.replace("patient.", "")] = issue.message;
-          setErrors(fieldErrors);
-          setError("Please check the highlighted fields.");
-        } else {
-          setError(json?.error?.message ?? "Booking failed. Please try again.");
-        }
-        return;
-      }
-      onBooked(json.appointment);
-    } catch {
-      setError("Network error. Please try again.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <form onSubmit={submit} className="animate-fade-up space-y-5" noValidate>
-      <button
-        type="button"
-        onClick={onBack}
-        className="inline-flex items-center gap-1 text-sm font-semibold text-slate-500 hover:text-slate-800"
-      >
-        <ArrowLeft size={15} /> Change time
-      </button>
-      <h2 className="text-lg font-bold">Your details</h2>
-
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="First name" error={errors.firstName}>
-          <Input value={form.firstName} onChange={(e) => set("firstName", e.target.value)} autoComplete="given-name" />
-        </Field>
-        <Field label="Last name" error={errors.lastName}>
-          <Input value={form.lastName} onChange={(e) => set("lastName", e.target.value)} autoComplete="family-name" />
-        </Field>
-        <Field label="Mobile number" error={errors.phone} hint="For your reminder. Reply SI/YES to confirm.">
-          <Input
-            value={form.phone}
-            onChange={(e) => set("phone", e.target.value)}
-            type="tel"
-            inputMode="tel"
-            placeholder="+39 333 123 4567"
-            autoComplete="tel"
-          />
-        </Field>
-        <Field label="Email" error={errors.email}>
-          <Input value={form.email} onChange={(e) => set("email", e.target.value)} type="email" autoComplete="email" />
-        </Field>
-        <Field label="Date of birth" hint="Optional" error={errors.birthDate}>
-          <Input value={form.birthDate} onChange={(e) => set("birthDate", e.target.value)} type="date" />
-        </Field>
-        <Field label="First visit at this practice?">
-          <Select value={form.isNewPatient} onChange={(e) => set("isNewPatient", e.target.value as "yes" | "no")}>
-            <option value="yes">Yes, I&apos;m a new patient</option>
-            <option value="no">No, I&apos;ve been here before</option>
-          </Select>
-        </Field>
-      </div>
-
-      <div>
-        <p className="mb-2 text-[13px] font-semibold text-slate-700">Remind me by</p>
-        <div className="grid grid-cols-3 gap-2">
-          {(
-            [
-              ["sms", "SMS", <MessageCircle key="i" size={16} />],
-              ["whatsapp", "WhatsApp", <MessageCircle key="i" size={16} />],
-              ["email", "Email", <BellRing key="i" size={16} />],
-            ] as const
-          ).map(([value, label, icon]) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => set("preferredChannel", value)}
-              className={cx(
-                "flex items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-semibold ring-1 transition",
-                form.preferredChannel === value
-                  ? "bg-brand-50 text-brand-800 ring-2 ring-brand-600"
-                  : "bg-white text-slate-700 ring-slate-200 hover:ring-slate-300",
-              )}
-            >
-              {icon}
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="grid gap-4 sm:grid-cols-[1fr_180px]">
-        <Field label="Anything the practice should know?" hint="Optional — e.g. pain, anxiety, previous X-rays">
-          <Textarea value={form.note} onChange={(e) => set("note", e.target.value)} rows={2} maxLength={1000} />
-        </Field>
-        <Field label="Messages language">
-          <Select value={form.locale} onChange={(e) => set("locale", e.target.value as "it" | "en")}>
-            <option value="it">Italiano</option>
-            <option value="en">English</option>
-          </Select>
-        </Field>
-      </div>
-
-      {/* Honeypot */}
-      <input
-        type="text"
-        tabIndex={-1}
-        autoComplete="off"
-        value={form.website}
-        onChange={(e) => set("website", e.target.value)}
-        className="hidden"
-        aria-hidden
-      />
-
-      <label className="flex items-start gap-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
-        <input
-          type="checkbox"
-          checked={form.consent}
-          onChange={(e) => set("consent", e.target.checked)}
-          className="mt-0.5 h-4 w-4 rounded accent-brand-700"
-        />
-        <span>
-          I agree that {clinic.org.name} processes my data to manage this appointment and sends me reminders.
-          {errors.consent ? <span className="block text-xs font-medium text-red-600">{errors.consent}</span> : null}
-        </span>
-      </label>
-
-      {error ? <p className="rounded-xl bg-red-50 p-3 text-sm font-medium text-red-700">{error}</p> : null}
-
-      <Button type="submit" size="lg" className="w-full sm:w-auto" disabled={submitting}>
-        {submitting ? <LoaderCircle size={18} className="animate-spin" /> : <CalendarCheck size={18} />}
-        {clinic.booking.requireApproval ? "Request appointment" : "Confirm booking"}
-      </Button>
-      {clinic.booking.requireApproval ? (
-        <p className="text-xs text-slate-500">This practice confirms online requests personally, usually within a few hours.</p>
-      ) : null}
-    </form>
-  );
-}
-
-function DoneStep({ appointment, clinic }: { appointment: BookedAppointment; clinic: PublicClinic }) {
-  const tz = clinic.org.timezone;
-  const when = fmtWhen(appointment.start, tz);
-  const requested = appointment.status === "requested";
-  return (
-    <div className="animate-fade-up mx-auto max-w-lg py-4 text-center">
-      <div
-        className={cx(
-          "mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full",
-          requested ? "bg-amber-100 text-amber-700" : "bg-brand-100 text-brand-700",
-        )}
-      >
-        {requested ? <Hourglass size={30} /> : <Check size={34} strokeWidth={3} />}
-      </div>
-      <h2 className="text-2xl font-bold">{requested ? "Request sent!" : "You're booked!"}</h2>
-      <p className="mt-2 text-slate-600">
-        {requested
-          ? `${clinic.org.name} will confirm your request shortly. You'll get an email as soon as they do.`
-          : appointment.confirmation === "confirmed"
-            ? "We've sent you a confirmation and will remind you shortly before the visit."
-            : "We've sent you a confirmation. We'll remind you before the visit — just reply SI or YES to confirm."}
-      </p>
-      <div className="mt-6 rounded-2xl bg-slate-50 p-5 text-left ring-1 ring-slate-200/70">
-        <p className="font-bold">{appointment.service.name}</p>
-        <p className="mt-1 text-sm text-slate-600">{when}</p>
-        <p className="mt-1 text-sm text-slate-600">
-          {appointment.practitioner.name} · {appointment.location.name}, {appointment.location.address},{" "}
-          {appointment.location.city}
-        </p>
-      </div>
-      <div className="mt-5 flex flex-wrap justify-center gap-2">
-        <a className={buttonClass("secondary")} href={appointment.icsUrl}>
-          <CalendarPlus size={16} /> Apple / Outlook
-        </a>
-        <a
-          className={buttonClass("secondary")}
-          target="_blank"
-          rel="noreferrer"
-          href={googleCalendarUrl({
-            title: `${appointment.service.name} — ${clinic.org.name}`,
-            start: new Date(appointment.start),
-            end: new Date(appointment.end),
-            details: appointment.manageUrl,
-            location: `${appointment.location.address}, ${appointment.location.city}`,
-          })}
-        >
-          <CalendarPlus size={16} /> Google Calendar
-        </a>
-        <a className={buttonClass("primary")} href={appointment.manageUrl}>
-          Manage appointment
-        </a>
-      </div>
-    </div>
-  );
-}
-
-function WaitlistOffer({
-  clinic,
-  serviceId,
-  practitionerId,
-  locationId,
-  today,
-}: {
-  clinic: PublicClinic;
-  serviceId: string;
-  practitionerId: string;
-  locationId: string;
-  today: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const [state, setState] = useState<"idle" | "sending" | "done">("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState({
-    earliestDate: today,
-    latestDate: "",
-    partOfDay: "any",
-    firstName: "",
-    lastName: "",
-    phone: "",
-    email: "",
-  });
-
-  if (!open)
-    return (
-      <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-slate-300 p-4">
-        <p className="text-sm text-slate-600">
-          <span className="font-semibold text-slate-800">Nothing suitable?</span> Join the waitlist — we&apos;ll text you
-          the moment an earlier slot frees up.
-        </p>
-        <Button type="button" variant="secondary" size="sm" onClick={() => setOpen(true)}>
-          Join waitlist
-        </Button>
-      </div>
-    );
-
-  if (state === "done")
-    return (
-      <div className="mt-5 rounded-xl bg-brand-50 p-4 text-sm font-medium text-brand-800">
-        You&apos;re on the waitlist. If a matching slot opens up we&apos;ll message you straight away — first to book gets it.
-      </div>
-    );
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setState("sending");
-    const res = await fetch(`/api/v1/clinics/${clinic.org.slug}/waitlist`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        serviceId,
-        practitionerId: practitionerId || null,
-        locationId: locationId || null,
-        earliestDate: form.earliestDate,
-        latestDate: form.latestDate || form.earliestDate,
-        partOfDay: form.partOfDay,
-        patient: {
-          firstName: form.firstName,
-          lastName: form.lastName,
-          phone: form.phone || null,
-          email: form.email || null,
-          locale: "it",
-        },
-      }),
-    }).catch(() => null);
-    if (!res?.ok) {
-      const json = await res?.json().catch(() => null);
-      setError(json?.error?.issues?.[0]?.message ?? json?.error?.message ?? "Could not join the waitlist.");
-      setState("idle");
-      return;
-    }
-    setState("done");
-  }
-
-  return (
-    <form onSubmit={submit} className="mt-5 space-y-3 rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200">
-      <p className="text-sm font-semibold">Waitlist — tell us when you could come</p>
-      <div className="grid gap-3 sm:grid-cols-3">
-        <Field label="From">
-          <Input type="date" min={today} value={form.earliestDate} onChange={(e) => setForm({ ...form, earliestDate: e.target.value })} required />
-        </Field>
-        <Field label="Until">
-          <Input type="date" min={form.earliestDate} value={form.latestDate} onChange={(e) => setForm({ ...form, latestDate: e.target.value })} required />
-        </Field>
-        <Field label="Time of day">
-          <Select value={form.partOfDay} onChange={(e) => setForm({ ...form, partOfDay: e.target.value })}>
-            <option value="any">Any time</option>
-            <option value="morning">Mornings</option>
-            <option value="afternoon">Afternoons</option>
-          </Select>
-        </Field>
-        <Field label="First name">
-          <Input value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} required />
-        </Field>
-        <Field label="Last name">
-          <Input value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} required />
-        </Field>
-        <Field label="Mobile">
-          <Input type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="+39…" />
-        </Field>
-      </div>
-      <Field label="Email (optional)">
-        <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-      </Field>
-      {error ? <p className="text-sm font-medium text-red-600">{error}</p> : null}
-      <div className="flex gap-2">
-        <Button type="submit" size="sm" disabled={state === "sending"}>
-          {state === "sending" ? <LoaderCircle size={15} className="animate-spin" /> : null} Notify me
-        </Button>
-        <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
-          Cancel
-        </Button>
-      </div>
-    </form>
   );
 }

@@ -2,10 +2,10 @@
 
 import { Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { runRemindersNow, saveReminderSettings } from "@/app/dashboard/actions";
+import { runRemindersNow, saveReminderSettings } from "@/app/dashboard/actions/reminders";
 import type { ReminderRule } from "@/db/schema";
 import { Button, Select } from "../ui";
-import { useRunAction } from "./AppointmentDrawer";
+import { useRunAction } from "./useRunAction";
 
 type Settings = {
   rules: ReminderRule[];

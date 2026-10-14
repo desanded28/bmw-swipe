@@ -3,14 +3,20 @@
 import { CalendarPlus, CalendarX, Check, LoaderCircle, RefreshCw } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import type { AppointmentStatus } from "@/db/enums";
+import { useLocale } from "@/i18n/provider";
 import { googleCalendarUrl } from "@/lib/calendar-links";
 import { fmtWhen } from "@/lib/datefmt";
 import { Button, Textarea, buttonClass, cx } from "../ui";
+import type { ManageSlotProps } from "./contracts";
+import { ManageFormsCard } from "./ManageFormsCard";
+import { ManagePrivacyCard } from "./ManagePrivacyCard";
 import { SlotPicker, type PickedSlot } from "./SlotPicker";
 
 export type ManageData = {
   token: string;
-  status: string;
+  appointmentId: string;
+  status: AppointmentStatus;
   confirmation: string;
   start: string;
   end: string;
@@ -36,6 +42,7 @@ type Panel = "confirm" | "cancel" | "reschedule" | null;
 
 export function ManageAppointment({ data, initialPanel }: { data: ManageData; initialPanel: Panel }) {
   const router = useRouter();
+  const locale = useLocale();
   // Links in reminders carry ?do=…; only honour actions that are actually allowed.
   const allowed =
     (initialPanel === "confirm" && data.status === "scheduled" && data.confirmation !== "confirmed") ||
@@ -74,7 +81,22 @@ export function ManageAppointment({ data, initialPanel }: { data: ManageData; in
     }
   }
 
-  if (!upcoming) return null;
+  // Cards other packages fill in (privacy: WP4, forms: WP8); shown for past visits too.
+  const slotProps: ManageSlotProps = {
+    token: data.token,
+    locale,
+    orgSlug: data.clinicSlug,
+    appointmentId: data.appointmentId,
+    status: data.status,
+  };
+  const cards = (
+    <>
+      <ManagePrivacyCard {...slotProps} />
+      <ManageFormsCard {...slotProps} />
+    </>
+  );
+
+  if (!upcoming) return cards;
 
   return (
     <div className="space-y-4">
@@ -189,6 +211,8 @@ export function ManageAppointment({ data, initialPanel }: { data: ManageData; in
           ) : null}
         </div>
       ) : null}
+
+      {cards}
     </div>
   );
 }

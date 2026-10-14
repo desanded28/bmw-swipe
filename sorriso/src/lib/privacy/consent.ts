@@ -13,6 +13,7 @@ import {
   type Patient,
   type ProcessingContext,
 } from "@/db/schema";
+import { shownLocale } from "@/i18n/registry";
 import { audit, type AuditEvent } from "../audit";
 import { newId } from "../ids";
 import { clientIpHash } from "../rate-limit";
@@ -210,7 +211,8 @@ export async function recordConsent(tx: Tx, i: RecordConsentInput): Promise<stri
     granted: i.granted,
     textKey: consentTextKey(i.purpose),
     textVersion: CONSENT_TEXT_VERSION[i.purpose],
-    locale: i.locale,
+    // The language the text was shown in: a locale without its own consent text showed the English one.
+    locale: shownLocale(i.locale, "consents", `${i.purpose}.label`),
     method: i.method,
     source: i.source,
     actorRelation,

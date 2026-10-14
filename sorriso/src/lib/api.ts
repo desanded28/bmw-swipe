@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { db } from "@/db";
 import { apiKeys, organizations, type ApiKey, type ApiScope, type Organization } from "@/db/schema";
-import { BookingError } from "./booking";
+import { BookingError, bookingRuleMessage } from "./booking";
 import { newId, newToken, sha256 } from "./ids";
 import { logError } from "./log";
 
@@ -34,6 +34,11 @@ export function handleApiError(err: unknown) {
     });
   }
   if (err instanceof BookingError) {
+    // A failed privacy or relation rule: 422 with the rule's own code (e.g. guardian_required),
+    // an English fallback text and the form field it is about.
+    if (err.code === "invalid" && err.reason) {
+      return apiError(422, err.reason, bookingRuleMessage(err.reason), err.field ? { field: err.field } : {});
+    }
     const status = err.code === "not_found" ? 404 : err.code === "invalid" ? 422 : 409;
     return apiError(status, err.code, err.message);
   }

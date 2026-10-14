@@ -1,4 +1,5 @@
 import type { Locale } from "@/i18n/config";
+import { APP_NAME } from "../config";
 
 /**
  * The shared email layout: a coloured header with the sender's name, a greeting, an intro
@@ -9,8 +10,10 @@ import type { Locale } from "@/i18n/config";
  * pass already-translated, already-formatted strings (this module does no i18n). Every string
  * is HTML-escaped here, so pass plain text, never markup.
  *
- * The signature is frozen. WP3 owns the implementation (html lang and Content-Language from
- * `locale`, the privacy footer, List-Unsubscribe are added around it, not by callers).
+ * The signature is frozen (fields may only be added, as optional ones). WP3 owns the
+ * implementation and adds, without callers changing: html lang from `locale` (unused today, so
+ * the output is byte-identical to the old templates.ts layout), the Content-Language and
+ * List-Unsubscribe headers, and the standard privacy footer.
  */
 
 export type EmailButton = { label: string; url: string; variant?: "primary" | "secondary" | "danger" };
@@ -20,8 +23,8 @@ export type EmailLayoutInput = {
   locale: Locale;
   /** Header and primary-button colour, "#rrggbb"; anything else falls back to the Sorriso teal. */
   brandColor: string;
-  /** Sender shown in the coloured header: the practice's name, or Sorriso's. */
-  brandName: string;
+  /** Sender shown in the coloured header: the practice's name; defaults to Sorriso's. */
+  brandName?: string;
   /** First paragraph. */
   intro: string;
   /** "Hi Giulia," — omitted when not given. */
@@ -68,7 +71,7 @@ export function renderEmailLayout(opts: EmailLayoutInput): { html: string; text:
   const html = `<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
 ${preheader}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
-<tr><td style="background:${color};padding:20px 28px;color:#fff;font-size:18px;font-weight:700">${esc(opts.brandName)}</td></tr>
+<tr><td style="background:${color};padding:20px 28px;color:#fff;font-size:18px;font-weight:700">${esc(opts.brandName ?? APP_NAME)}</td></tr>
 <tr><td style="padding:28px">
 ${greeting}<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">${esc(opts.intro)}</p>
 ${

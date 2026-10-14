@@ -8,6 +8,7 @@ import { CLIENT_NAMESPACES } from "@/i18n/namespaces";
 import { ClientMessages } from "@/i18n/ClientMessages";
 import { getStaffLocale } from "@/i18n/server";
 import { requireStaff } from "@/lib/auth";
+import { permissionsFor } from "@/lib/permissions";
 import { enforceDashboardGates } from "@/lib/privacy/gates";
 import { jakarta } from "../fonts";
 import "../globals.css";
@@ -58,6 +59,8 @@ export default async function DashboardLayout({ children }: { children: React.Re
               <Sidebar
                 user={s.user}
                 role={s.role}
+                permissions={permissionsFor(s.role)}
+                platformAdmin={s.user.isPlatformAdmin}
                 org={{ id: s.org.id, name: s.org.name, slug: s.org.slug, brandColor: s.org.brandColor }}
                 orgs={s.orgs.map((o) => ({ id: o.org.id, name: o.org.name }))}
                 counts={{ attention: attention?.n ?? 0, requests: requests?.n ?? 0, waitlist: waiting?.n ?? 0 }}

@@ -47,6 +47,7 @@ export function proxy(req: NextRequest): NextResponse {
 }
 
 export const config = {
-  // Everything except Next internals, /.well-known and files with an extension (widget.js, icon.svg…).
-  matcher: ["/((?!_next/|\\.well-known/|.*\\.[A-Za-z0-9]+$).*)"],
+  // Everything except Next internals, /.well-known and files with an extension (widget.js, icon.svg…),
+  // plus every API route, extension or not (the ICS feeds end in .ics and need the security headers).
+  matcher: ["/((?!_next/|\\.well-known/|.*\\.[A-Za-z0-9]+$).*)", "/api/:path*"],
 };

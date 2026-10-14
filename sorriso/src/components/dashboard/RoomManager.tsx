@@ -2,9 +2,9 @@
 
 import { Armchair, Plus } from "lucide-react";
 import { useState } from "react";
-import { addRoom, updateRoom } from "@/app/dashboard/actions";
+import { addRoom, updateRoom } from "@/app/dashboard/actions/locations";
 import { Button, Input, cx } from "../ui";
-import { useRunAction } from "./AppointmentDrawer";
+import { useRunAction } from "./useRunAction";
 
 export function RoomManager({ locationId, rooms }: { locationId: string; rooms: { id: string; name: string; active: boolean }[] }) {
   const { run, pending } = useRunAction();

@@ -4,6 +4,7 @@ import { and, asc, eq, like, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { patients } from "@/db/schema";
+import { isLocale } from "@/i18n/config";
 import { normalizePhone } from "@/lib/phone";
 import { fail, guard, ok, optional, staff, str, type ActionResult } from "./_shared";
 
@@ -52,6 +53,8 @@ export async function updatePatient(id: string, _prev: unknown, fd: FormData): P
     if (phoneRaw && !phone) return fail("That phone number doesn't look right.");
     const email = str(fd, "email").toLowerCase() || null;
     if (email && !z.email().safeParse(email).success) return fail("That email doesn't look right.");
+    // Any of the message languages; anything else keeps the patient's current one.
+    const locale = str(fd, "locale");
     await db
       .update(patients)
       .set({
@@ -60,7 +63,7 @@ export async function updatePatient(id: string, _prev: unknown, fd: FormData): P
         phone,
         email,
         birthDate: optional(fd, "birthDate"),
-        locale: str(fd, "locale") === "en" ? "en" : "it",
+        ...(isLocale(locale) ? { locale } : {}),
         preferredChannel: (["sms", "whatsapp", "email"].includes(str(fd, "preferredChannel"))
           ? str(fd, "preferredChannel")
           : "sms") as "sms" | "whatsapp" | "email",

@@ -3,14 +3,15 @@
 import { Ban, Check, ChevronLeft, ChevronRight, CircleAlert, Clock, Hourglass, Plus, UserX } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Fragment, useEffect, useRef, useState } from "react";
-import { moveAppointment } from "@/app/dashboard/actions";
+import { moveAppointment } from "@/app/dashboard/actions/appointments";
 import { fmtDay } from "@/lib/datefmt";
 import { addDays, minutesToHHMM } from "@/lib/time";
 import { Button, Select, cx } from "../ui";
 import { useNow } from "../useNow";
-import { AppointmentDrawer, localDate, localTime, useRunAction } from "./AppointmentDrawer";
+import { AppointmentDrawer, localDate, localTime } from "./AppointmentDrawer";
 import { NewAppointmentDrawer, type NewAppointmentDefaults } from "./NewAppointmentDrawer";
 import type { ApptDTO, Resources } from "./types";
+import { useRunAction } from "./useRunAction";
 
 export type HoursWindow = { practitionerId: string; locationId: string; date: string; start: number; end: number };
 export type Block = {

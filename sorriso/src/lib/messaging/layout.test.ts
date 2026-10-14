@@ -43,6 +43,12 @@ describe("renderEmailLayout", () => {
     expect(renderEmailLayout({ ...input, brandColor: "red;x:url(y)" }).html).toContain("background:#0d9488");
   });
 
+  it("shows Sorriso in the header unless a sender name is given", () => {
+    expect(renderEmailLayout(input).html).toContain("font-weight:700\">Praxis &lt;Müller&gt;</td>");
+    const { brandName, ...noName } = input;
+    expect(renderEmailLayout(noName).html).toContain("font-weight:700\">Sorriso</td>");
+  });
+
   it("has no remote images", () => {
     expect(renderEmailLayout({ ...input, greeting: "Hi" }).html).not.toMatch(/<img/i);
   });

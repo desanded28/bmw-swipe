@@ -1,24 +1,37 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { locations, organizations, practitioners, services, waitlist } from "@/db/schema";
-import { apiError, handleApiError, json, preflight, rateLimit } from "@/lib/api";
-import { upsertPatient } from "@/lib/booking";
-import { newId } from "@/lib/ids";
+import { locations, organizations, practitioners, services } from "@/db/schema";
+import { apiError, authenticateApiKey, handleApiError, json, preflight, rateLimit } from "@/lib/api";
+import { bookingRuleMessage } from "@/lib/booking";
+import { processingContextFor } from "@/lib/privacy/context";
+import { canAcceptOnlineBookings } from "@/lib/privacy/gates";
 import { waitlistInputSchema } from "@/lib/validation";
+import { joinWaitlist } from "@/lib/waitlist";
 
 export const OPTIONS = preflight;
 
-/** POST /api/v1/clinics/:slug/waitlist — get notified when a matching slot frees up. */
+/**
+ * POST /api/v1/clinics/:slug/waitlist — get notified when a matching slot frees up.
+ * Like booking: calls without an API key must send `privacy` (422 privacy_required), and the
+ * processing context is decided here (API key or valid practice ref: 'practice'; else 'marketplace').
+ */
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   try {
     const { slug } = await params;
     const [org] = await db.select().from(organizations).where(eq(organizations.slug, slug));
     if (!org) return apiError(404, "not_found", "Clinic not found.");
+
+    const partner = (await authenticateApiKey(req))?.org ?? null;
+    if (partner && partner.id !== org.id) return apiError(403, "forbidden", "This API key belongs to another practice.");
     if (!rateLimit(req, "waitlist", 5, 10 * 60_000)) return apiError(429, "rate_limited", "Too many requests.");
+    if (!(await canAcceptOnlineBookings(org))) return apiError(403, "not_accepting", bookingRuleMessage("not_accepting"));
 
     const input = waitlistInputSchema.parse(await req.json());
     if (input.website) return apiError(422, "validation_error", "Invalid submission.");
     if (input.latestDate < input.earliestDate) return apiError(422, "validation_error", "The date range is reversed.");
+    if (!partner && !input.privacy) {
+      return apiError(422, "privacy_required", bookingRuleMessage("privacy_required"), { field: "privacy" });
+    }
 
     const [service] = await db
       .select({ id: services.id })
@@ -37,26 +50,45 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
       if (!l) return apiError(422, "validation_error", "Unknown office.");
     }
 
-    const id = newId();
-    await db.transaction(async (tx) => {
-      const { patient } = await upsertPatient(tx, org.id, {
+    const processingContext = processingContextFor({
+      source: partner ? "api" : "waitlist",
+      viaApiKey: Boolean(partner),
+      embedded: false,
+      practiceRef: input.practiceRef,
+      orgId: org.id,
+    });
+    const { privacy } = input;
+    const { id } = await joinWaitlist({
+      orgId: org.id,
+      serviceId: input.serviceId,
+      practitionerId: input.practitionerId,
+      locationId: input.locationId,
+      earliestDate: input.earliestDate,
+      latestDate: input.latestDate,
+      partOfDay: input.partOfDay,
+      note: input.note,
+      patient: {
         ...input.patient,
         email: input.patient.email || null,
         phone: input.patient.phone || null,
         birthDate: input.patient.birthDate || null,
-      }, "public");
-      await tx.insert(waitlist).values({
-        id,
-        orgId: org.id,
-        patientId: patient.id,
-        serviceId: input.serviceId,
-        practitionerId: input.practitionerId || null,
-        locationId: input.locationId || null,
-        earliestDate: input.earliestDate,
-        latestDate: input.latestDate,
-        partOfDay: input.partOfDay,
-        note: input.note || null,
-      });
+      },
+      processingContext,
+      relation: input.relation,
+      privacy: privacy
+        ? {
+            choices: {
+              platformConsent: privacy.platformConsent,
+              whatsapp: privacy.whatsapp,
+              feedback: privacy.feedback,
+              marketing: privacy.marketing,
+            },
+            noticeVersion: privacy.noticeVersion,
+            locale: privacy.locale ?? input.patient.locale ?? "it",
+            source: partner ? "api" : "waitlist",
+            headers: req.headers,
+          }
+        : undefined,
     });
     return json({ waitlistEntry: { id } }, { status: 201 });
   } catch (err) {

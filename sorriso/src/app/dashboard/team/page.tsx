@@ -5,7 +5,7 @@ import { PractitionerForm } from "@/components/dashboard/PractitionerForm";
 import { TimeOffForm, TimeOffList } from "@/components/dashboard/TimeOff";
 import { Avatar, Badge, Card, PageHeader } from "@/components/ui";
 import { db } from "@/db";
-import { locations, practitionerServices, practitioners, rooms, schedules, services, timeOff } from "@/db/schema";
+import { locations, memberships, practitionerServices, practitioners, rooms, schedules, services, timeOff, users } from "@/db/schema";
 import { MANAGERS, requireStaff } from "@/lib/auth";
 import { practitionerName } from "@/lib/format";
 import { minutesToHHMM, todayIn } from "@/lib/time";
@@ -17,10 +17,16 @@ const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 export default async function TeamPage() {
   const s = await requireStaff();
   const canManage = MANAGERS.includes(s.role);
-  const [team, locs, svcs] = await Promise.all([
+  const [team, locs, svcs, members] = await Promise.all([
     db.select().from(practitioners).where(eq(practitioners.orgId, s.org.id)).orderBy(asc(practitioners.name)),
     db.select().from(locations).where(eq(locations.orgId, s.org.id)).orderBy(asc(locations.name)),
     db.select().from(services).where(eq(services.orgId, s.org.id)).orderBy(asc(services.sortOrder)),
+    // Dashboard accounts (moved here from the settings page).
+    db
+      .select({ name: users.name, email: users.email, role: memberships.role })
+      .from(memberships)
+      .innerJoin(users, eq(users.id, memberships.userId))
+      .where(eq(memberships.orgId, s.org.id)),
   ]);
   const ids = team.map((p) => p.id);
   const locIds = locs.map((l) => l.id);
@@ -107,6 +113,20 @@ export default async function TeamPage() {
             <PractitionerForm services={svcs} offered={[]} />
           </Card>
         ) : null}
+        <Card className="p-6">
+          <h2 className="mb-3 text-lg font-bold">Team members</h2>
+          <ul className="divide-y divide-slate-100">
+            {members.map((m) => (
+              <li key={m.email} className="flex items-center justify-between py-2.5 text-sm">
+                <span>
+                  <span className="font-semibold">{m.name}</span>
+                  <span className="block text-xs text-slate-500">{m.email}</span>
+                </span>
+                <Badge tone={m.role === "owner" ? "brand" : "slate"}>{m.role}</Badge>
+              </li>
+            ))}
+          </ul>
+        </Card>
       </div>
     </div>
   );

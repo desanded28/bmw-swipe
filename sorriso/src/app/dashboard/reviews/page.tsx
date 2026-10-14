@@ -50,7 +50,7 @@ export default async function ReviewsPage() {
       ) : (
         <Card className="divide-y divide-slate-100">
           {rows.map(({ r, p }) => (
-            <div key={r.id} className={r.published ? "p-4" : "bg-slate-50 p-4 opacity-70"}>
+            <div key={r.id} className={r.status === "published" ? "p-4" : "bg-slate-50 p-4 opacity-70"}>
               <div className="flex flex-wrap items-center gap-2 text-sm">
                 <Stars value={r.rating} />
                 <span className="font-semibold">{r.authorName}</span>
@@ -58,12 +58,12 @@ export default async function ReviewsPage() {
                   <BadgeCheck size={12} /> verified
                 </span>
                 <span className="text-xs text-slate-500">· {practitionerName(p)}</span>
-                {!r.published ? <Badge tone="amber">Hidden</Badge> : null}
+                {r.status !== "published" ? <Badge tone="amber">Hidden</Badge> : null}
                 <span className="ml-auto text-xs text-slate-400">{fmtDay(zonedDate(r.createdAt, s.org.timezone), "weekday")}</span>
               </div>
               {r.comment ? <p className="mt-1.5 text-sm text-slate-700">{r.comment}</p> : null}
               {r.reply ? <p className="mt-2 rounded-lg bg-slate-50 p-2.5 text-sm text-slate-600">↳ {r.reply}</p> : null}
-              <ReviewReply id={r.id} reply={r.reply} published={r.published} canManage={canManage} />
+              <ReviewReply id={r.id} reply={r.reply} published={r.status === "published"} canManage={canManage} />
             </div>
           ))}
         </Card>

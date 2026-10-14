@@ -2,9 +2,9 @@
 
 import { Copy } from "lucide-react";
 import { useState } from "react";
-import { rotateIcsToken } from "@/app/dashboard/actions";
+import { rotateIcsToken } from "@/app/dashboard/actions/ics";
 import { Button } from "../ui";
-import { useRunAction } from "./AppointmentDrawer";
+import { useRunAction } from "./useRunAction";
 
 /** Generates a personal calendar-feed URL and shows it once (only its hash is stored). */
 export function IcsLinkButton({ practitionerId, hasLink }: { practitionerId: string; hasLink: boolean }) {

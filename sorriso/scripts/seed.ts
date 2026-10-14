@@ -6,7 +6,7 @@
  *   npm run db:reset   # wipe + migrate + seed
  */
 import { eq } from "drizzle-orm";
-import { db } from "../src/db";
+import { db, type DB } from "../src/db";
 import {
   apiKeys,
   appointments,
@@ -40,6 +40,27 @@ import { hashPassword } from "../src/lib/password";
 import { DEFAULT_SETTINGS } from "../src/lib/settings";
 import { scheduleReminders } from "../src/lib/reminders";
 import { addDays, todayIn, zonedToUtc } from "../src/lib/time";
+import { seedCare } from "./seed/care";
+import { seedMarketplace } from "./seed/marketplace";
+import { seedPrivacy } from "./seed/privacy";
+
+/**
+ * What the core seed created, handed to the package seeds (scripts/seed/*.ts) that add their
+ * own demo data on top: marketplace (WP7), care (WP8) and privacy (WP5). Ids per practice are
+ * keyed by org id, in creation order. [frozen: fields may only be added]
+ */
+export type SeedContext = {
+  db: DB;
+  now: Date;
+  /** Every seeded practice, the flagship (Studio Dentistico Bianchi) first. */
+  orgIds: string[];
+  practitionerIds: Record<string, string[]>;
+  serviceIds: Record<string, string[]>;
+  locationIds: Record<string, string[]>;
+  patientIds: Record<string, string[]>;
+  /** Every appointment, cancelled ones included. */
+  appointmentIds: Record<string, string[]>;
+};
 
 // ---------- deterministic randomness ----------
 let seed = 20261013;
@@ -501,8 +522,20 @@ async function main() {
   const reception = { id: newId(), email: "reception@sorriso.dev", name: "Paola Verdi", passwordHash };
   await db.insert(users).values([owner, reception]);
 
+  const seedCtx: SeedContext = {
+    db,
+    now,
+    orgIds: [],
+    practitionerIds: {},
+    serviceIds: {},
+    locationIds: {},
+    patientIds: {},
+    appointmentIds: {},
+  };
+
   for (const [orgIndex, o] of ORGS.entries()) {
     const orgId = newId();
+    seedCtx.orgIds.push(orgId);
     const settings: OrgSettings = {
       ...DEFAULT_SETTINGS,
       booking: { ...DEFAULT_SETTINGS.booking, ...(o.settings ?? {}) },
@@ -616,6 +649,11 @@ async function main() {
     const patientRows = Array.from({ length: orgIndex === 0 ? 70 : 25 }, () => makePatient(orgId));
     await db.insert(patients).values(patientRows);
     const patientList = patientRows as Patient[];
+    seedCtx.locationIds[orgId] = Object.values(locIds);
+    seedCtx.serviceIds[orgId] = Object.values(svcIds);
+    seedCtx.practitionerIds[orgId] = practitionerIds;
+    seedCtx.patientIds[orgId] = patientList.map((p) => p.id);
+    seedCtx.appointmentIds[orgId] = [];
 
     // Time off examples for the flagship practice
     if (orgIndex === 0) {
@@ -729,6 +767,7 @@ async function main() {
           ctx.appointments.push(row);
         }
         await db.insert(appointments).values(row);
+        seedCtx.appointmentIds[orgId].push(id);
         if (status === "no_show") {
           patient.noShowCount += 1;
         }
@@ -834,7 +873,7 @@ async function main() {
       const pending = upcoming.filter((a) => a.confirmation === "pending").slice(0, 2);
       const texts = ["Posso venire mezz'ora più tardi?", "Devo portare le lastre di prima?"];
       for (const [i, a] of pending.entries()) {
-          const p = patientList.find((x) => x.id === a.patientId)!;
+        const p = patientList.find((x) => x.id === a.patientId)!;
         await db.update(appointments).set({ needsAttention: true }).where(eq(appointments.id, a.id));
         await db.insert(messages).values({
           id: newId(),
@@ -922,6 +961,11 @@ async function main() {
       `  ${o.name}: ${o.locations.length} office(s), ${o.practitioners.length} practitioners, ${created.length} appointments, ${reviewRows.length} reviews`,
     );
   }
+
+  // Package seeds: each adds its own demo data on top of the core seed.
+  await seedMarketplace(seedCtx);
+  await seedCare(seedCtx);
+  await seedPrivacy(seedCtx);
 
   console.log("\nDemo logins (password: demo1234)");
   console.log("  demo@sorriso.dev       owner of Studio Dentistico Bianchi, admin of Roma Smile Clinic");

@@ -18,21 +18,19 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useState } from "react";
 import {
-  appointmentMessages,
   approve,
   cancelByStaff,
   clearAttention,
   confirmByPhone,
   moveAppointment,
-  patientLink,
   recordOutcome,
   remindNow,
   saveInternalNote,
-  type ActionResult,
-} from "@/app/dashboard/actions";
+} from "@/app/dashboard/actions/appointments";
+import { issuePatientLink } from "@/app/dashboard/actions/links";
+import { appointmentMessages } from "@/app/dashboard/actions/messages";
 import type { Message } from "@/db/schema";
 import { fmtDay, zonedDate, zonedTime } from "@/lib/datefmt";
 import { formatPhone } from "@/lib/phone";
@@ -40,6 +38,7 @@ import { Badge, Button, Field, Input, Select, Textarea, cx } from "../ui";
 import { useNow } from "../useNow";
 import { useToast } from "./Toast";
 import type { ApptDTO, Resources } from "./types";
+import { useRunAction } from "./useRunAction";
 
 export const localDate = zonedDate;
 export const localTime = zonedTime;
@@ -69,21 +68,6 @@ export function StatusBadge({ a }: { a: Pick<ApptDTO, "status" | "confirmation" 
       <Clock size={12} /> Awaiting confirmation
     </Badge>
   );
-}
-
-/** Run a server action with toast feedback and refresh the page data. */
-export function useRunAction() {
-  const router = useRouter();
-  const toast = useToast();
-  const [pending, start] = useTransition();
-  const run = (fn: () => Promise<ActionResult>, after?: (r: ActionResult) => void) =>
-    start(async () => {
-      const res = await fn();
-      toast.show(res.ok ? { tone: "success", text: res.message ?? "Done." } : { tone: "error", text: res.error });
-      if (res.ok) router.refresh();
-      after?.(res);
-    });
-  return { run, pending };
 }
 
 export function AppointmentDrawer({ appt, resources, onClose }: { appt: ApptDTO; resources: Resources; onClose: () => void }) {
@@ -412,7 +396,7 @@ export function AppointmentDrawer({ appt, resources, onClose }: { appt: ApptDTO;
             type="button"
             className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-ink"
             onClick={async () => {
-              const res = await patientLink(appt.id);
+              const res = await issuePatientLink(appt.id);
               if (res.ok) window.open((res.data as { url: string }).url, "_blank", "noopener,noreferrer");
               else toast.show({ tone: "error", text: res.error });
             }}
@@ -423,7 +407,7 @@ export function AppointmentDrawer({ appt, resources, onClose }: { appt: ApptDTO;
             type="button"
             className="ml-4 text-xs font-semibold text-slate-500 hover:text-ink"
             onClick={async () => {
-              const res = await patientLink(appt.id);
+              const res = await issuePatientLink(appt.id);
               if (res.ok) {
                 await navigator.clipboard?.writeText((res.data as { url: string }).url);
                 toast.show({ tone: "success", text: "Link copied." });

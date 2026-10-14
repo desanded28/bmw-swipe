@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { processingContextFor, signPracticeRef, verifyPracticeRef, type BookingSource, type ContextInput } from "./context";
+import {
+  isFramedRequest,
+  processingContextFor,
+  signPracticeRef,
+  verifyPracticeRef,
+  type BookingSource,
+  type ContextInput,
+} from "./context";
 
 const ORG = "org_a";
 const ctx = (i: Partial<ContextInput> & { source: BookingSource }) =>
@@ -45,5 +52,15 @@ describe("practice refs", () => {
     expect(verifyPracticeRef(ORG, `${ref}x`)).toBe(false);
     expect(verifyPracticeRef(ORG, "")).toBe(false);
     expect(verifyPracticeRef(ORG, null)).toBe(false);
+  });
+});
+
+describe("isFramedRequest", () => {
+  it("counts the embed as the practice's channel only inside a frame", () => {
+    const h = (dest?: string) => new Headers(dest ? { "sec-fetch-dest": dest } : {});
+    expect(isFramedRequest(h("iframe"))).toBe(true);
+    // Opened top-level (a search result, a shared link), or by a browser that doesn't say: marketplace.
+    expect(isFramedRequest(h("document"))).toBe(false);
+    expect(isFramedRequest(h())).toBe(false);
   });
 });

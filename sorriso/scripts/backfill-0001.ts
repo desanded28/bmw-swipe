@@ -51,17 +51,27 @@ export async function backfill0001(db: DB) {
   }
 
   const feeds = await db
-    .select({ id: practitioners.id, icsToken: practitioners.icsToken, languages: practitioners.languages, spoken: practitioners.spokenLanguages })
+    .select({
+      id: practitioners.id,
+      icsToken: practitioners.icsToken,
+      icsTokenHash: practitioners.icsTokenHash,
+      languages: practitioners.languages,
+      spoken: practitioners.spokenLanguages,
+    })
     .from(practitioners);
   let icsMoved = 0;
   for (const p of feeds) {
     const patch: Partial<typeof practitioners.$inferInsert> = {};
     if (!p.icsToken.startsWith("h:")) {
-      patch.icsTokenHash = sha256Hex(p.icsToken);
       patch.icsToken = `h:${p.id}`;
-      patch.icsEnabled = true;
-      patch.icsTokenExpiresAt = new Date(Date.now() + 365 * 86_400_000);
-      icsMoved++;
+      // A feed already issued under the hash (rotateIcsToken) is the live one: re-running the backfill
+      // only clears the leftover plaintext, never replaces that feed, re-enables it or extends it.
+      if (!p.icsTokenHash) {
+        patch.icsTokenHash = sha256Hex(p.icsToken);
+        patch.icsEnabled = true;
+        patch.icsTokenExpiresAt = new Date(Date.now() + 365 * 86_400_000);
+        icsMoved++;
+      }
     }
     if (!p.spoken.length) patch.spokenLanguages = parseSpokenLanguages(p.languages);
     if (Object.keys(patch).length) await db.update(practitioners).set(patch).where(eq(practitioners.id, p.id));

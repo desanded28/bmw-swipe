@@ -2,9 +2,9 @@
 
 import { Send } from "lucide-react";
 import { useState } from "react";
-import { simulateReply } from "@/app/dashboard/actions";
+import { simulateReply } from "@/app/dashboard/actions/messages";
 import { Button, Field, Input, Select } from "../ui";
-import { useRunAction } from "./AppointmentDrawer";
+import { useRunAction } from "./useRunAction";
 
 export function ReplySimulator({ patients }: { patients: { phone: string; label: string }[] }) {
   const { run, pending } = useRunAction();

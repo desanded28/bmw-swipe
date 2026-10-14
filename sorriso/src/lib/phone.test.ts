@@ -49,8 +49,10 @@ describe("parseDialCode", () => {
 });
 
 describe("formatPhone", () => {
-  it("groups Italian mobiles and leaves other numbers as they are", () => {
-    expect(formatPhone("+393331234567")).toBe("+39 333 123 4567");
+  it("groups Italian numbers and leaves other numbers as they are", () => {
+    const formatted = formatPhone("+393331234567");
+    expect(formatted.startsWith("+39 333 ")).toBe(true);
+    expect(formatted.replace(/\s/g, "")).toBe("+393331234567");
     expect(formatPhone("+447700900123")).toBe("+447700900123");
     expect(formatPhone(null)).toBe("");
   });

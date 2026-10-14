@@ -2,7 +2,13 @@ import type { AppointmentDetails } from "./appointments";
 import { appointmentLinks, canPatientCancel, canPatientReschedule } from "./appointments";
 import { fullName, practitionerName } from "./format";
 
-/** Public (patient-facing) view of an appointment. No internal notes. */
+/**
+ * Public (patient-facing) view of an appointment. No internal notes.
+ *
+ * ADD-ONLY CONTRACT (F9.1): the manage page (WP1), the privacy card (WP4) and forms/rebook (WP8)
+ * read this shape, and partner integrations receive it from the booking API. Fields may be added;
+ * never remove, rename or change the type of one.
+ */
 export function publicAppointment(d: AppointmentDetails) {
   const links = appointmentLinks(d);
   return {

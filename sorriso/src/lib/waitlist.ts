@@ -11,7 +11,8 @@ import {
   type WaitlistEntry,
 } from "@/db/schema";
 import { evaluateSlot, loadAvailabilityContext } from "./availability";
-import { canReachByEmail, canReachByPhone } from "./appointments";
+import { canReachByEmail, canReachByPhone, textChannelFor } from "./appointments";
+import { recipientFor } from "./contact";
 // booking.ts imports offerFreedSlot from here: the cycle is safe because neither module uses the
 // other's exports while loading.
 import {
@@ -93,22 +94,25 @@ export type JoinWaitlistInput = {
 export async function joinWaitlist(input: JoinWaitlistInput): Promise<{ id: string; patientId: string }> {
   const now = input.now ?? new Date();
   const context = input.processingContext ?? "practice";
+  // Only a relation the form actually asked is checked (see checkBookingRelation).
+  const relation = input.relation;
   const [org] = await db.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, input.orgId));
   if (!org) throw new BookingError("not_found", "Clinic not found.");
   // Ages are checked for the start of the range (midday UTC is that calendar day in Europe).
   const at = new Date(`${input.earliestDate}T12:00:00Z`);
 
   const id = newId();
+  // Writes inside the transaction go through `tx` only (src/db/serialize.ts: the root db deadlocks here).
   const patientId = await db.transaction(async (tx) => {
     const plan = planBookingPrivacy({
       context,
-      relation: input.relation,
+      relation,
       privacy: input.privacy,
       preferredChannel: input.patient.preferredChannel ?? (input.patient.phone ? "sms" : "email"),
       org: getPrivacy(org),
     });
-    const { patient } = await upsertPatient(tx, input.orgId, patientForBooking(input.patient, input.relation, plan, true), "public");
-    checkBookingRelation(input.relation, patient.birthDate || input.patient.birthDate, at, context, now);
+    const { patient } = await upsertPatient(tx, input.orgId, patientForBooking(input.patient, relation, plan, true), "public");
+    checkBookingRelation(relation, patient.birthDate || input.patient.birthDate, at, context, now);
     await tx.insert(waitlist).values({
       id,
       orgId: input.orgId,
@@ -213,14 +217,16 @@ export async function offerFreedSlot(slot: FreedSlot, now = new Date()): Promise
       manageUrl: url,
       icsUrl: url,
     };
-    const useText = canReachByPhone(patient) && patient.preferredChannel !== "email";
-    const channel = useText ? (patient.preferredChannel === "whatsapp" ? "whatsapp" : "sms") : "email";
+    // The text channel through textChannelFor (WhatsApp only where enabled and consented), else email.
+    const text = patient.preferredChannel !== "email" ? await textChannelFor(patient, org) : null;
+    const channel = text ?? "email";
+    if (channel === "email" && !canReachByEmail(patient)) continue;
     const email = templates.waitlistOfferEmail(data, url);
     const msg = await deliver({
       orgId: org.id,
       patientId: patient.id,
       channel,
-      to: channel === "email" ? patient.email! : patient.phone!,
+      to: channel === "email" ? recipientFor(patient).email! : recipientFor(patient).phone!,
       subject: channel === "email" ? email.subject : undefined,
       text: channel === "email" ? email.text : templates.waitlistOfferSms(data, url),
       html: channel === "email" ? email.html : undefined,

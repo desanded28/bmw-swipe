@@ -3,7 +3,7 @@
 import { CircleCheck, LoaderCircle } from "lucide-react";
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
-import type { ActionResult } from "@/app/dashboard/actions";
+import type { ActionResult } from "@/app/dashboard/actions/_shared";
 import { Button } from "../ui";
 
 type Action = (prev: unknown, formData: FormData) => Promise<ActionResult>;

@@ -21,10 +21,11 @@ import {
   canReachByEmail,
   getAppointmentDetails,
   templateData,
+  textChannelFor,
   type AppointmentDetails,
 } from "./appointments";
 import { evaluateSlot, loadAvailabilityContext, REJECTION_LABELS, type AvailabilityContext, type SlotRejection } from "./availability";
-import { isMinor, pickTextChannel } from "./contact";
+import { isMinor, recipientFor } from "./contact";
 import { newId } from "./ids";
 import { issueManageToken } from "./links";
 import { logError } from "./log";
@@ -39,7 +40,6 @@ import {
   type BookingRelationInput,
 } from "./privacy/consent";
 import { validateBookingRelation } from "./privacy/minors";
-import { getPrivacy } from "./privacy/settings";
 import { cancelPendingReminders, enqueueNow, processDueReminders, scheduleReminders } from "./reminders";
 import { resolveSettings } from "./settings";
 import { offerFreedSlot } from "./waitlist";
@@ -129,7 +129,12 @@ function guardianFields(input: NewPatientInput) {
  *   only if EVERY identifier given matches it exactly, and it is never modified. Otherwise
  *   a new record is created. This stops anyone who knows a patient's name and number from
  *   redirecting that patient's reminders (and manage links) to their own email.
- *   The opt-ins of a new record follow the contacts given; client-sent flags are ignored.
+ *   The birth date counts as an identifier both ways (the record's must equal the one given,
+ *   both possibly empty), so every age rule downstream (validateBookingRelation, recordConsent)
+ *   sees exactly what the requester typed: a stored record can't change the answer, and the
+ *   public routes can't be used to learn whether someone is a patient here, or a minor.
+ *   The opt-ins of a new record follow the contacts given — the guardian's too, since a
+ *   child's messages go to them (recipientFor); client-sent flags are ignored.
  *
  * Either way a parent booking for their child with the same contact details gets a
  * separate record, because the first name differs.
@@ -156,10 +161,16 @@ export async function upsertPatient(
           ? eq(patients.email, email)
           : eq(patients.phone, phone!);
 
+  const birthDate = input.birthDate || null;
+  const birthDateMatch =
+    mode === "public" ? (birthDate ? eq(patients.birthDate, birthDate) : sql`coalesce(${patients.birthDate}, '') = ''`) : undefined;
+
   const candidates = await tx
     .select()
     .from(patients)
-    .where(and(eq(patients.orgId, orgId), sql`lower(${patients.firstName}) = ${firstName.toLowerCase()}`, contactMatch))
+    .where(
+      and(eq(patients.orgId, orgId), sql`lower(${patients.firstName}) = ${firstName.toLowerCase()}`, contactMatch, birthDateMatch),
+    )
     .limit(1);
 
   const existing = candidates[0];
@@ -195,11 +206,12 @@ export async function upsertPatient(
       lastName,
       email,
       phone,
-      birthDate: input.birthDate || null,
+      birthDate,
       locale: input.locale ?? "it",
-      // SMS and email are part of the booking service (contract): on for the contacts the patient gave.
-      emailOptIn: mode === "public" ? Boolean(email) : (input.emailOptIn ?? true),
-      smsOptIn: mode === "public" ? Boolean(phone) : (input.smsOptIn ?? true),
+      // SMS and email are part of the booking service (contract): on for the contacts given, including
+      // the guardian's, which a child under 14's messages go to (recipientFor).
+      emailOptIn: mode === "public" ? Boolean(email || guardian.guardianEmail) : (input.emailOptIn ?? true),
+      smsOptIn: mode === "public" ? Boolean(phone || guardian.guardianPhone) : (input.smsOptIn ?? true),
       preferredChannel: input.preferredChannel ?? (phone ? "sms" : "email"),
       ...guardian,
     })
@@ -268,9 +280,14 @@ export function planBookingPrivacy(i: {
     choices = effectiveBookingChoices({ context: i.context, choices: i.privacy.choices, org });
   }
   if (bookedFor === "other_adult") {
-    // TODO(WP4): on the marketplace, hold a booking for another adult until that adult confirms through a
-    // link or one-time code (OTP purpose 'adult_confirmation') sent to their own contact, and record their
-    // own choices (platform_booking_art9 included) then. minors.ts refuses these bookings until it exists.
+    // Consent can only come from the data subject, never from whoever books for them: nothing ticked
+    // here is recorded. Through the practice's channels the practice gives the Art. 14 notice; on the
+    // marketplace validateBookingRelation refuses these bookings (other_adult_must_book_themselves).
+    // TODO(WP4): marketplace bookings for another adult. Hold the booking until that adult confirms
+    // through a link or one-time code (OTP purpose 'adult_confirmation') sent to their own contact, then
+    // record their own choices (platform_booking_art9 included) with actorRelation 'self'. The booker's
+    // contact is already stored apart (booked_by_*, see bookedByColumns); keep those rows out of the
+    // booker's privacy center.
     choices = {};
   }
   return {
@@ -285,8 +302,14 @@ export function planBookingPrivacy(i: {
 
 /**
  * validateBookingRelation, a failure throwing BookingError('invalid', code). `birthDate` is the one
- * stored on the patient record when it has one (recordConsent checks that one), else the form's.
- * Nothing to check when no relation was given (staff, partner API).
+ * stored on the patient record when it has one (recordConsent checks that one), else the form's; for
+ * public bookings the two are the same (upsertPatient reuses a record only with the same birth date).
+ *
+ * Nothing to check when no relation was given: staff, partner API, and a form that never asked who
+ * the appointment is for (until WP4's PatientRelationSection, the booking form doesn't). Such a
+ * booking is not taken as 'self': refusing a child "booking alone" when nobody asked would refuse
+ * the parent booking for them. Consents are still recorded as the patient's own, so recordConsent
+ * refuses any consent for a patient under 14 (guardian_required).
  */
 export function checkBookingRelation(
   relation: BookingRelation | undefined,
@@ -428,7 +451,10 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
   const start = input.startsAt;
   if (Number.isNaN(start.getTime())) throw new BookingError("invalid", "Invalid start time.");
   const context = input.processingContext ?? "practice";
+  // Only a relation the form actually asked is checked: none is not 'self' (see checkBookingRelation).
+  const relation = input.relation;
 
+  // Writes inside the transaction go through `tx` only (src/db/serialize.ts: the root db deadlocks here).
   const appointmentId = await db.transaction(async (tx) => {
     const ctx = await loadAvailabilityContext(
       {
@@ -468,7 +494,7 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
     let plan: BookingPrivacyPlan;
     let createdPatient = false;
     const planFor = (preferredChannel: Channel) =>
-      planBookingPrivacy({ context, relation: input.relation, privacy: input.privacy, preferredChannel, org: ctx.settings.privacy });
+      planBookingPrivacy({ context, relation, privacy: input.privacy, preferredChannel, org: ctx.settings.privacy });
     if ("id" in input.patient) {
       const [p] = await tx
         .select()
@@ -482,14 +508,15 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
       const res = await upsertPatient(
         tx,
         input.orgId,
-        patientForBooking(input.patient, input.relation, plan, input.online),
+        patientForBooking(input.patient, relation, plan, input.online),
         input.online ? "public" : "staff",
       );
       patient = res.patient;
       createdPatient = res.created;
     }
+    // The stored birth date when there is one: recordConsent reads that one too.
     const birthDate = patient.birthDate || ("id" in input.patient ? null : input.patient.birthDate) || null;
-    checkBookingRelation(input.relation, birthDate, start, context, now);
+    checkBookingRelation(relation, birthDate, start, context, now);
     const dialCode = "id" in input.patient ? null : input.patient.phoneCountry;
 
     const status = input.online && ctx.settings.booking.requireApproval ? "requested" : "scheduled";
@@ -519,7 +546,7 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
         manageTokenEnc: link.token,
         processingContext: context,
         bookedFor: plan.bookedFor,
-        ...bookedByColumns(input.relation, dialCode),
+        ...bookedByColumns(relation, dialCode),
         noticeVersion: plan.noticeVersion,
         noticeLocale: plan.noticeLocale,
         minorFlag: isMinor({ birthDate }, start),
@@ -564,8 +591,9 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
 
 /** The channel for a message the patient didn't ask for (staff cancelled or moved the visit). */
 async function textOrEmail(d: AppointmentDetails): Promise<Channel | null> {
-  if (d.patient.preferredChannel !== "email" && d.patient.phone) {
-    const text = pickTextChannel(d.patient, getPrivacy(d.org));
+  if (d.patient.preferredChannel !== "email") {
+    // To the recipient's phone (the guardian's for a child under 14): textChannelFor checks it.
+    const text = await textChannelFor(d.patient, d.org);
     if (text) return text;
   }
   if (canReachByEmail(d.patient)) return "email";
@@ -621,7 +649,7 @@ export async function cancelAppointment(
         appointmentId,
         patientId: details.patient.id,
         channel,
-        to: channel === "email" ? details.patient.email! : details.patient.phone!,
+        to: channel === "email" ? recipientFor(details.patient).email! : recipientFor(details.patient).phone!,
         subject: channel === "email" ? email.subject : undefined,
         text: channel === "email" ? email.text : templates.cancelledSms(data, rebookUrl),
         html: channel === "email" ? email.html : undefined,
@@ -750,7 +778,7 @@ export async function rescheduleAppointment(
         appointmentId,
         patientId: after.patient.id,
         channel,
-        to: channel === "email" ? after.patient.email! : after.patient.phone!,
+        to: channel === "email" ? recipientFor(after.patient).email! : recipientFor(after.patient).phone!,
         subject: channel === "email" ? email.subject : undefined,
         text: channel === "email" ? email.text : templates.rescheduledSms(data),
         html: channel === "email" ? email.html : undefined,

@@ -6,19 +6,26 @@ import { ReviewList } from "@/components/ReviewList";
 import { Avatar, Badge, Card, LinkButton, Stars } from "@/components/ui";
 import { getPublicClinic, getPublicReviews } from "@/lib/directory";
 import { CATEGORY_LABELS, formatPrice, practitionerName } from "@/lib/format";
+import { verifyPracticeRef } from "@/lib/privacy/context";
 
 export const dynamic = "force-dynamic";
 
-type Params = Promise<{ org: string }>;
+type Params = Promise<{ locale: string; org: string }>;
+type SP = Promise<{ ref?: string }>;
 
 export async function generateMetadata({ params }: { params: Params }): Promise<Metadata> {
   const clinic = await getPublicClinic((await params).org);
   return clinic ? { title: clinic.org.name, description: clinic.org.description ?? undefined } : {};
 }
 
-export default async function ClinicPage({ params }: { params: Params }) {
+export default async function ClinicPage({ params, searchParams }: { params: Params; searchParams: SP }) {
   const clinic = await getPublicClinic((await params).org);
   if (!clinic) notFound();
+  // A practice-published link (?ref=) keeps the practice context on the way to the booking page;
+  // without it, booking from here is a marketplace booking.
+  const { ref } = await searchParams;
+  const practiceRef = verifyPracticeRef(clinic.org.id, ref) ? ref! : null;
+  const withRef = (href: string) => (practiceRef ? `${href}${href.includes("?") ? "&" : "?"}ref=${practiceRef}` : href);
   const reviews = await getPublicReviews(clinic.org.id);
   const rated = clinic.practitioners.filter((p) => p.rating);
   const totalReviews = rated.reduce((n, p) => n + p.rating!.count, 0);
@@ -62,7 +69,7 @@ export default async function ClinicPage({ params }: { params: Params }) {
                 </div>
               </div>
             </div>
-            <LinkButton href={`/book/${clinic.org.slug}`} size="lg">
+            <LinkButton href={withRef(`/book/${clinic.org.slug}`)} size="lg">
               <CalendarCheck size={18} /> Book online
             </LinkButton>
           </div>
@@ -77,7 +84,7 @@ export default async function ClinicPage({ params }: { params: Params }) {
                   <div key={p.id} className="flex gap-3 rounded-xl p-3 ring-1 ring-slate-200">
                     <Avatar name={p.name} color={p.color} size={48} />
                     <div className="min-w-0 flex-1">
-                      <Link href={`/c/${clinic.org.slug}/${p.slug}`} className="font-bold hover:underline">
+                      <Link href={withRef(`/c/${clinic.org.slug}/${p.slug}`)} className="font-bold hover:underline">
                         {practitionerName(p)}
                       </Link>
                       <p className="text-sm text-slate-500">{p.specialty}</p>
@@ -90,7 +97,7 @@ export default async function ClinicPage({ params }: { params: Params }) {
                         {p.locationIds.map((id) => clinic.locations.find((l) => l.id === id)?.name).filter(Boolean).join(" · ")}
                       </p>
                       <Link
-                        href={`/book/${clinic.org.slug}?practitioner=${p.id}`}
+                        href={withRef(`/book/${clinic.org.slug}?practitioner=${p.id}`)}
                         className="mt-2 inline-block text-sm font-semibold text-brand-700 hover:underline"
                       >
                         Book with {p.title ? `${p.title} ` : ""}{p.name.split(" ").slice(-1)[0]} →
@@ -114,7 +121,7 @@ export default async function ClinicPage({ params }: { params: Params }) {
                     <div className="shrink-0 text-right">
                       <p className="font-bold">{formatPrice(s.priceCents)}</p>
                       <p className="text-xs text-slate-500">{s.durationMinutes} min</p>
-                      <Link href={`/book/${clinic.org.slug}?service=${s.id}`} className="text-xs font-semibold text-brand-700 hover:underline">
+                      <Link href={withRef(`/book/${clinic.org.slug}?service=${s.id}`)} className="text-xs font-semibold text-brand-700 hover:underline">
                         Book
                       </Link>
                     </div>
@@ -158,7 +165,7 @@ export default async function ClinicPage({ params }: { params: Params }) {
                     </p>
                   ) : null}
                   <div className="mt-3 flex gap-2">
-                    <LinkButton href={`/book/${clinic.org.slug}?location=${l.id}`} size="sm">
+                    <LinkButton href={withRef(`/book/${clinic.org.slug}?location=${l.id}`)} size="sm">
                       Book here
                     </LinkButton>
                     <a

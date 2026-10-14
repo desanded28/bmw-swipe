@@ -3,11 +3,12 @@ import { UserX } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { updatePatient } from "@/app/dashboard/actions";
+import { updatePatient } from "@/app/dashboard/actions/patients";
 import { ActionForm } from "@/components/dashboard/ActionForm";
 import { AppointmentList } from "@/components/dashboard/AppointmentList";
 import { Avatar, Badge, Card, Field, Input, Select, Textarea } from "@/components/ui";
 import { db } from "@/db";
+import { ENDONYM, LOCALES } from "@/i18n/config";
 import { messages, patients } from "@/db/schema";
 import { requireStaff } from "@/lib/auth";
 import { listAppointments, loadResources } from "@/lib/dashboard";
@@ -48,7 +49,7 @@ export default async function PatientPage({ params }: { params: Promise<{ id: st
               </Badge>
             ) : null}
             <Badge tone="blue">prefers {p.preferredChannel}</Badge>
-            <Badge>{p.locale === "it" ? "Italiano" : "English"}</Badge>
+            <Badge>{ENDONYM[p.locale]}</Badge>
             {!p.smsOptIn ? <Badge tone="amber">SMS opt-out</Badge> : null}
           </div>
         </div>
@@ -104,8 +105,11 @@ export default async function PatientPage({ params }: { params: Promise<{ id: st
               </Field>
               <Field label="Language">
                 <Select name="locale" defaultValue={p.locale}>
-                  <option value="it">Italiano</option>
-                  <option value="en">English</option>
+                  {LOCALES.map((l) => (
+                    <option key={l} value={l} lang={l}>
+                      {ENDONYM[l]}
+                    </option>
+                  ))}
                 </Select>
               </Field>
             </div>

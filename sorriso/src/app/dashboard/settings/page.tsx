@@ -1,28 +1,26 @@
-import { desc, eq } from "drizzle-orm";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { saveBookingPolicy, saveProfile } from "@/app/dashboard/actions";
+import { saveBookingPolicy, saveProfile } from "@/app/dashboard/actions/settings";
 import { ActionForm } from "@/components/dashboard/ActionForm";
-import { ApiKeys } from "@/components/dashboard/ApiKeys";
-import { Badge, Card, Field, Input, PageHeader, Select, Textarea } from "@/components/ui";
-import { db } from "@/db";
-import { apiKeys, memberships, users } from "@/db/schema";
-import { MANAGERS, requireStaff } from "@/lib/auth";
+import { Card, Field, Input, PageHeader, Select, Textarea } from "@/components/ui";
+import { requireStaff } from "@/lib/auth";
 import { APP_URL } from "@/lib/config";
-import { fmtDay, zonedDate } from "@/lib/datefmt";
+import { can } from "@/lib/permissions";
+import { signPracticeRef } from "@/lib/privacy/context";
 import { resolveSettings } from "@/lib/settings";
 
-export const metadata: Metadata = { title: "Settings & API" };
+export const metadata: Metadata = { title: "Settings" };
 
+/**
+ * Practice profile, booking rules and the booking widget (WP5). Every staff member can see it;
+ * saving needs settings.manage. API keys are on /dashboard/settings/api, team members on
+ * /dashboard/team.
+ */
 export default async function SettingsPage() {
   const s = await requireStaff();
   const org = s.org;
   const settings = resolveSettings(org.settings);
-  const canManage = MANAGERS.includes(s.role);
-  const [keys, members] = await Promise.all([
-    db.select().from(apiKeys).where(eq(apiKeys.orgId, org.id)).orderBy(desc(apiKeys.createdAt)),
-    db.select({ name: users.name, email: users.email, role: memberships.role }).from(memberships).innerJoin(users, eq(users.id, memberships.userId)).where(eq(memberships.orgId, org.id)),
-  ]);
+  const canManage = can(s.role, "settings.manage");
   const snippet = `<script src="${APP_URL}/widget.js" data-clinic="${org.slug}" async></script>`;
 
   return (
@@ -102,46 +100,20 @@ export default async function SettingsPage() {
           <Link href={`/embed/${org.slug}`} target="_blank" className="text-brand-700 hover:underline">
             Preview the embedded flow ↗
           </Link>
-          <Link href={`/book/${org.slug}`} target="_blank" className="text-brand-700 hover:underline">
+          {/* The practice's own link carries its signed ref, so bookings through it stay 'practice' context. */}
+          <Link href={`/book/${org.slug}?ref=${signPracticeRef(org.id)}`} target="_blank" className="text-brand-700 hover:underline">
             Direct booking link ↗
           </Link>
           <Link href="/developers" target="_blank" className="text-brand-700 hover:underline">
             API docs ↗
           </Link>
+          {can(s.role, "apikeys.manage") ? (
+            <Link href="/dashboard/settings/api" className="text-brand-700 hover:underline">
+              API keys →
+            </Link>
+          ) : null}
         </div>
       </Card>
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card className="p-6">
-          <h2 className="mb-1 text-lg font-bold">API keys</h2>
-          <p className="mb-3 text-sm text-slate-500">For your practice-management software: read and sync appointments, book with front-desk powers.</p>
-          {canManage ? (
-            <ApiKeys
-              keys={keys.map((k) => ({
-                id: k.id,
-                name: k.name,
-                prefix: k.prefix,
-                revoked: Boolean(k.revokedAt),
-                lastUsed: k.lastUsedAt ? fmtDay(zonedDate(k.lastUsedAt, org.timezone), "weekday") : null,
-              }))}
-            />
-          ) : null}
-        </Card>
-        <Card className="p-6">
-          <h2 className="mb-3 text-lg font-bold">Team members</h2>
-          <ul className="divide-y divide-slate-100">
-            {members.map((m) => (
-              <li key={m.email} className="flex items-center justify-between py-2.5 text-sm">
-                <span>
-                  <span className="font-semibold">{m.name}</span>
-                  <span className="block text-xs text-slate-500">{m.email}</span>
-                </span>
-                <Badge tone={m.role === "owner" ? "brand" : "slate"}>{m.role}</Badge>
-              </li>
-            ))}
-          </ul>
-        </Card>
-      </div>
     </div>
   );
 }

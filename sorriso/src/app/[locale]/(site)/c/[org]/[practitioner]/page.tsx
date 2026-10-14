@@ -5,13 +5,17 @@ import { notFound } from "next/navigation";
 import { BookingFlow } from "@/components/booking/BookingFlow";
 import { ReviewList } from "@/components/ReviewList";
 import { Avatar, Badge, Card, Stars } from "@/components/ui";
+import { toLocale } from "@/i18n/config";
+import { ClientMessages } from "@/i18n/ClientMessages";
 import { getPublicClinic, getPublicReviews } from "@/lib/directory";
 import { practitionerName } from "@/lib/format";
+import { processingContextFor, verifyPracticeRef } from "@/lib/privacy/context";
 import { todayIn } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 
-type Params = Promise<{ org: string; practitioner: string }>;
+type Params = Promise<{ locale: string; org: string; practitioner: string }>;
+type SP = Promise<{ ref?: string }>;
 
 async function load(params: Params) {
   const { org, practitioner } = await params;
@@ -25,16 +29,21 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
   return data ? { title: `${practitionerName(data.p)} — ${data.p.specialty}` } : {};
 }
 
-export default async function PractitionerPage({ params }: { params: Params }) {
+export default async function PractitionerPage({ params, searchParams }: { params: Params; searchParams: SP }) {
   const data = await load(params);
   if (!data) notFound();
   const { clinic, p } = data;
+  const locale = toLocale((await params).locale);
   const reviews = await getPublicReviews(clinic.org.id, p.id);
   const locs = clinic.locations.filter((l) => p.locationIds.includes(l.id));
+  // Sorriso-hosted: marketplace, unless the link came from the practice itself (?ref=, signed per practice).
+  const { ref } = await searchParams;
+  const practiceRef = verifyPracticeRef(clinic.org.id, ref) ? ref! : null;
+  const context = processingContextFor({ source: "online", viaApiKey: false, embedded: false, practiceRef, orgId: clinic.org.id });
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8">
-      <Link href={`/c/${clinic.org.slug}`} className="text-sm font-semibold text-slate-500 hover:text-ink">
+      <Link href={`/c/${clinic.org.slug}${practiceRef ? `?ref=${practiceRef}` : ""}`} className="text-sm font-semibold text-slate-500 hover:text-ink">
         ← {clinic.org.name}
       </Link>
       <div className="mt-4 grid gap-6 lg:grid-cols-[340px_1fr]">
@@ -79,7 +88,15 @@ export default async function PractitionerPage({ params }: { params: Params }) {
         <div className="space-y-6">
           <Card className="p-6">
             <h2 className="mb-4 text-lg font-bold">Book with {practitionerName(p)}</h2>
-            <BookingFlow clinic={clinic} initial={{ practitionerId: p.id }} today={todayIn(clinic.org.timezone)} />
+            <ClientMessages locale={locale} ns={["consents"]}>
+              <BookingFlow
+                clinic={clinic}
+                initial={{ practitionerId: p.id }}
+                today={todayIn(clinic.org.timezone)}
+                context={context}
+                practiceRef={practiceRef}
+              />
+            </ClientMessages>
           </Card>
           <Card className="p-6">
             <h2 className="mb-4 text-lg font-bold">Reviews</h2>

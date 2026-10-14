@@ -1,4 +1,4 @@
-import { saveService } from "@/app/dashboard/actions";
+import { saveService } from "@/app/dashboard/actions/services";
 import { SERVICE_CATEGORIES } from "@/db/enums";
 import type { Service } from "@/db/schema";
 import { CATEGORY_LABELS } from "@/lib/format";

@@ -1,9 +1,9 @@
 "use client";
 
 import { LoaderCircle } from "lucide-react";
-import type { ActionResult } from "@/app/dashboard/actions";
+import type { ActionResult } from "@/app/dashboard/actions/_shared";
 import { Button } from "../ui";
-import { useRunAction } from "./AppointmentDrawer";
+import { useRunAction } from "./useRunAction";
 
 /** A button bound to a server action (with arguments pre-bound on the server). */
 export function ActionButton({

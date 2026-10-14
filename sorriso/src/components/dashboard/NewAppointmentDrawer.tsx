@@ -2,11 +2,12 @@
 
 import { LoaderCircle, Search, UserPlus, UserX, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { createStaffAppointment, searchPatients } from "@/app/dashboard/actions";
+import { createStaffAppointment } from "@/app/dashboard/actions/appointments";
+import { searchPatients } from "@/app/dashboard/actions/patients";
 import { formatPhone } from "@/lib/phone";
 import { Badge, Button, Field, Input, Select, Textarea, cx } from "../ui";
-import { useRunAction } from "./AppointmentDrawer";
 import type { Resources } from "./types";
+import { useRunAction } from "./useRunAction";
 
 type PatientHit = Awaited<ReturnType<typeof searchPatients>>[number];
 

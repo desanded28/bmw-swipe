@@ -45,7 +45,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ token: 
       start: a.startsAt,
       end: a.endsAt,
       summary: `${service.name}: ${patient.firstName} ${patient.lastName.charAt(0)}.${a.confirmation === "confirmed" ? " ✓" : ""}`,
-      description: [a.status === "requested" ? "REQUEST — awaiting approval" : null, a.patientNote].filter(Boolean).join("\n"),
+      // Never the patient's note: free text that may hold health data stays out of third-party calendars.
+      description: a.status === "requested" ? "REQUEST — awaiting approval" : undefined,
       location: location.name,
       status: a.status === "requested" ? "TENTATIVE" : "CONFIRMED",
       sequence: Math.floor(a.updatedAt.getTime() / 1000),

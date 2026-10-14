@@ -1,5 +1,5 @@
 import { CalendarOff } from "lucide-react";
-import { addTimeOff, deleteTimeOff } from "@/app/dashboard/actions";
+import { addTimeOff, deleteTimeOff } from "@/app/dashboard/actions/timeoff";
 import type { TimeOff } from "@/db/schema";
 import { fmtDay, zonedDate, zonedTime } from "@/lib/datefmt";
 import { Field, Input, Select } from "../ui";

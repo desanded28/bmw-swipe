@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { replyToReview, setReviewPublished } from "@/app/dashboard/actions";
+import { replyToReview, setReviewPublished } from "@/app/dashboard/actions/reviews";
 import { Button, Textarea } from "../ui";
-import { useRunAction } from "./AppointmentDrawer";
+import { useRunAction } from "./useRunAction";
 
 export function ReviewReply({ id, reply, published, canManage }: { id: string; reply: string | null; published: boolean; canManage: boolean }) {
   const [open, setOpen] = useState(false);

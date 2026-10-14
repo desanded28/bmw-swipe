@@ -1,11 +1,11 @@
 import { DEFAULT_COUNTRY_CODE } from "./config";
 
 /** A country calling code: 1-3 digits, never starting with 0 ("39", "44", "351"). An optional "+" is accepted. */
-const DIAL_CODE = /^\+?([1-9]\d{0,2})$/;
+const DIAL_CODE_SHAPE = /^\+?([1-9]\d{0,2})$/;
 
 /** The dial code without "+", or null when `value` is not one. */
 export function parseDialCode(value: string | null | undefined): string | null {
-  const m = value?.trim().match(DIAL_CODE);
+  const m = value?.trim().match(DIAL_CODE_SHAPE);
   return m ? m[1] : null;
 }
 

@@ -1,8 +1,9 @@
-import { and, asc, desc, eq, gt, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, or } from "drizzle-orm";
 import { db } from "@/db";
-import { appointments, messages, organizations, patients, type Channel, type Message } from "@/db/schema";
+import { appointments, messages, organizations, patients, type Channel, type Message, type Patient } from "@/db/schema";
 import { appointmentLinks, getAppointmentDetails, templateData } from "./appointments";
 import { cancelAppointment, confirmAttendance } from "./booking";
+import { recipientFor } from "./contact";
 import { newId } from "./ids";
 import { deliver } from "./messaging";
 import { templates } from "./messaging/templates";
@@ -43,6 +44,15 @@ export function parseIntent(raw: string): Intent {
   return "unknown";
 }
 
+/**
+ * The number this patient's texts go to: recipientFor() (the guardian's for a child under 14 with
+ * guardian contacts), read as if the patient were not restricted, so a restricted patient's STOP or
+ * reply about an earlier message still finds them.
+ */
+function textedNumber(p: Patient, now: Date): string | null {
+  return recipientFor({ ...p, restrictedAt: null, erasedAt: null }, now).phone;
+}
+
 export type InboundResult = {
   intent: Intent;
   reply: string | null;
@@ -72,11 +82,22 @@ export async function handleInboundMessage(input: {
   const phone = normalizePhone(input.from);
   const intent = parseIntent(input.body);
 
+  // The records we text at this number: a child under 14's messages go to the guardian
+  // (recipientFor), so the guardian's reply is about the child, and the child's own number, which we
+  // don't text, is not. With a parent who is also a patient, both records match; the outbound
+  // message below decides which visit the reply is about, and STOP covers both.
   const patientRows = phone
-    ? await db
-        .select()
-        .from(patients)
-        .where(and(eq(patients.phone, phone), input.orgId ? eq(patients.orgId, input.orgId) : undefined))
+    ? (
+        await db
+          .select()
+          .from(patients)
+          .where(
+            and(
+              or(eq(patients.phone, phone), eq(patients.guardianPhone, phone)),
+              input.orgId ? eq(patients.orgId, input.orgId) : undefined,
+            ),
+          )
+      ).filter((p) => textedNumber(p, now) === phone)
     : [];
   const patientIds = patientRows.map((p) => p.id);
 

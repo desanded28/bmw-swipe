@@ -6,7 +6,7 @@ import { auditAnchors, auditLog, type AuditLogRow } from "@/db/schema";
 import type { StaffSession } from "./auth";
 import { hmac } from "./crypto";
 import { newId } from "./ids";
-import { logError } from "./log";
+import { logError, logInfo } from "./log";
 import { clientIpHash, userAgentHash } from "./rate-limit";
 
 /**
@@ -86,6 +86,7 @@ export const AUDIT_ACTIONS = [
   "review.reply",
   "review.report",
   "review.moderate",
+  "review.withdraw",
   "practitioner.profile.approve",
   // organisation and platform
   "export.org",
@@ -312,6 +313,25 @@ const PAGE = 500;
  */
 export async function auditChainHead(orgId: string | null): Promise<AuditHead | null> {
   return chainHead(db, orgId);
+}
+
+/**
+ * Logs the head (seq and hash) of every audit chain, the platform's included. Logs live with the
+ * hosting provider, out of reach of someone who can write to the database. Run daily: by the
+ * in-process job (src/instrumentation.ts) and by /api/cron/retention on serverless hosts.
+ * Returns how many heads were logged.
+ */
+export async function logAuditHeads(): Promise<number> {
+  // Chains come from the log itself, not from organizations: a closed org's chain is still kept.
+  const chains = await db.selectDistinct({ orgId: auditLog.orgId }).from(auditLog);
+  let logged = 0;
+  for (const { orgId } of chains) {
+    const head = await auditChainHead(orgId);
+    if (!head) continue;
+    logInfo("audit", "chain head", { org: orgId ?? "platform", seq: head.seq, hash: head.hash });
+    logged++;
+  }
+  return logged;
 }
 
 /**

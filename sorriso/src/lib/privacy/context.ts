@@ -52,6 +52,17 @@ export function processingContextFor(i: ContextInput): ProcessingContext {
 }
 
 /**
+ * Is this page request the embed loaded inside a frame (the widget on the practice's website)? Only
+ * then is the embed route the practice's channel. The same URL opened top-level — from a search
+ * engine, a shared link — is a Sorriso-hosted page like any other: marketplace. Browsers send
+ * Sec-Fetch-Dest themselves (a page can't set it); one that sends none counts as top-level, which
+ * at worst asks for a consent that wasn't needed.
+ */
+export function isFramedRequest(h: Pick<Headers, "get">): boolean {
+  return h.get("sec-fetch-dest") === "iframe";
+}
+
+/**
  * The marker a practice puts on its own booking links (dashboard "your booking link", the
  * widget). Deterministic per practice, so links can be shared and printed; it proves only
  * that the link came from the practice's channel, which is all the context needs.

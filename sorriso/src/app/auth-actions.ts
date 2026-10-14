@@ -6,7 +6,7 @@ import { z } from "zod";
 import { db } from "@/db";
 import { locations, memberships, organizations, practitionerServices, practitioners, rooms, schedules, services, users } from "@/db/schema";
 import { createSession, destroySession, getSession } from "@/lib/auth";
-import { newId, newToken, slugify } from "@/lib/ids";
+import { newId, slugify } from "@/lib/ids";
 import { hashPassword, verifyPassword } from "@/lib/password";
 import { DEFAULT_SETTINGS } from "@/lib/settings";
 
@@ -97,7 +97,8 @@ export async function signup(_prev: FormState, formData: FormData): Promise<Form
         title: "Dr.",
         name: input.name,
         specialty: "General dentist",
-        icsToken: newToken(),
+        // Non-secret placeholder: feeds are issued by rotateIcsToken, which stores only the hash.
+        icsToken: `h:${practitionerId}`,
       });
       await tx.insert(practitionerServices).values(starter.map((s) => ({ practitionerId, serviceId: s.id })));
       await tx.insert(schedules).values(

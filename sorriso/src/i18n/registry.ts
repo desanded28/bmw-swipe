@@ -1,4 +1,4 @@
-import type { Locale } from "./config";
+import { SOURCE_LOCALE, type Locale } from "./config";
 import { EN_MESSAGES, LOCALE_MESSAGES } from "./messages";
 import type { Namespace } from "./namespaces";
 import { mergeMessages } from "./translator";
@@ -31,4 +31,19 @@ export function messagesFor(locale: Locale): Messages {
 
 export function namespaceFor<N extends Namespace>(locale: Locale, ns: N): Messages[N] {
   return messagesFor(locale)[ns];
+}
+
+/**
+ * The language a text is actually shown in: `locale` when that locale's own dictionary has a text
+ * at `key` (dotted, within `ns`), otherwise English, which the merged dictionaries fall back to.
+ * Records that must prove what was shown (the consent ledger) store this, not the page's language.
+ */
+export function shownLocale(locale: Locale, ns: Namespace, key: string): Locale {
+  if (locale === SOURCE_LOCALE) return locale;
+  let node: unknown = LOCALE_MESSAGES[locale]?.[ns];
+  for (const part of key.split(".")) {
+    node = node && typeof node === "object" ? (node as Record<string, unknown>)[part] : undefined;
+  }
+  const present = typeof node === "string" ? node.trim().length > 0 : Boolean(node && typeof node === "object");
+  return present ? locale : SOURCE_LOCALE;
 }

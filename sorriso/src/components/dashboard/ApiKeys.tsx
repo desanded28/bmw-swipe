@@ -2,9 +2,9 @@
 
 import { Copy, KeyRound } from "lucide-react";
 import { useState } from "react";
-import { newApiKey, revokeApiKey } from "@/app/dashboard/actions";
+import { newApiKey, revokeApiKey } from "@/app/dashboard/actions/apikeys";
 import { Button, Input } from "../ui";
-import { useRunAction } from "./AppointmentDrawer";
+import { useRunAction } from "./useRunAction";
 
 export function ApiKeys({ keys }: { keys: { id: string; name: string; prefix: string; lastUsed: string | null; revoked: boolean }[] }) {
   const { run, pending } = useRunAction();

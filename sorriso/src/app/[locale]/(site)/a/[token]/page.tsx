@@ -9,6 +9,7 @@ import { db } from "@/db";
 import { reviews } from "@/db/schema";
 import { appointmentLinks, canPatientCancel, canPatientReschedule, getAppointmentDetails, isLateCancellation } from "@/lib/appointments";
 import { formatPrice, practitionerName } from "@/lib/format";
+import { signPracticeRef } from "@/lib/privacy/context";
 import { resolveSettings } from "@/lib/settings";
 import { formatDate, formatTime, todayIn } from "@/lib/time";
 
@@ -19,7 +20,7 @@ export default async function ManagePage({
   params,
   searchParams,
 }: {
-  params: Promise<{ token: string }>;
+  params: Promise<{ locale: string; token: string }>;
   searchParams: Promise<{ do?: string }>;
 }) {
   const { token } = await params;
@@ -31,6 +32,8 @@ export default async function ManagePage({
   const settings = resolveSettings(d.org.settings);
   const [review] = await db.select({ id: reviews.id }).from(reviews).where(eq(reviews.appointmentId, a.id));
   const panel = sp.do === "confirm" || sp.do === "cancel" || sp.do === "reschedule" ? sp.do : null;
+  // Booking again keeps the controller of this booking: a practice booking links back with the practice ref.
+  const rebookRef = a.processingContext === "practice" ? `&ref=${signPracticeRef(d.org.id)}` : "";
 
   const status =
     a.status === "cancelled" ? (
@@ -105,6 +108,7 @@ export default async function ManagePage({
           initialPanel={panel}
           data={{
             token,
+            appointmentId: a.id,
             status: a.status,
             confirmation: a.confirmation,
             start: a.startsAt.toISOString(),
@@ -140,7 +144,7 @@ export default async function ManagePage({
 
       {a.status === "cancelled" || a.status === "completed" ? (
         <div className="mt-6">
-          <LinkButton href={`/book/${d.org.slug}?service=${d.service.id}&practitioner=${d.practitioner.id}`} variant="secondary">
+          <LinkButton href={`/book/${d.org.slug}?service=${d.service.id}&practitioner=${d.practitioner.id}${rebookRef}`} variant="secondary">
             Book another appointment
           </LinkButton>
         </div>

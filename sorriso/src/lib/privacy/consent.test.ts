@@ -2,6 +2,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
 import { auditLog, consents, patients, type ConsentPurpose, type Patient } from "@/db/schema";
+import { LOCALE_MESSAGES } from "@/i18n/messages";
 import { createPractice } from "@/test/fixtures";
 import { hmac } from "../crypto";
 import { newId } from "../ids";
@@ -72,6 +73,19 @@ describe("consent ledger", () => {
 
   it("uses the consents namespace for text keys", () => {
     expect(consentTextKey("platform_booking_art9")).toBe("consents.platform_booking_art9.label");
+  });
+
+  it("records the language the text was shown in: English where the page's locale has no text of its own", async () => {
+    const p = await addPatient();
+    await record({ ...base(p.id, "marketing"), locale: "it" });
+    // Until WP9 adds German consent texts, a German page shows the English fallback.
+    await record({ ...base(p.id, "feedback_request"), locale: "de", now: later(1) });
+    const germanText = Boolean(LOCALE_MESSAGES.de.consents?.feedback_request?.label);
+    const rows = await ledger(p.id);
+    expect(rows.map((r) => [r.purpose, r.locale])).toEqual([
+      ["marketing", "it"],
+      ["feedback_request", germanText ? "de" : "en"],
+    ]);
   });
 
   it("orders rows written in the same millisecond by insertion", async () => {

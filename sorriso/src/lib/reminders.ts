@@ -4,12 +4,13 @@ import { reminders, reviews, type Appointment, type Channel, type OrgSettings, t
 import {
   appointmentLinks,
   canReachByEmail,
-  canReachByPhone,
   getAppointmentDetails,
   templateData,
+  textChannelFor,
   type AppointmentDetails,
 } from "./appointments";
 import { practitionerName } from "./format";
+import { recipientFor } from "./contact";
 import { buildIcs } from "./ics";
 import { newId } from "./ids";
 import { deliver } from "./messaging";
@@ -70,22 +71,28 @@ export async function enqueueNow(
 }
 
 /**
- * Pick the channel for a patient. For text rules ("sms"/"whatsapp") the
- * patient's own preference between SMS and WhatsApp wins.
+ * Pick the channel for a patient. A text rule ("sms" or "whatsapp") means "a text message": which
+ * one is `text`, the patient's text channel from textChannelFor() (WhatsApp only where the practice
+ * enabled it and the patient consented), never the rule's own word.
  */
-export function resolveChannel(rule: Channel, patient: Patient, fallbackToEmail: boolean): Channel | null {
+export function resolveChannel(
+  rule: Channel,
+  patient: Patient,
+  fallbackToEmail: boolean,
+  text: "sms" | "whatsapp" | null,
+): Channel | null {
   if (rule === "email") return canReachByEmail(patient) ? "email" : null;
-  if (canReachByPhone(patient) && patient.preferredChannel !== "email") {
-    return patient.preferredChannel === "whatsapp" ? "whatsapp" : rule;
-  }
+  if (text && patient.preferredChannel !== "email") return text;
   if (fallbackToEmail && canReachByEmail(patient)) return "email";
   // Rule says email-fallback off but patient explicitly prefers email: respect that.
   if (patient.preferredChannel === "email" && canReachByEmail(patient)) return "email";
   return null;
 }
 
+/** The address for `channel`: the guardian's for a patient under 14 with guardian contacts (contact.ts). */
 function recipient(channel: Channel, patient: Patient): string {
-  return channel === "email" ? patient.email! : patient.phone!;
+  const to = recipientFor(patient);
+  return channel === "email" ? to.email! : to.phone!;
 }
 
 function appointmentIcs(d: AppointmentDetails, status: "CONFIRMED" | "TENTATIVE" = "CONFIRMED") {
@@ -116,6 +123,7 @@ async function sendForReminder(r: Reminder, d: AppointmentDetails, now: Date): P
   const data = templateData(d);
   const links = appointmentLinks(d);
   const base = { orgId: d.org.id, appointmentId: a.id, patientId: patient.id, fromName: d.org.name, replyTo: d.org.email };
+  const text = await textChannelFor(patient, d.org);
 
   const send = async (channel: Channel, email: { subject: string; text: string; html: string } | null, text: string, ics?: string) => {
     const msg = await deliver(
@@ -149,7 +157,7 @@ async function sendForReminder(r: Reminder, d: AppointmentDetails, now: Date): P
   switch (r.kind) {
     case "booking_confirmation": {
       if (!["scheduled", "requested"].includes(a.status)) return { status: "skipped", reason: `appointment ${a.status}` };
-      const channel = resolveChannel("email", patient, true) ?? resolveChannel("sms", patient, false);
+      const channel = resolveChannel("email", patient, true, text) ?? resolveChannel("sms", patient, false, text);
       if (!channel) return { status: "skipped", reason: "patient has no reachable contact" };
       if (a.status === "requested") {
         if (channel !== "email") return { status: "skipped", reason: "request receipts are email-only" };
@@ -160,7 +168,7 @@ async function sendForReminder(r: Reminder, d: AppointmentDetails, now: Date): P
 
     case "approval": {
       if (a.status !== "scheduled") return { status: "skipped", reason: `appointment ${a.status}` };
-      const channel = resolveChannel("email", patient, true) ?? resolveChannel("sms", patient, false);
+      const channel = resolveChannel("email", patient, true, text) ?? resolveChannel("sms", patient, false, text);
       if (!channel) return { status: "skipped", reason: "patient has no reachable contact" };
       return send(channel, templates.bookingApproved(data), templates.bookingConfirmationSms(data), appointmentIcs(d));
     }
@@ -168,7 +176,7 @@ async function sendForReminder(r: Reminder, d: AppointmentDetails, now: Date): P
     case "reminder": {
       if (a.status !== "scheduled") return { status: "skipped", reason: `appointment ${a.status}` };
       if (a.startsAt.getTime() <= now.getTime()) return { status: "skipped", reason: "appointment already started" };
-      const channel = resolveChannel(r.channel, patient, r.fallbackToEmail);
+      const channel = resolveChannel(r.channel, patient, r.fallbackToEmail, text);
       if (!channel) return { status: "skipped", reason: `can't reach patient by ${r.channel}` };
       // Don't ask again once they've confirmed: just remind.
       const ask = r.askConfirmation && a.confirmation === "pending";

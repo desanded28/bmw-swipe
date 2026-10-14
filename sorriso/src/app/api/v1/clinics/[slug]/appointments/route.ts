@@ -2,7 +2,9 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { organizations } from "@/db/schema";
 import { apiError, authenticateApiKey, handleApiError, json, preflight, rateLimit } from "@/lib/api";
-import { createAppointment } from "@/lib/booking";
+import { bookingRuleMessage, createAppointment } from "@/lib/booking";
+import { processingContextFor } from "@/lib/privacy/context";
+import { canAcceptOnlineBookings } from "@/lib/privacy/gates";
 import { publicAppointment } from "@/lib/serializers";
 import { bookingInputSchema } from "@/lib/validation";
 
@@ -12,6 +14,11 @@ export const OPTIONS = preflight;
  * POST /api/v1/clinics/:slug/appointments — book a slot as a patient.
  * Used by the website, the embeddable widget and third-party integrations
  * (send `Authorization: Bearer sk_…` to mark the booking as coming from your app).
+ *
+ * Calls without an API key must send `privacy` (422 privacy_required). Who is controller is decided
+ * here, never by the client: 'practice' with an API key or a valid practice ref (`practiceRef`, from
+ * a practice-published link or the embed), 'marketplace' otherwise. A failed privacy or relation
+ * rule answers 422 with the rule's code (e.g. guardian_required) and the form field it is about.
  */
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   try {
@@ -23,9 +30,23 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
     if (partner && partner.id !== org.id) return apiError(403, "forbidden", "This API key belongs to another practice.");
     if (!partner && !rateLimit(req, "book", 10, 10 * 60_000))
       return apiError(429, "rate_limited", "Too many booking attempts. Please try again in a few minutes.");
+    if (!(await canAcceptOnlineBookings(org))) return apiError(403, "not_accepting", bookingRuleMessage("not_accepting"));
 
     const input = bookingInputSchema.parse(await req.json());
     if (input.website) return apiError(422, "validation_error", "Invalid submission.");
+    if (!partner && !input.privacy) {
+      return apiError(422, "privacy_required", bookingRuleMessage("privacy_required"), { field: "privacy" });
+    }
+
+    const source = partner ? "api" : input.waitlistEntryId ? "waitlist" : (input.source ?? "online");
+    const processingContext = processingContextFor({
+      source,
+      viaApiKey: Boolean(partner),
+      embedded: false,
+      practiceRef: input.practiceRef,
+      orgId: org.id,
+    });
+    const { privacy } = input;
 
     const details = await createAppointment({
       orgId: org.id,
@@ -42,8 +63,25 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
       patientNote: input.note,
       isNewPatient: input.isNewPatient,
       waitlistEntryId: input.waitlistEntryId,
-      source: partner ? "api" : input.waitlistEntryId ? "waitlist" : (input.source ?? "online"),
+      source,
       online: true,
+      processingContext,
+      privacy: privacy
+        ? {
+            choices: {
+              platformConsent: privacy.platformConsent,
+              whatsapp: privacy.whatsapp,
+              feedback: privacy.feedback,
+              marketing: privacy.marketing,
+            },
+            noticeVersion: privacy.noticeVersion,
+            locale: privacy.locale ?? input.patient.locale ?? "it",
+            source: partner ? "api" : input.source === "widget" ? "widget" : "booking",
+            headers: req.headers,
+          }
+        : undefined,
+      relation: input.relation,
+      fundId: input.fundId,
     });
     return json({ appointment: publicAppointment(details) }, { status: 201 });
   } catch (err) {

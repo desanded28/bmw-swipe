@@ -2,9 +2,9 @@
 
 import { Copy, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { saveSchedule } from "@/app/dashboard/actions";
+import { saveSchedule } from "@/app/dashboard/actions/schedules";
 import { Button, Select } from "../ui";
-import { useRunAction } from "./AppointmentDrawer";
+import { useRunAction } from "./useRunAction";
 
 type Row = { key: number; weekday: number; locationId: string; start: string; end: string };
 const DAYS: [number, string][] = [
