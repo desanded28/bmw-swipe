@@ -19,9 +19,10 @@ export function GET(req: Request) {
     return json({
       organization: { id: org.id, slug: org.slug, name: org.name, timezone: org.timezone },
       locations: locs.map((l) => ({ ...l, rooms: roomRows.filter((r) => r.locationId === l.id) })),
-      // Everything about a practitioner except the calendar-feed secret's hash and who approved what.
+      // Everything about a practitioner except the calendar-feed secret's hash and which staff
+      // account approved, verified or issued what.
       practitioners: pracs.map(
-        ({ icsToken, icsTokenHash, icsTokenExpiresAt, userId, profileApprovedByUserId, alboVerifiedByUserId, ...p }) => ({
+        ({ icsToken, icsTokenHash, icsTokenExpiresAt, icsIssuedByUserId, userId, profileApprovedByUserId, alboVerifiedByUserId, ...p }) => ({
           ...p,
           serviceIds: links.filter((l) => l.practitionerId === p.id).map((l) => l.serviceId),
           schedules: sched.filter((s) => s.practitionerId === p.id),

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { Lock, ShieldCheck, UserX } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -6,7 +6,6 @@ import { notFound } from "next/navigation";
 import { AppointmentList } from "@/components/dashboard/AppointmentList";
 import { PatientCarePanel } from "@/components/dashboard/slots/PatientCarePanel";
 import { PatientDetailsForm, PatientNotesForm, RestrictedReasonForm } from "@/components/privacy-admin/PatientForms";
-import { ComplianceBanner } from "@/components/privacy-admin/ComplianceBanner";
 import { PatientPrivacyActions, type PrivacyActionKind } from "@/components/privacy-admin/PatientPrivacyActions";
 import { AccessLog, ConsentTimeline, PanelCard, RequestList } from "@/components/privacy-admin/PrivacyPanel";
 import { Avatar, Badge, Card } from "@/components/ui";
@@ -17,12 +16,12 @@ import { ENDONYM } from "@/i18n/config";
 import { fmtDay, fmtWhen, zonedDate } from "@/i18n/datefmt";
 import { getStaffLocale, getT } from "@/i18n/server";
 import { auditStaff } from "@/lib/audit";
-import { listAppointments, loadResources } from "@/lib/dashboard";
+import { listAppointments, listViewer, loadResources } from "@/lib/dashboard";
 import { fullName } from "@/lib/format";
-import { can, permissionsFor, requirePermission } from "@/lib/permissions";
+import { can, permissionsFor, requirePermission, visiblePatient } from "@/lib/permissions";
 import { currentConsents, isObjectable } from "@/lib/privacy/consent";
 import { hasRestrictedAccess, isDeferredErasure, restrictedView, restrictionReasonView } from "@/lib/privacy/erasure";
-import { gatePage } from "@/lib/privacy/gates";
+import { patientAccessFilter } from "@/lib/privacy/export";
 import { dueBadge, isOpenRequest, listPrivacyRequests } from "@/lib/privacy/requests";
 import { isPlatformConsentPurpose } from "@/lib/privacy/roles";
 import { getPrivacy } from "@/lib/privacy/settings";
@@ -51,7 +50,6 @@ export default async function PatientPage({
   searchParams: Promise<{ action?: string; request?: string }>;
 }) {
   const s = await requirePermission("patient.read");
-  const banner = await gatePage(s);
   const { id } = await params;
   const { action, request: requestId } = await searchParams;
   const locale = await getStaffLocale();
@@ -61,11 +59,13 @@ export default async function PatientPage({
   const tReminders = getT(locale, "reminders");
   const tz = s.org.timezone;
 
-  const [p] = await db
+  const [row] = await db
     .select()
     .from(patients)
     .where(and(eq(patients.id, id), eq(patients.orgId, s.org.id)));
-  if (!p) notFound();
+  if (!row) notFound();
+  // Fields this role may not read (the practice's notes) are dropped before anything uses the row.
+  const p = visiblePatient(s.role, row);
 
   const back = (
     <Link href="/dashboard/patients" className="text-sm font-semibold text-slate-500 hover:text-ink">
@@ -101,12 +101,11 @@ export default async function PatientPage({
   const perms = permissionsFor(s.role);
   const allow = (x: Parameters<typeof can>[1]) => can(s.role, x);
   const readOnly = Boolean(p.restrictedAt || p.erasedAt);
-  const history = await listAppointments(s.org.id, { patientId: id, includeCancelled: true, order: "desc" });
+  // As the viewer may see them: the record is open to them, so no masked names, and notes markers per permission.
+  const history = await listAppointments(s.org.id, { patientId: id, includeCancelled: true, order: "desc", viewer: listViewer(s, locale) });
   const apptIds = history.map((a) => a.id);
-  const aboutPatient = or(
-    and(eq(auditLog.entityType, "patient"), eq(auditLog.entityId, id)),
-    apptIds.length ? and(eq(auditLog.entityType, "appointment"), inArray(auditLog.entityId, apptIds)) : undefined,
-  );
+  // Rows on the record, its appointments, or naming it in metadata.patientId (requests, messages, forms…).
+  const aboutPatient = patientAccessFilter(id, apptIds);
   const [resources, log, ledger, access, requests, current] = await Promise.all([
     loadResources(s.org.id, tz),
     allow("messages.read")
@@ -153,7 +152,6 @@ export default async function PatientPage({
 
   return (
     <div className="mx-auto max-w-6xl">
-      <ComplianceBanner state={banner} />
       {back}
       <div className="mb-6 mt-3 flex flex-wrap items-center gap-4">
         <Avatar name={name} color={readOnly ? "#94a3b8" : "#475569"} size={56} />

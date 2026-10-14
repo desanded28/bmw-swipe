@@ -70,12 +70,24 @@ Code map:
 - **Emails about the account** are sent with `orgId` null (they never show in a practice's
   message log) and with a redacted log body: reset, confirmation and invitation links are
   credentials and never sit in the database in clear.
-- Every event is audited: `auth.login.success` (with `step: password | mfa | step_up`),
+- Every event is audited: `auth.signup` (a practice and its first owner created, next to the
+  `legal.accept` rows), `auth.login.success` (with `step: password | mfa | step_up`),
   `auth.login.fail` (with the reason: `password`, `unknown_account`, `throttled`),
-  `auth.logout`, `auth.mfa.enable`, `auth.mfa.fail`, `auth.password.change`,
-  `auth.password.reset`, `session.revoke`. Email confirmations and new confirmation links are
-  logged as `settings.update` on the user (`emailVerified: true`, `emailVerification: resent`)
-  until dedicated `auth.email.*` actions exist; signups leave their `legal.accept` rows.
+  `auth.logout`, `auth.email.verify` (entity user for the sign-in address, entity org for the
+  practice's email), `auth.email.resend`, `auth.mfa.enable` (also new recovery codes,
+  `change: recovery_codes_regenerated`), `auth.mfa.disable` (`change: disabled |
+  removed_for_replacement`), `auth.mfa.reset`, `auth.mfa.fail`, `auth.password.change`,
+  `auth.password.reset`, `session.revoke`. Rows written before these actions existed carry the
+  stand-ins: `settings.update` with `emailVerified` / `emailVerification: resent`,
+  `auth.mfa.enable` with `change: disabled`, `session.revoke` with `cause: mfa_reset`.
+- **Email confirmation**: one `email_verify` token kind (24 hours, single use) serves two
+  addresses, and the token's own address decides which: the user's sign-in address
+  (`users.emailVerifiedAt`) and the practice's email (`organizations.emailVerifiedAt`, which
+  online booking needs), the latter only when an owner of that practice issued the link and the
+  address is still the practice's. At signup both are the same address. A practice email changed
+  in the settings gets its own message (`sendPracticeEmailVerification()`, text
+  `authEmails.verifyPracticeEmail`): confirming it never marks the owner's own address as
+  verified, and a link whose address no longer matches either confirms nothing.
 
 ## Passwords
 
@@ -125,7 +137,7 @@ Code map:
 2. **Lost phone and codes**: an owner or admin of the practice resets it from *Team → Reset
    two-step* after checking the person's identity in person or by phone (never by email alone).
    The member is signed out everywhere and enrols again at the next sign-in. Only an owner can
-   reset another owner. The reset is audited (`session.revoke`, `cause: mfa_reset`) and the
+   reset another owner. The reset is audited (`auth.mfa.reset`) and the
    member is emailed. The authenticator protects the whole account, in every practice, so a
    practice can reset it only for someone who works for that practice alone: for a member of
    another practice too, or a platform admin, the team page doesn't offer it and the action
@@ -177,19 +189,21 @@ practice's ids and checks that nothing of it changes or leaks.
 - **What leaves with a manager** (`src/lib/security/offboarding.ts`): feed URLs and API key
   secrets are shown once, to whoever creates them, so on removal, or on a role change to a role
   that can no longer create them, Sorriso withdraws what the person holds:
-  - calendar feeds whose current URL they generated (the newest `ics.feed.rotate` for that
-    practitioner in the audit chain is theirs) are turned off once they can't manage the team;
-    the feed of their own practitioner profile stays while they are a member;
+  - calendar feeds whose current URL they generated (`practitioners.icsIssuedByUserId`, set by
+    `rotateIcsToken` and cleared when the feed is turned off) are turned off once they can't
+    manage the team; the feed of their own practitioner profile stays while they are a member;
   - on removal, the feed of the practitioner profile linked to them is turned off too, whoever
     generated it (it delivers to their calendar);
   - API keys they created are revoked once they can't manage API keys.
   Each is audited (`ics.feed.rotate` with `enabled: false`, `apikey.revoke`, with
   `cause: member_removed | role_changed`), the confirmation dialogs say so, and the result tells
-  the manager how many links and keys stopped working, to issue again if still needed. The
-  audit log is kept at least 24 months, longer than a feed URL lives (12), so every current URL
-  can be attributed except those carried over from before the migration (backfill), which have
-  no `ics.feed.rotate` row: after removing a manager, regenerate such feeds from the team page.
-- Audited: `member.invite` (sent, withdrawn, accepted), `member.role_change`, `member.remove`.
+  the manager how many links and keys stopped working, to issue again if still needed.
+  Migration 0003 filled `icsIssuedByUserId` for existing feeds from their newest
+  `ics.feed.rotate` audit row; feeds carried over from before the first migration (backfill)
+  have none and can't be attributed: after removing a manager, regenerate such feeds from the
+  team page.
+- Audited: `member.invite` (sent, accepted), `member.invite_withdraw`, `member.role_change`,
+  `member.remove`, `auth.mfa.reset`.
 
 ## Partner API keys
 
@@ -229,6 +243,21 @@ party. Each fetch is audited (`ics.feed.fetch`, with the HMAC of the caller's IP
 URL is shown once when created; only the linked practitioner or a manager can create, rotate
 or turn off a feed, and the card explains that the calendar provider receives the data.
 
+## Patient links
+
+- **Staff copying a link** (`issuePatientLink`, audited `appointment.link.issue`, 120 per user per
+  hour): the link opens the patient's data, so the restriction rules apply as in the drawer. A
+  restricted patient's (Art. 18) only for staff with `patient.restricted.read` who gave a reason
+  for that record recently (`restricted` otherwise); an erased patient's never (`erased`).
+- **Proving a contact** (`patients.verifiedContacts`): a patient's explicit POST from the link
+  (confirm, cancel, reschedule; never a GET, which mail scanners make) records the contact the
+  link was delivered to (`manageLinkContact()` in `src/lib/security/link-contact.ts`), only when
+  exactly one contact can be holding it: the visit was booked by staff or from a waitlist offer
+  (online, widget and API bookings also return the link to the browser that booked, which proves
+  nothing about the phone or email typed in), staff never copied the link, and every message that
+  carried it went to that one contact. Online bookings prove contacts by an SMS reply or a
+  one-time code instead.
+
 ## Headers
 
 Per request (`src/lib/security/headers.ts`, every response including redirects):
@@ -252,6 +281,11 @@ Static (`next.config.ts`): `poweredByHeader: false`; HSTS (production, 2 years, 
 `/{locale}/embed/*`; and on `/a/*`, `/{locale}/a/*`, `/api/ics/*`, `/api/v1/appointments/*` and
 `/{locale}/privacy/*`: `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`,
 `Cache-Control: private, no-store`.
+
+The embed's `frame-ancestors https:` doesn't name a practice's allowed websites: the proxy has no
+database access, and browsers ignore `frame-ancestors` in a `<meta>` tag. The embed page enforces
+the list itself and fails closed (a parent that isn't listed, or that the Referer doesn't vouch
+for, gets only a link that opens the booking in a new tab, nothing to click through a frame).
 
 ## Rate limits
 
@@ -298,7 +332,11 @@ except through the proxy (a direct client could write `X-Forwarded-For` itself).
   1. Add the new key in front (`k3:<new>,k2:<old>`) and deploy.
   2. `npm run db:encrypt -- --dry-run` shows how many values are not yet under `k3`;
      `npm run db:encrypt` rewrites them in batches of 500 (idempotent, safe to re-run; a value
-     edited meanwhile is left for the next run).
+     edited meanwhile is left for the next run). Besides every `encryptedText` column it rotates
+     the review texts `src/lib/reviews.ts` encrypts itself (`reviews.comment` and
+     `removed_reason`, `review_reports.details`, `patient_response` and `decision_reason`), but
+     only their values that are already encrypted: a published comment is public and stays in
+     plaintext.
   3. When it reports 0 left and backups encrypted under the old key have aged out, remove the
      old key.
 - **`HMAC_SECRET`** keys every lookup hash (contacts, IPs, tokens) and the audit chain. Rotating
@@ -325,14 +363,16 @@ except through the proxy (a direct client could write `X-Forwarded-For` itself).
 `--base`) fetches `/`, `/it/search`, `/it/c/<demo>`, `/it/book/<demo>`, `/it/embed/<demo>` and a
 manage link, and fails if the HTML or the CSS loads anything from another origin (the
 OpenStreetMap URL inside the click-to-load map template excepted), if a response sets a cookie
-other than the staff session, `NEXT_LOCALE` or the privacy-center session, or if a script lacks
-the CSP nonce. Run it before every release.
+other than the staff session, `NEXT_LOCALE` or the privacy-center session (`__Host-sorriso_pc`,
+`sorriso_pc` on plain http), or if a script lacks the CSP nonce. Run it before every release.
 
 ## Platform admins
 
-`npx tsx scripts/grant-platform-admin.ts <email> [--revoke]`. Platform admins must use two-step
-verification; every request to `/dashboard/platform/**` is audited (`platform.access`), and the
-grant itself is recorded on the platform audit chain.
+`npm run platform:grant -- <email> [--revoke]` (`scripts/grant-platform-admin.ts`). Platform
+admins must use two-step verification; every request to `/dashboard/platform/**` is audited
+(`platform.access`), and the grant or revocation itself is recorded on the platform audit chain
+(`platform.admin_grant`, `metadata.platformAdmin`; older rows: `member.role_change` with
+`scope: platform`). Revoking ends the user's sessions.
 
 ## Incident response
 

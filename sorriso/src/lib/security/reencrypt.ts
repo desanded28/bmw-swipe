@@ -4,7 +4,9 @@ import { decrypt, encrypt, isEncrypted } from "../crypto";
 /**
  * Re-encrypt every encryptedText column under the active key (the first entry of
  * DATA_ENCRYPTION_KEYS): plaintext written before encryption existed, and values encrypted with
- * an older key after a rotation. Run by scripts/encrypt-existing.ts (npm run db:encrypt).
+ * an older key after a rotation. Plus the plain text columns the code encrypts itself
+ * (ENCRYPTED_TEXT_VALUES): only their values that are already encrypted move to the active key.
+ * Run by scripts/encrypt-existing.ts (npm run db:encrypt).
  *
  * - Idempotent: only values not already "v1:<active kid>:" are selected, so a second run finds nothing.
  * - Batches of 500 rows, each batch one write transaction; an UPDATE only applies if the value is
@@ -14,7 +16,13 @@ import { decrypt, encrypt, isEncrypted } from "../crypto";
  * - A value that can't be decrypted (unknown key id, tampered) is counted and left alone.
  */
 
-export type EncryptedColumn = { table: string; column: string; aad: string };
+export type EncryptedColumn = {
+  table: string;
+  column: string;
+  aad: string;
+  /** Rotate only values already encrypted ("v1:…"), never encrypt plaintext (columns that mix both on purpose). */
+  encryptedOnly?: boolean;
+};
 
 /** Every encryptedText column in src/db/schema.ts (reencrypt.test.ts checks the list against the schema). */
 export const ENCRYPTED_COLUMNS: readonly EncryptedColumn[] = [
@@ -34,6 +42,23 @@ export const ENCRYPTED_COLUMNS: readonly EncryptedColumn[] = [
   { table: "form_submissions", column: "answers", aad: "form_submissions.answers" },
 ];
 
+/**
+ * Plain `text` columns that src/lib/reviews.ts encrypts with encrypt() and its own AADs. They are
+ * not encryptedText, and reviews.comment mixes on purpose: a published comment is public and
+ * stored in plaintext, a held one is encrypted. So only encrypted values are rotated; plaintext is
+ * left as it is (the readers pass it through).
+ */
+export const ENCRYPTED_TEXT_VALUES: readonly EncryptedColumn[] = [
+  { table: "reviews", column: "comment", aad: "reviews.comment", encryptedOnly: true },
+  { table: "reviews", column: "removed_reason", aad: "reviews.removed_reason", encryptedOnly: true },
+  { table: "review_reports", column: "details", aad: "review_reports.details", encryptedOnly: true },
+  { table: "review_reports", column: "patient_response", aad: "review_reports.patient_response", encryptedOnly: true },
+  { table: "review_reports", column: "decision_reason", aad: "review_reports.decision_reason", encryptedOnly: true },
+];
+
+/** Everything db:encrypt rotates. */
+export const ROTATED_COLUMNS: readonly EncryptedColumn[] = [...ENCRYPTED_COLUMNS, ...ENCRYPTED_TEXT_VALUES];
+
 export type ColumnReport = { table: string; column: string; pending: number; rewritten: number; failed: number };
 
 const IDENT = /^[a-z_]+$/;
@@ -50,9 +75,10 @@ export async function reencryptColumns(
   const batchSize = opts.batchSize ?? 500;
   const prefix = `v1:${activeKeyId()}:`;
   const reports: ColumnReport[] = [];
-  for (const { table, column, aad } of opts.columns ?? ENCRYPTED_COLUMNS) {
+  for (const { table, column, aad, encryptedOnly } of opts.columns ?? ROTATED_COLUMNS) {
     if (!IDENT.test(table) || !IDENT.test(column)) throw new Error(`Bad identifier ${table}.${column}`);
-    const stale = `"${column}" IS NOT NULL AND substr("${column}", 1, ${prefix.length}) != ?`;
+    let stale = `"${column}" IS NOT NULL AND substr("${column}", 1, ${prefix.length}) != ?`;
+    if (encryptedOnly) stale += ` AND substr("${column}", 1, 3) = 'v1:'`;
     const counted = await client.execute({ sql: `SELECT count(*) AS n FROM "${table}" WHERE ${stale}`, args: [prefix] });
     const report: ColumnReport = { table, column, pending: Number(counted.rows[0]?.n ?? 0), rewritten: 0, failed: 0 };
     reports.push(report);

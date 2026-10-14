@@ -139,6 +139,11 @@ export function LogRequestForm({ today, defaultLocale }: { today: string; defaul
           )}
         </div>
 
+        {patient ? null : (
+          <Field label={t("requests.log.answerContact")} hint={t("requests.log.answerContactHint")} className="max-w-md">
+            <Input name="answerContact" autoComplete="off" spellCheck={false} maxLength={254} />
+          </Field>
+        )}
         <Field label={t("requests.log.details")} hint={t("requests.log.detailsHint")}>
           <Textarea name="details" rows={3} maxLength={4000} />
         </Field>

@@ -142,7 +142,7 @@ export async function withdrawInvite(inviteId: string): Promise<ActionResult> {
         .set({ usedAt: new Date() })
         .where(and(eq(authTokens.id, String(inviteId)), eq(authTokens.kind, "invite"), eq(authTokens.orgId, s.org.id), isNull(authTokens.usedAt)));
       if (!res.rowsAffected) return fail(t("errors.notFound"), "not_found");
-      await auditStaff(s, "member.invite", undefined, { metadata: { inviteId: String(inviteId).slice(0, 16), withdrawn: true } });
+      await auditStaff(s, "member.invite_withdraw", undefined, { metadata: { inviteId: String(inviteId).slice(0, 16) } });
       return ok(t("team.invite.withdrawn"));
     },
     { permission: "team.manage" },
@@ -225,7 +225,7 @@ export async function resetMemberMfa(userId: string): Promise<ActionResult> {
       const now = new Date();
       await clearMfa(userId);
       const ended = await revokeUserSessions(userId);
-      await auditStaff(s, "session.revoke", { type: "user", id: userId }, { metadata: { cause: "mfa_reset", sessionsEnded: ended } });
+      await auditStaff(s, "auth.mfa.reset", { type: "user", id: userId }, { metadata: { sessionsEnded: ended } });
       const locale = staffEmailLocale(m, s.org);
       await sendAuthEmail({
         to: m.email,

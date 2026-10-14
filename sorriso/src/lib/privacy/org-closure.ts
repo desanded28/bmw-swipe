@@ -208,7 +208,7 @@ async function deleteCount(p: Promise<{ rowsAffected: number }>): Promise<number
  * Delete every row of the practice, children first (foreign keys may or may not cascade on the
  * connection). Returns the rows deleted per table.
  */
-async function deleteOrgRows(tx: Tx, orgId: string): Promise<Record<string, number>> {
+async function deleteOrgRows(tx: Tx, orgId: string, now: Date): Promise<Record<string, number>> {
   const ids = async (q: Promise<{ id: string }[]>) => (await q).map((r) => r.id);
   const appts = await ids(tx.select({ id: appointments.id }).from(appointments).where(eq(appointments.orgId, orgId)));
   const pats = await ids(tx.select({ id: patients.id }).from(patients).where(eq(patients.orgId, orgId)));
@@ -218,9 +218,10 @@ async function deleteOrgRows(tx: Tx, orgId: string): Promise<Record<string, numb
   const staff = (await tx.select({ id: memberships.userId }).from(memberships).where(eq(memberships.orgId, orgId))).map((r) => r.id);
   const inIds = (col: SQLiteColumn, list: string[]) => (list.length ? inArray(col, list) : sql`0`);
 
-  // Sorriso's own rows that point at the practice's patients keep no link to them.
+  // Sorriso's own rows that point at the practice's patients keep no link to them (an unlinked
+  // consent proof is kept consentMonths from unlinkedAt, like any other).
   if (pats.length) {
-    await tx.update(consents).set({ patientId: null }).where(and(isNull(consents.orgId), inArray(consents.patientId, pats)));
+    await tx.update(consents).set({ patientId: null, unlinkedAt: now }).where(and(isNull(consents.orgId), inArray(consents.patientId, pats)));
     await tx.update(privacyRequests).set({ patientId: null }).where(and(isNull(privacyRequests.orgId), inArray(privacyRequests.patientId, pats)));
     await tx.update(messages).set({ patientId: null, appointmentId: null }).where(and(isNull(messages.orgId), inArray(messages.patientId, pats)));
   }
@@ -298,7 +299,7 @@ export async function purgeOrg(orgId: string, i: { now?: Date; actor?: Actor } =
     }
   }
 
-  const counts = await db.transaction((tx) => deleteOrgRows(tx, orgId));
+  const counts = await db.transaction((tx) => deleteOrgRows(tx, orgId, now));
   // The practice's access log goes too (it was in the export): its reasons, ids and IP hashes are
   // the practice's data, which Art. 28(3)(g) says to delete. Only the last hash stays, as an anchor.
   counts.audit_log = (await pruneAuditLog(orgId, END_OF_TIME)).deleted;

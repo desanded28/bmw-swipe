@@ -133,8 +133,10 @@ export type RequestFacts = {
   language: string;
   requester: string | null;
   details: string | null;
-  /** The contact kept from an erased record, to answer the request by hand. */
+  /** The request's reply contact (answerContact): kept from an erased record, or given by an unlinked requester. */
   contact?: string | null;
+  /** The contact was kept from the linked record when it was erased (staff answer by hand). */
+  contactKept?: boolean;
   decision: string | null;
   decisionReason: string | null;
   closedAt: string | null;
@@ -175,11 +177,17 @@ export function RequestFactsCard({ t, f }: { t: T; f: RequestFacts }) {
       </dl>
       <h2 className="mb-1 mt-5 text-sm font-bold">{t("requests.detail.details")}</h2>
       <p className="whitespace-pre-line rounded-xl bg-slate-50 p-3 text-sm text-slate-700">{f.details ?? t("requests.detail.noDetails")}</p>
-      {f.contact ? (
+      {f.contact && f.contactKept ? (
         <div className="mt-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900 ring-1 ring-amber-200">
           <p className="font-semibold">{t("requests.detail.contactSnapshot")}</p>
           <p className="break-all">{f.contact}</p>
           <p className="mt-1 text-xs">{t("requests.detail.contactSnapshotHint")}</p>
+        </div>
+      ) : f.contact ? (
+        <div className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-700 ring-1 ring-slate-200">
+          <p className="font-semibold">{t("requests.detail.replyTo")}</p>
+          <p className="break-all">{f.contact}</p>
+          <p className="mt-1 text-xs text-slate-500">{t("requests.detail.replyToHint")}</p>
         </div>
       ) : null}
     </Card>

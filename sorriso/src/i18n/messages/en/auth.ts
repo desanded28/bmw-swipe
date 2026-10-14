@@ -98,7 +98,10 @@ export default {
   verify: {
     title: "Confirm your email",
     body: "Confirm {email} as the email address of your Sorriso account.",
+    bodyPractice:
+      "Confirm {email} as the email address of {practice} on Sorriso. Patients' replies and privacy requests go to this address, and online booking starts once it is confirmed.",
     submit: "Confirm my email",
+    submitPractice: "Confirm this address",
     invalid: "This confirmation link is invalid or has expired. Log in and send a new one from My security.",
     login: "Log in",
   },

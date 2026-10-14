@@ -14,11 +14,14 @@ import {
   organizations,
   patients,
   patientSessions,
+  practitioners,
   privacyRequests,
+  profileStats,
   rateLimits,
   recalls,
   reminders,
   reviewReports,
+  reviews,
   sessions,
   verificationCodes,
   waitlist,
@@ -27,6 +30,7 @@ import {
 } from "@/db/schema";
 import { audit, pruneAuditLog } from "../audit";
 import { logError, logInfo } from "../log";
+import { APPEAL_DAYS } from "../reviews";
 import { resolveSettings } from "../settings";
 import { addDays, todayIn } from "../time";
 import { withdrawConsent } from "./consent";
@@ -82,6 +86,13 @@ export const PLATFORM_RETENTION = {
    * time to defend the decision; their free text is about patients.
    */
   decidedReviewReportMonths: 24,
+  /**
+   * The text of a removed review (its comment and the statement of reasons) once the decision is
+   * final: the DSA Art. 20 appeal window (reviews.ts APPEAL_DAYS) with no appeal pending.
+   */
+  removedReviewTextDays: APPEAL_DAYS,
+  /** Daily profile views and search impressions of practitioners (marketplace statistics). */
+  profileStatsMonths: 24,
   /** A privacy-notice version superseded this long ago (limitation period, art. 2946 c.c.). */
   supersededNoticeYears: 10,
   /** Certificates of deletion of closed practices are kept for the limitation period. */
@@ -149,14 +160,21 @@ async function retainMessages(orgId: string | null, r: RetentionSettings, now: D
 }
 
 async function retainLedgers(orgId: string | null, r: RetentionSettings, now: Date, c: Counts) {
-  // Consent proofs of records that are gone (erased or merged away) after the limitation period.
+  // Consent proofs of records that are gone (erased or merged away), consentMonths after they were
+  // unlinked from the record (rows unlinked before unlinkedAt existed: after their own date).
   bump(
     c,
     "consentProofsDeleted",
     (
       await db
         .delete(consents)
-        .where(and(orgScope(consents.orgId, orgId), isNull(consents.patientId), lt(consents.createdAt, monthsAgo(now, r.consentMonths))))
+        .where(
+          and(
+            orgScope(consents.orgId, orgId),
+            isNull(consents.patientId),
+            lt(sql`coalesce(${consents.unlinkedAt}, ${consents.createdAt})`, monthsAgo(now, r.consentMonths).getTime()),
+          ),
+        )
     ).rowsAffected,
   );
   bump(
@@ -226,11 +244,13 @@ async function patientActivity(orgId: string) {
       createdAt: patients.createdAt,
       restrictedAt: patients.restrictedAt,
       restrictionReason: patients.restrictionReason,
+      erasureRequestedAt: patients.erasureRequestedAt,
       retainUntil: patients.retainUntil,
       locale: patients.locale,
       lastStart: sql<number | null>`(select max(a.starts_at) from appointments a where a.patient_id = ${PATIENT_ID} and a.org_id = ${orgId})`,
       activeWaitlist: sql<number>`(select count(*) from waitlist w where w.patient_id = ${PATIENT_ID} and w.status = 'active')`,
-      unexportedForms: sql<number>`(select count(*) from form_submissions f where f.patient_id = ${PATIENT_ID} and f.exported_at is null)`,
+      // Signed forms not yet copied to the clinical record (an unsigned row is only an invitation).
+      unexportedForms: sql<number>`(select count(*) from form_submissions f where f.patient_id = ${PATIENT_ID} and f.signed_at is not null and f.exported_at is null)`,
     })
     .from(patients)
     .where(and(eq(patients.orgId, orgId), isNull(patients.erasedAt), isNull(patients.mergedIntoId)));
@@ -388,8 +408,8 @@ async function retainOrg(org: { id: string; timezone: string; settings: unknown 
     .where(and(eq(appointments.orgId, orgId), lt(appointments.startsAt, daysAgo(now, r.reminderDays))));
   bump(c, "remindersDeleted", (await db.delete(reminders).where(inArray(reminders.appointmentId, oldAppts))).rowsAffected);
 
-  // Waitlist: closed entries 30 days after they closed (the last offer, or creation, stands in
-  // for the closing date the schema doesn't keep); active ones waitlistDays after latestDate.
+  // Waitlist: closed entries 30 days after they closed (closedAt; for entries closed before that
+  // column existed, the last offer or the creation date); active ones waitlistDays after latestDate.
   bump(
     c,
     "waitlistDeleted",
@@ -400,7 +420,7 @@ async function retainOrg(org: { id: string; timezone: string; settings: unknown 
           and(
             eq(waitlist.orgId, orgId),
             inArray(waitlist.status, ["booked", "removed"]),
-            lt(sql`coalesce(${waitlist.lastOfferedAt}, ${waitlist.createdAt})`, daysAgo(now, PLATFORM_RETENTION.closedWaitlistDays).getTime()),
+            lt(sql`coalesce(${waitlist.closedAt}, ${waitlist.lastOfferedAt}, ${waitlist.createdAt})`, daysAgo(now, PLATFORM_RETENTION.closedWaitlistDays).getTime()),
           ),
         )
     ).rowsAffected,
@@ -434,14 +454,23 @@ async function retainOrg(org: { id: string; timezone: string; settings: unknown 
   await lapseMarketing(orgId, now, c);
   await recomputeNoShows(orgId, now, c);
 
-  // Anamnesis forms already exported to the clinical record.
+  // Anamnesis forms formSubmissionMonths after they were copied to the clinical record. Forms not
+  // copied yet, and unsigned rows (an invitation sent, which keeps the job from inviting twice),
+  // are never deleted here: they go with the record (erasePatient).
   bump(
     c,
     "formsDeleted",
     (
       await db
         .delete(formSubmissions)
-        .where(and(eq(formSubmissions.orgId, orgId), isNotNull(formSubmissions.exportedAt), lt(formSubmissions.createdAt, monthsAgo(now, r.formSubmissionMonths))))
+        .where(
+          and(
+            eq(formSubmissions.orgId, orgId),
+            isNotNull(formSubmissions.signedAt),
+            isNotNull(formSubmissions.exportedAt),
+            lt(formSubmissions.exportedAt, monthsAgo(now, r.formSubmissionMonths)),
+          ),
+        )
     ).rowsAffected,
   );
   bump(
@@ -471,6 +500,44 @@ async function retainOrg(org: { id: string; timezone: string; settings: unknown 
     ).rowsAffected,
   );
 
+  // The text of removed reviews (the comment and the statement of reasons, which may describe
+  // health details) once the decision is final: the appeal window has passed and no report or
+  // appeal about the review is still open. The rating and dates stay.
+  bump(
+    c,
+    "removedReviewTextsCleared",
+    (
+      await db
+        .update(reviews)
+        .set({ comment: null, removedReason: null })
+        .where(
+          and(
+            eq(reviews.orgId, orgId),
+            eq(reviews.status, "removed"),
+            lt(reviews.decidedAt, daysAgo(now, PLATFORM_RETENTION.removedReviewTextDays)),
+            or(isNotNull(reviews.comment), isNotNull(reviews.removedReason)),
+            sql`not exists (select 1 from review_reports rr where rr.review_id = ${reviews.id} and rr.status in ('open', 'awaiting_patient'))`,
+          ),
+        )
+    ).rowsAffected,
+  );
+
+  // Practitioners' daily profile statistics.
+  bump(
+    c,
+    "profileStatsDeleted",
+    (
+      await db
+        .delete(profileStats)
+        .where(
+          and(
+            inArray(profileStats.practitionerId, db.select({ id: practitioners.id }).from(practitioners).where(eq(practitioners.orgId, orgId))),
+            lt(profileStats.day, todayIn(org.timezone, monthsAgo(now, PLATFORM_RETENTION.profileStatsMonths))),
+          ),
+        )
+    ).rowsAffected,
+  );
+
   // Requests of erased patients keep their text (and the contact kept to answer them) only until
   // ERASED_REQUEST_TEXT_DAYS after they were closed.
   const erased = db
@@ -483,14 +550,19 @@ async function retainOrg(org: { id: string; timezone: string; settings: unknown 
     (
       await db
         .update(privacyRequests)
-        .set({ details: null, decisionReason: null, extensionReason: null })
+        .set({ details: null, decisionReason: null, extensionReason: null, answerContact: null })
         .where(
           and(
             eq(privacyRequests.orgId, orgId),
             isNotNull(privacyRequests.closedAt),
             lt(privacyRequests.closedAt, daysAgo(now, ERASED_REQUEST_TEXT_DAYS)),
             inArray(privacyRequests.patientId, erased),
-            or(isNotNull(privacyRequests.details), isNotNull(privacyRequests.decisionReason), isNotNull(privacyRequests.extensionReason)),
+            or(
+              isNotNull(privacyRequests.details),
+              isNotNull(privacyRequests.decisionReason),
+              isNotNull(privacyRequests.extensionReason),
+              isNotNull(privacyRequests.answerContact),
+            ),
           ),
         )
     ).rowsAffected,

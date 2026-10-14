@@ -38,7 +38,7 @@ import {
   restrictPatient,
   unrestrictPatient,
 } from "./erasure";
-import { splitContactSnapshot } from "./requests";
+import { completePrivacyRequest, notifyRequester } from "./requests";
 
 const NOW = new Date("2030-03-01T09:00:00Z");
 const HOUR = 3_600_000;
@@ -320,6 +320,8 @@ describe("erasePatient: anonymise (pseudonymisation)", () => {
     const proofs = await db.select().from(consents).where(and(eq(consents.orgId, p.orgId), eq(consents.purpose, "marketing")));
     expect(proofs).toHaveLength(1);
     expect(proofs[0].patientId).toBeNull();
+    // Retention counts consentMonths from the unlinking, not from the consent's own date.
+    expect(proofs[0].unlinkedAt?.getTime()).toBe(NOW.getTime());
     expect(await db.select().from(consents).where(eq(consents.patientId, patient.id))).toEqual([]);
 
     // Review shown under a pseudonym; comment, reply and removal reason gone, and the reports' text.
@@ -330,7 +332,7 @@ describe("erasePatient: anonymise (pseudonymisation)", () => {
 
     // Closed requests keep their type, dates and decision, not their text.
     const closed = await db.select().from(privacyRequests).where(and(eq(privacyRequests.patientId, patient.id), eq(privacyRequests.type, "access")));
-    expect(closed[0]).toMatchObject({ decision: "granted", details: null, decisionReason: null, extensionReason: null });
+    expect(closed[0]).toMatchObject({ decision: "granted", details: null, decisionReason: null, extensionReason: null, answerContact: null });
 
     const [row] = await db
       .select()
@@ -357,9 +359,12 @@ describe("erasePatient: anonymise (pseudonymisation)", () => {
     await erasePatient(p.orgId, patient.id, { mode: "anonymise", reason: "Richiesta", actor: STAFF, now: NOW });
     const [r] = await db.select().from(privacyRequests).where(eq(privacyRequests.id, id));
     expect(r.status).toBe("open");
-    const kept = splitContactSnapshot(r.details);
-    expect(kept.text).toBe("Chiede la cancellazione, rispondere via email");
-    expect(kept.contact).toBe(`${patient.email} · ${patient.phone}`);
+    // The requester's words untouched; the contact in answerContact (encrypted), not in the text.
+    expect(r.details).toBe("Chiede la cancellazione, rispondere via email");
+    expect(r.answerContact).toBe(`${patient.email} · ${patient.phone}`);
+    // Staff answer it by hand: notifyRequester doesn't send to an erased record's kept contact.
+    const closed = await db.transaction((tx) => completePrivacyRequest(tx, { orgId: p.orgId, id, decision: "granted", reason: "Fatto.", actor: STAFF, now: NOW }));
+    expect(await notifyRequester(closed, "requestGranted")).toBe(false);
   });
 
   it("answers only an open request of this patient, all or nothing", async () => {
@@ -412,11 +417,23 @@ describe("erasePatient: anonymise (pseudonymisation)", () => {
     expect(sister.phone).toBe(shared);
   });
 
+  it("is not held up by an unsigned form (only the record of an invitation sent)", async () => {
+    const patient = await addPatient();
+    const templateId = newId();
+    await db.insert(formTemplates).values({ id: templateId, orgId: p.orgId, kind: "anamnesis", version: `i${templateId}`, schema: { version: "1", sections: [] } });
+    await db.insert(formSubmissions).values({ id: newId(), orgId: p.orgId, patientId: patient.id, templateId, version: "1", locale: "it", answers: "{}" });
+    const r = await erasePatient(p.orgId, patient.id, { mode: "anonymise", reason: "Richiesta", actor: STAFF, now: NOW });
+    expect(r.mode).toBe("anonymise");
+    expect(await db.select().from(formSubmissions).where(eq(formSubmissions.patientId, patient.id))).toEqual([]);
+  });
+
   it("refuses to delete medical history forms not yet in the clinical record", async () => {
     const patient = await addPatient();
     const templateId = newId();
     await db.insert(formTemplates).values({ id: templateId, orgId: p.orgId, kind: "anamnesis", version: `x${templateId}`, schema: { version: "1", sections: [] } });
-    await db.insert(formSubmissions).values({ id: newId(), orgId: p.orgId, patientId: patient.id, templateId, version: "1", locale: "it", answers: "{}" });
+    await db
+      .insert(formSubmissions)
+      .values({ id: newId(), orgId: p.orgId, patientId: patient.id, templateId, version: "1", locale: "it", answers: "{}", signerName: "Zebedeo", signedAt: NOW });
     await expect(erasePatient(p.orgId, patient.id, { mode: "anonymise", reason: "Richiesta", actor: STAFF, now: NOW })).rejects.toMatchObject({
       code: "forms_not_exported",
     });
@@ -426,6 +443,9 @@ describe("erasePatient: anonymise (pseudonymisation)", () => {
     const [row] = await db.select().from(patients).where(eq(patients.id, patient.id));
     expect(row.restrictedAt).not.toBeNull();
     expect(row.erasedAt).toBeNull();
+    // Restricted for the forms, not on an erasure request: no deferred erasure.
+    expect(row.erasureRequestedAt).toBeNull();
+    expect(isDeferredErasure(row)).toBe(false);
   });
 
   it("is scoped to the practice and refuses a second erasure", async () => {
@@ -454,11 +474,13 @@ describe("erasePatient: keep on a legal ground and restrict", () => {
     expect(row.restrictedAt?.getTime()).toBe(NOW.getTime());
     // Marked as a deferred erasure (the retention job carries it out after retainUntil), also
     // when staff later update the restriction's reason.
+    expect(row.erasureRequestedAt?.getTime()).toBe(NOW.getTime());
     expect(isDeferredErasure(row)).toBe(true);
-    expect(restrictionReasonView(row.restrictionReason)).toEqual({ kind: "erasure", text: "Cartella clinica" });
-    await restrictPatient(p.orgId, patient.id, { reason: "Cartella clinica, 10 anni", actor: STAFF, now: NOW });
+    expect(restrictionReasonView(row.restrictionReason)).toEqual({ kind: "text", text: "Cartella clinica" });
+    await restrictPatient(p.orgId, patient.id, { reason: "Cartella clinica, 10 anni", actor: STAFF, now: new Date(NOW.getTime() + DAY) });
     const [updated] = await db.select().from(patients).where(eq(patients.id, patient.id));
     expect(isDeferredErasure(updated)).toBe(true);
+    expect(updated.erasureRequestedAt?.getTime()).toBe(NOW.getTime());
     expect(updated.retainUntil).toBe("2040-03-01");
     const [appt] = await db.select().from(appointments).where(eq(appointments.id, future.id));
     expect(appt.status).toBe("cancelled");
@@ -486,6 +508,21 @@ describe("erasePatient: keep on a legal ground and restrict", () => {
     expect(r).toMatchObject({ status: "completed", decision: "partially_granted", decisionReason: "Conserviamo la cartella clinica fino al 2040, poi la cancelliamo." });
     const [sent] = await db.select().from(messages).where(eq(messages.patientId, patient.id));
     expect(sent).toMatchObject({ to: patient.email, channel: "email" });
+  });
+
+  it("still reads a deferred erasure marked the old way (restrictionReason prefix), and moves it to the column", async () => {
+    const patient = await addPatient({ restrictedAt: NOW, restrictionReason: "erasure:Cartella clinica", retainUntil: "2040-03-01" });
+    expect(isDeferredErasure(patient)).toBe(true);
+    expect(restrictionReasonView(patient.restrictionReason)).toEqual({ kind: "erasure", text: "Cartella clinica" });
+    await restrictPatient(p.orgId, patient.id, { reason: "Cartella clinica, 10 anni", actor: STAFF, now: NOW });
+    const [row] = await db.select().from(patients).where(eq(patients.id, patient.id));
+    expect(row).toMatchObject({ restrictionReason: "Cartella clinica, 10 anni" });
+    expect(row.erasureRequestedAt?.getTime()).toBe(NOW.getTime());
+    expect(isDeferredErasure(row)).toBe(true);
+    // Lifting the restriction (the patient withdrew the request) ends the deferred erasure.
+    await unrestrictPatient(p.orgId, patient.id, { reason: "Ritirata", actor: STAFF, now: NOW });
+    const [lifted] = await db.select().from(patients).where(eq(patients.id, patient.id));
+    expect(lifted).toMatchObject({ restrictedAt: null, restrictionReason: null, erasureRequestedAt: null });
   });
 
   it("shows retention codes as codes, and staff text as text", () => {

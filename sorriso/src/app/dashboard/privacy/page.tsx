@@ -8,8 +8,6 @@ import { auditStaff } from "@/lib/audit";
 import { can, requirePermission } from "@/lib/permissions";
 import { inboxRow, listPrivacyRequests } from "@/lib/privacy/requests";
 import { todayIn } from "@/lib/time";
-import { ComplianceBanner } from "@/components/privacy-admin/ComplianceBanner";
-import { gatePage } from "@/lib/privacy/gates";
 
 export async function generateMetadata(): Promise<Metadata> {
   return { title: getT(await getStaffLocale(), "privacyAdmin")("requests.title") };
@@ -23,7 +21,6 @@ export async function generateMetadata(): Promise<Metadata> {
  */
 export default async function PrivacyRequestsPage({ searchParams }: { searchParams: Promise<{ status?: string; type?: string; overdue?: string }> }) {
   const s = await requirePermission("privacy.requests");
-  const banner = await gatePage(s);
   const locale = await getStaffLocale();
   const t = getT(locale, "privacyAdmin");
   const sp = await searchParams;
@@ -39,7 +36,6 @@ export default async function PrivacyRequestsPage({ searchParams }: { searchPara
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
-      <ComplianceBanner state={banner} />
       <PageHeader title={t("requests.title")} description={t("requests.description")} />
       <RequestInbox t={t} rows={rows.map((r) => inboxRow(t, r, o))} filter={filter} base="/dashboard/privacy" />
       <LogRequestForm today={todayIn(s.org.timezone, now)} defaultLocale={s.org.defaultLocale} />

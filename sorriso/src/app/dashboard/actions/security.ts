@@ -165,7 +165,7 @@ export async function removeMfa(mode: "replace" | "disable"): Promise<ActionResu
     await clearMfa(s.user.id);
     await audit({
       ...actor(s),
-      action: "auth.mfa.enable",
+      action: "auth.mfa.disable",
       entity: { type: "user", id: s.user.id },
       metadata: { change: mode === "replace" ? "removed_for_replacement" : "disabled" },
       headers: await requestHeaders(),
@@ -212,12 +212,11 @@ export async function resendVerificationEmail(): Promise<ActionResult> {
     if (!user || user.emailVerifiedAt) return ok(t("email.resent"));
     const owned = s.orgs.find((o) => o.role === "owner" && o.org.email?.toLowerCase() === user.email.toLowerCase());
     const { token, id } = await issueAuthToken({ kind: "email_verify", userId: user.id, email: user.email, orgId: owned?.org.id ?? null });
-    // Logged as a change to the account (there is no auth.email.* action yet; lead CR).
     await audit({
       ...actor(s),
-      action: "settings.update",
+      action: "auth.email.resend",
       entity: { type: "user", id: user.id },
-      metadata: { emailVerification: "resent", tokenId: id.slice(0, 16) },
+      metadata: { tokenId: id.slice(0, 16) },
       headers: await requestHeaders(),
     });
     const locale = staffEmailLocale(user, s.org);

@@ -132,6 +132,11 @@ export async function createPrivacyRequest(
     requesterLocale: Locale;
     /** contactHash() of the verified contact that filed it (privacy center, manage link). */
     contactHash?: string | null;
+    /**
+     * Where to send the answer when no patient record is linked (stored encrypted): an email
+     * and/or a phone number, joined by joinContacts().
+     */
+    answerContact?: string | null;
     /** Who filed or logged it; derived from the channel when omitted (staff pass their user). */
     actor?: AuditEvent["actor"];
     headers?: Headers;
@@ -156,6 +161,7 @@ export async function createPrivacyRequest(
     status: "open",
     details: i.details?.trim() || null,
     contactHash: i.contactHash ?? null,
+    answerContact: i.answerContact?.trim() || null,
     requesterLocale: i.requesterLocale,
     receivedAt,
     dueAt,
@@ -318,15 +324,21 @@ export async function completePrivacyRequest(
   return row;
 }
 
-// ---------------------------------------------------------------- contact kept for the answer
+// ---------------------------------------------------------------- the reply contact
 
 /**
- * When a patient is erased while one of their requests is still open, the request keeps the
- * contact the record had, appended to its (encrypted) details after this marker, so staff can
- * still answer it (Art. 12(3)-(4)). The text goes once the request is answered, or 30 days after
- * it is closed (ERASED_REQUEST_TEXT_DAYS, the retention job).
+ * A request's reply contact is stored encrypted in privacy_requests.answer_contact: the contact an
+ * erased record had, kept by erasePatient() for the requests still open so staff can still answer
+ * them (Art. 12(3)-(4)), or the contact given by a requester not linked to a patient record
+ * (logged by staff, or filed through the privacy center), to which the answer is then sent. A kept
+ * contact goes once the request is answered, or 30 days after it is closed
+ * (ERASED_REQUEST_TEXT_DAYS, the retention job). Rows written before the column existed carry the
+ * contact in their (encrypted) details after this marker: it is still read (requestTextAndContact).
  */
 export const CONTACT_SNAPSHOT_MARK = "[contact] ";
+
+/** Several contacts in one answer_contact value: "a@example.org · +393331234567". */
+const CONTACT_SEPARATOR = " · ";
 
 /** Days the free text of a closed request of an erased patient is kept, to answer by hand. */
 export const ERASED_REQUEST_TEXT_DAYS = 30;
@@ -336,13 +348,22 @@ export function contactsOf(p: Pick<Patient, "email" | "phone" | "guardianEmail" 
   return [...new Set([p.email, p.phone, p.guardianEmail, p.guardianPhone].filter((v): v is string => Boolean(v)))];
 }
 
-export function withContactSnapshot(details: string | null, contacts: readonly string[]): string | null {
-  if (!contacts.length) return details;
-  const { text } = splitContactSnapshot(details);
-  return `${text ? `${text}\n\n` : ""}${CONTACT_SNAPSHOT_MARK}${contacts.join(" · ")}`;
+/** The contacts of an answer_contact value, in order. */
+export function splitContacts(value: string | null | undefined): string[] {
+  return (value ?? "")
+    .split(CONTACT_SEPARATOR)
+    .map((c) => c.trim())
+    .filter(Boolean);
 }
 
-/** The requester's own words and the contact kept from an erased record, apart (for display). */
+/** One answer_contact value for these contacts (duplicates dropped), or null when there are none. */
+export function joinContacts(...lists: (readonly string[] | string | null | undefined)[]): string | null {
+  const all = lists.flatMap((l) => (typeof l === "string" ? splitContacts(l) : l ? [...l] : []));
+  const unique = [...new Set(all.map((c) => c.trim()).filter(Boolean))];
+  return unique.length ? unique.join(CONTACT_SEPARATOR) : null;
+}
+
+/** Legacy rows: the requester's own words and a contact appended after CONTACT_SNAPSHOT_MARK, apart. */
 export function splitContactSnapshot(details: string | null): { text: string | null; contact: string | null } {
   if (!details) return { text: null, contact: null };
   const at = details.startsWith(CONTACT_SNAPSHOT_MARK) ? 0 : details.lastIndexOf(`\n\n${CONTACT_SNAPSHOT_MARK}`);
@@ -351,6 +372,24 @@ export function splitContactSnapshot(details: string | null): { text: string | n
   const contact = details.slice(markAt + CONTACT_SNAPSHOT_MARK.length).trim();
   if (!contact || contact.includes("\n")) return { text: details, contact: null };
   return { text: details.slice(0, at).trim() || null, contact };
+}
+
+/** The request's text and its reply contact, for display: the column first, else a legacy marker. */
+export function requestTextAndContact(r: Pick<PrivacyRequest, "details" | "answerContact">): { text: string | null; contact: string | null } {
+  const legacy = splitContactSnapshot(r.details);
+  return { text: legacy.text, contact: r.answerContact ?? legacy.contact };
+}
+
+/**
+ * Where to send the answer of a request not linked to a patient record: the first email of its
+ * reply contact, else the first phone number. Null when it has none.
+ */
+function replyTarget(r: Pick<PrivacyRequest, "answerContact" | "requesterLocale">): ContactTarget | null {
+  const contacts = splitContacts(r.answerContact);
+  const email = contacts.find((c) => c.includes("@")) ?? null;
+  const phone = contacts.find((c) => !c.includes("@")) ?? null;
+  if (!email && !phone) return null;
+  return { id: null, firstName: "", email, phone, birthDate: null, locale: r.requesterLocale, guardianName: null, guardianPhone: null, guardianEmail: null };
 }
 
 // ---------------------------------------------------------------- messages to the requester
@@ -395,10 +434,10 @@ export function messageDate(d: Date, locale: Locale, tz = DEFAULT_TIMEZONE): str
   return fmtDay(zonedDate(d, tz), "long", locale);
 }
 
-type ContactTarget = Pick<
-  Patient,
-  "id" | "firstName" | "email" | "phone" | "birthDate" | "locale" | "guardianName" | "guardianPhone" | "guardianEmail"
->;
+/** A patient record, or (id null) a requester known only by the request's reply contact. */
+type ContactTarget = Pick<Patient, "firstName" | "email" | "phone" | "birthDate" | "locale" | "guardianName" | "guardianPhone" | "guardianEmail"> & {
+  id: string | null;
+};
 
 /**
  * Send a privacy notice about the patient's own rights (a request's outcome, an extension, the
@@ -457,8 +496,10 @@ export async function notifyPatientDirect(
 }
 
 /**
- * Tell the requester about an extension or the outcome, in the language they wrote in. Needs the
- * patient record the request is linked to; returns false when it has none (or no contact left).
+ * Tell the requester about an extension or the outcome, in the language they wrote in: at the
+ * contact of the patient record the request is linked to, or, for a request linked to no record,
+ * at the reply contact it was filed with. Returns false when there is no contact to use (an erased
+ * record's kept contact is for staff to answer by hand: see requestTextAndContact).
  */
 export async function notifyRequester(
   r: PrivacyRequest,
@@ -473,7 +514,10 @@ export async function notifyRequester(
   } = {},
   tx: Tx = db,
 ): Promise<boolean> {
-  if (!r.patientId) return false;
+  if (!r.patientId) {
+    const target = replyTarget(r);
+    return target ? notifyPatientDirect({ orgId: r.orgId, patient: target, kind, vars: await requesterVars(r, kind, r.requesterLocale, tx), locale: r.requesterLocale, now: opts.now }, tx) : false;
+  }
   const [patient] = opts.patient
     ? [opts.patient]
     : await tx
@@ -482,16 +526,19 @@ export async function notifyRequester(
         .where(and(eq(patients.id, r.patientId), r.orgId === null ? undefined : eq(patients.orgId, r.orgId)));
   if (!patient) return false;
   const locale = isLocale(r.requesterLocale) ? r.requesterLocale : patient.locale;
-  const org = await senderOf(r.orgId, tx);
-  const tz = org?.timezone ?? DEFAULT_TIMEZONE;
+  return notifyPatientDirect({ orgId: r.orgId, patient, kind, vars: await requesterVars(r, kind, locale, tx), locale, now: opts.now }, tx);
+}
+
+/** The variables of a message to the requester, in their language and the practice's time zone. */
+async function requesterVars(r: PrivacyRequest, kind: RequesterMessageKind, locale: Locale, tx: Tx): Promise<Record<string, string>> {
+  const tz = (await senderOf(r.orgId, tx))?.timezone ?? DEFAULT_TIMEZONE;
   const t = looseT(locale, "privacyAdminEmails");
-  const vars: Record<string, string> = {
+  return {
     type: t(`types.${r.type}`),
     received: messageDate(r.receivedAt, locale, tz),
     until: messageDate(effectiveDueAt(r), locale, tz),
     reason: (kind === "requestExtended" ? r.extensionReason : r.decisionReason) ?? "",
   };
-  return notifyPatientDirect({ orgId: r.orgId, patient, kind, vars, locale, now: opts.now }, tx);
 }
 
 // ---------------------------------------------------------------- staff emails

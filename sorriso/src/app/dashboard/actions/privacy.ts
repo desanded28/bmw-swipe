@@ -2,6 +2,7 @@
 
 import { and, eq } from "drizzle-orm";
 import { headers } from "next/headers";
+import { z } from "zod";
 import { db } from "@/db";
 import { LEGAL_DOCS, PRIVACY_REQUEST_CHANNELS, PRIVACY_REQUEST_DECISIONS, PRIVACY_REQUEST_TYPES, type LegalDoc } from "@/db/enums";
 import { organizations, patients, type OrgSettings, type PrivacySettings, type RetentionSettings } from "@/db/schema";
@@ -12,9 +13,12 @@ import { getStaffLocale, getT } from "@/i18n/server";
 import { auditStaff } from "@/lib/audit";
 import { requirePlatformAdmin, requireStepUp, type StaffSession } from "@/lib/auth";
 import { newId } from "@/lib/ids";
+import { logError } from "@/lib/log";
 import { can } from "@/lib/permissions";
+import { normalizePhone } from "@/lib/phone";
 import { isStepUpRequired } from "@/lib/privacy/gates";
 import { recordLegalAcceptance } from "@/lib/privacy/legal";
+import { recordPracticeNotices } from "@/lib/privacy/notices";
 import { cancelClosure, ClosureError, requestClosure } from "@/lib/privacy/org-closure";
 import { customRegisterEntries, MAX_CUSTOM_ENTRIES, MAX_CUSTOM_FIELD, REGISTER_COLUMNS, type CustomRegisterEntry } from "@/lib/privacy/register";
 import {
@@ -25,7 +29,7 @@ import {
   getPrivacyRequest,
   notifyRequester,
   PrivacyRequestError,
-  splitContactSnapshot,
+  requestTextAndContact,
   startPrivacyRequest,
 } from "@/lib/privacy/requests";
 import { RETENTION_LIMITS, resolvePrivacySettings } from "@/lib/privacy/settings";
@@ -72,9 +76,17 @@ async function platformScope(): Promise<Scope> {
   return { orgId: null, tz: "Europe/Rome", actor: { type: "platform_admin", id: s.user.id } };
 }
 
+/** A reply contact typed by staff: an email (lower-cased) or a mobile number (E.164), else null. */
+function replyContact(raw: string): string | null {
+  const v = raw.trim();
+  if (v.includes("@")) return z.email().safeParse(v.toLowerCase()).success ? v.toLowerCase() : null;
+  return normalizePhone(v);
+}
+
 /**
  * Log a request that arrived by phone, email, letter or at the desk. The deadline runs from the
- * day it was received. Linking the patient record lets the answer be sent automatically.
+ * day it was received. Linking the patient record lets the answer be sent automatically; without
+ * one, the reply contact staff enter (stored encrypted in answerContact) is used instead.
  */
 export async function logPrivacyRequest(_prev: unknown, fd: FormData): Promise<ActionResult> {
   return guard(
@@ -99,6 +111,10 @@ export async function logPrivacyRequest(_prev: unknown, fd: FormData): Promise<A
           .where(and(eq(patients.orgId, s.org.id), eq(patients.id, patientId)));
         if (!p) patientId = null;
       }
+      // Only for a request linked to no record: a linked one is answered at the record's contact.
+      const replyRaw = patientId ? "" : str(fd, "answerContact").trim();
+      const answerContact = replyRaw ? replyContact(replyRaw) : null;
+      if (replyRaw && !answerContact) return fail(t("requests.errors.invalid_contact"), "invalid_contact");
       const language = str(fd, "language");
       const { dueAt } = await db.transaction(async (tx) =>
         createPrivacyRequest(tx, {
@@ -107,6 +123,7 @@ export async function logPrivacyRequest(_prev: unknown, fd: FormData): Promise<A
           type: type as (typeof PRIVACY_REQUEST_TYPES)[number],
           channel: channel as (typeof PRIVACY_REQUEST_CHANNELS)[number],
           details: str(fd, "details").slice(0, 4000) || null,
+          answerContact,
           requesterLocale: isLocale(language) ? language : "it",
           actor: { type: "user", id: s.user.id },
           headers: await headers(),
@@ -140,7 +157,9 @@ async function extend(scope: Scope, id: string, fd: FormData, t: T): Promise<Act
       return extendPrivacyRequest(tx, { orgId: scope.orgId, id, until: zonedToUtc(until, minutes, scope.tz), reason: str(fd, "reason"), actor: scope.actor });
     });
     const told = await notifyRequester(row, "requestExtended");
-    return ok(told ? t("requests.detail.extend.done") : t("requests.detail.extend.doneNoNotice"));
+    if (told) return ok(t("requests.detail.extend.done"));
+    // An unlinked request's reply contact was tried and failed; an erased record's is for staff.
+    return ok(requestTextAndContact(row).contact ? t("requests.detail.extend.doneNotSent") : t("requests.detail.extend.doneNoNotice"));
   } catch (err) {
     return requestFail(err, t);
   }
@@ -154,8 +173,10 @@ async function complete(scope: Scope, id: string, fd: FormData, t: T): Promise<A
     const row = await db.transaction((tx) => completePrivacyRequest(tx, { orgId: scope.orgId, id, decision: d, reason: str(fd, "reason"), actor: scope.actor }));
     const told = await notifyRequester(row, DECISION_KIND[d]);
     if (told) return ok(t("requests.detail.complete.done"));
-    // The patient was erased meanwhile: the request kept the contact the record had.
-    return ok(splitContactSnapshot(row.details).contact ? t("requests.detail.complete.doneKeptContact") : t("requests.detail.complete.doneNoNotice"));
+    if (!requestTextAndContact(row).contact) return ok(t("requests.detail.complete.doneNoNotice"));
+    // The patient was erased meanwhile (the request kept the contact the record had, for staff to
+    // answer by hand), or sending to an unlinked request's reply contact failed.
+    return ok(row.patientId ? t("requests.detail.complete.doneKeptContact") : t("requests.detail.complete.doneNotSent"));
   } catch (err) {
     return requestFail(err, t);
   }
@@ -188,15 +209,33 @@ export async function completePlatformRequestAction(id: string, _prev: unknown, 
 
 // ---------------------------------------------------------------- privacy settings
 
-/** Read-modify-write of organizations.settings that keeps keys other packages' resolvers don't know (the register's rows). */
+/**
+ * Read-modify-write of organizations.settings in one write transaction, keeping keys other
+ * packages' resolvers don't know (the register's rows): `patch` sees the resolved and the stored
+ * settings as they are inside the transaction.
+ */
 async function writeSettings(orgId: string, patch: (resolved: OrgSettings, stored: Record<string, unknown>) => Record<string, unknown>) {
-  const [org] = await db.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, orgId));
-  const stored = (org?.settings ?? {}) as Record<string, unknown>;
-  const next = patch(resolveSettings(org?.settings), stored);
-  await db
-    .update(organizations)
-    .set({ settings: next as OrgSettings })
-    .where(eq(organizations.id, orgId));
+  await db.transaction(async (tx) => {
+    const [org] = await tx.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, orgId));
+    const stored = (org?.settings ?? {}) as Record<string, unknown>;
+    await tx
+      .update(organizations)
+      .set({ settings: patch(resolveSettings(org?.settings), stored) as OrgSettings })
+      .where(eq(organizations.id, orgId));
+  });
+}
+
+/**
+ * Put the practice's privacy notices, as they now read, on record in every language (WP4's
+ * recordPracticeNotices), right after a change they are built from. Never fails the save.
+ */
+async function recordNotices(orgId: string) {
+  try {
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, orgId));
+    if (org) await recordPracticeNotices(org);
+  } catch (err) {
+    logError("privacy-settings", err, { step: "record-notices", orgId });
+  }
 }
 
 const checked = (fd: FormData, k: string) => fd.get(k) === "on";
@@ -246,6 +285,7 @@ export async function savePrivacySettings(_prev: unknown, fd: FormData): Promise
       const changed = (Object.keys(next) as (keyof PrivacySettings)[]).filter((k) => JSON.stringify(next[k]) !== JSON.stringify(before[k]));
       await writeSettings(s.org.id, (resolved, stored) => ({ ...stored, ...resolved, privacy: next }));
       await auditStaff(s, "settings.privacy.update", { type: "org", id: s.org.id }, { metadata: { changed: changed.join(",") || null } });
+      if (changed.length) await recordNotices(s.org.id);
       const saved = t("settingsPrivacy.saved");
       return ok(ignored.length ? `${saved} ${t("settingsPrivacy.embed.invalid", { origins: ignored.join(", ") })}` : saved);
     },
@@ -261,12 +301,15 @@ export async function addRegisterEntry(_prev: unknown, fd: FormData): Promise<Ac
     async (s) => {
       const t = await tr();
       const [org] = await db.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, s.org.id));
-      const current = customRegisterEntries(org ?? { settings: {} });
-      if (current.length >= MAX_CUSTOM_ENTRIES) return fail(t("register.add.limit", { max: MAX_CUSTOM_ENTRIES }), "limit");
+      if (customRegisterEntries(org ?? { settings: {} }).length >= MAX_CUSTOM_ENTRIES) return fail(t("register.add.limit", { max: MAX_CUSTOM_ENTRIES }), "limit");
       const entry = { id: newId() } as CustomRegisterEntry;
       for (const c of REGISTER_COLUMNS) entry[c] = str(fd, c).slice(0, MAX_CUSTOM_FIELD);
       if (!entry.activity) return fail(t("errors.invalid"), "invalid");
-      await writeSettings(s.org.id, (resolved, stored) => ({ ...stored, ...resolved, register: [...current, entry] }));
+      await writeSettings(s.org.id, (resolved, stored) => ({
+        ...stored,
+        ...resolved,
+        register: [...customRegisterEntries({ settings: stored }), entry].slice(0, MAX_CUSTOM_ENTRIES),
+      }));
       await auditStaff(s, "settings.privacy.update", { type: "org", id: s.org.id }, { metadata: { register: "add", entryId: entry.id } });
       return ok(t("register.add.added"));
     },
@@ -278,9 +321,11 @@ export async function removeRegisterEntry(entryId: string): Promise<ActionResult
   return guard(
     async (s) => {
       const t = await tr();
-      const [org] = await db.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, s.org.id));
-      const current = customRegisterEntries(org ?? { settings: {} });
-      await writeSettings(s.org.id, (resolved, stored) => ({ ...stored, ...resolved, register: current.filter((e) => e.id !== entryId) }));
+      await writeSettings(s.org.id, (resolved, stored) => ({
+        ...stored,
+        ...resolved,
+        register: customRegisterEntries({ settings: stored }).filter((e) => e.id !== entryId),
+      }));
       await auditStaff(s, "settings.privacy.update", { type: "org", id: s.org.id }, { metadata: { register: "remove", entryId } });
       return ok(t("register.add.removed"));
     },

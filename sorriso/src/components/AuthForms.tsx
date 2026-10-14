@@ -294,7 +294,8 @@ export function ResetPasswordForm({ token }: { token: string }) {
 
 // ---------------------------------------------------------------- email confirmation
 
-export function VerifyEmailForm({ token }: { token: string }) {
+/** `practice`: the link confirms a practice's email address, not the user's own. */
+export function VerifyEmailForm({ token, practice = false }: { token: string; practice?: boolean }) {
   const t = useT("auth");
   const [state, action, pending] = useActionState<FormState, FormData>(verifyEmail, null);
   return (
@@ -302,7 +303,7 @@ export function VerifyEmailForm({ token }: { token: string }) {
       <LocaleInput />
       <input type="hidden" name="token" value={token} />
       <FormError state={state} />
-      <Submit pending={pending}>{t("verify.submit")}</Submit>
+      <Submit pending={pending}>{t(practice ? "verify.submitPractice" : "verify.submit")}</Submit>
     </form>
   );
 }

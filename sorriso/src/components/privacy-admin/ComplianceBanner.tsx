@@ -7,10 +7,11 @@ import { useLocale, useT } from "@/i18n/provider";
 import type { ComplianceBannerState } from "@/lib/privacy/gates";
 
 /**
- * The dashboard-wide compliance banner. Render it in the dashboard layout with the state from
- * complianceBannerState(session) (src/lib/privacy/gates.ts):
+ * The dashboard-wide compliance banner, rendered once by the dashboard layout above every page
+ * (pages don't render it themselves), with the state from gatePage(s) / complianceBannerState(s)
+ * (src/lib/privacy/gates.ts):
  *
- *   <ComplianceBanner state={await complianceBannerState(s)} />
+ *   <ComplianceBanner state={await gatePage(s)} />
  *
  * - staff other than owners and admins, while the DPA or terms await an owner: online booking is paused;
  * - owners and admins, when Sorriso's sub-processor list changed: review, accept or object;

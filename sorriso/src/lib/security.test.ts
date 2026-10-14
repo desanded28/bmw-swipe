@@ -234,6 +234,7 @@ describe("dashboard actions and loaders across practices", () => {
       return f;
     };
     const appointmentsA = await import("@/app/dashboard/actions/appointments");
+    const careA = await import("@/app/dashboard/actions/care");
     const icsA = await import("@/app/dashboard/actions/ics");
     const linksA = await import("@/app/dashboard/actions/links");
     const locationsA = await import("@/app/dashboard/actions/locations");
@@ -291,6 +292,9 @@ describe("dashboard actions and loaders across practices", () => {
       resetMemberMfa: () => teamA.resetMemberMfa(ids.member),
       withdrawInvite: () => teamA.withdrawInvite(ids.invite),
       revokeSession: () => securityA.revokeSession(ids.memberSession),
+      loadAppointmentCare: () => careA.loadAppointmentCare(ids.appt),
+      loadAnamnesis: () => careA.loadAnamnesis({ appointmentId: ids.appt }),
+      setRecallIntervalAction: () => careA.setRecallIntervalAction(ids.appt, 6),
     };
     for (const [name, run] of Object.entries(actions)) {
       try {
@@ -305,30 +309,32 @@ describe("dashboard actions and loaders across practices", () => {
     expect(await snapshotB()).toBe(before);
   });
 
-  /**
-   * Actions that, on another practice's id, change nothing (the test above proves it) but still
-   * answer ok: an update or delete scoped by orgId that matched no row. They should answer
-   * not_found like the rest; listed here for their owners (WP2 clearAttention and
-   * removeWaitlistEntry, WP7 saveLocation and saveService, WP8 deleteTimeOff) and to be emptied
-   * after the merge. Each must still answer: a throw (a renamed or removed action, a crash) fails.
-   */
-  const SILENT_NO_OPS = new Set(["clearAttention", "saveLocation", "saveService", "deleteTimeOff", "removeWaitlistEntry"]);
-
   it("every action answers: none throws, so each check below really ran", () => {
     for (const [name, res] of results) expect(res, name).not.toHaveProperty("thrown");
   });
 
-  it("answers not_found or a failure to every other action on a foreign id", () => {
-    expect(results.size).toBeGreaterThan(25);
-    for (const [name, res] of results) {
-      expect(res, name).toHaveProperty("ok");
-      if (SILENT_NO_OPS.has(name)) continue;
-      expect(res, name).toMatchObject({ ok: false });
-    }
+  it("answers a failure to every action on a foreign id (none pretends it worked)", () => {
+    expect(results.size).toBeGreaterThan(30);
+    for (const [name, res] of results) expect(res, name).toMatchObject({ ok: false });
   });
 
-  it("answers not_found to the security package's own actions", () => {
-    for (const name of ["issuePatientLink", "rotateIcsToken", "disableIcsFeed", "revokeApiKey", "changeMemberRole", "removeMember", "resetMemberMfa", "withdrawInvite", "revokeSession"]) {
+  it("answers not_found where the action looks the record up in the session's practice", () => {
+    const security = ["issuePatientLink", "rotateIcsToken", "disableIcsFeed", "revokeApiKey", "changeMemberRole", "removeMember", "resetMemberMfa", "withdrawInvite", "revokeSession"];
+    // Other packages' actions that answer not_found on another practice's id since the merge.
+    const others = [
+      "clearAttention",
+      "removeWaitlistEntry",
+      "saveLocation",
+      "addRoom",
+      "updateRoom",
+      "saveService",
+      "savePractitioner",
+      "replyToReview",
+      "reportReview",
+      "deleteTimeOff",
+      "loadAppointmentCare",
+    ];
+    for (const name of [...security, ...others]) {
       expect(results.get(name), name).toMatchObject({ ok: false, code: "not_found" });
     }
   });
@@ -429,5 +435,98 @@ describe("clinical notes and reception", () => {
     const { can, visiblePatient } = await import("./permissions");
     expect(can("reception", "patient.clinical.read")).toBe(false);
     expect(visiblePatient("reception", { notes: NOTE }).notes).toBeNull();
+  });
+});
+
+describe("team pages", () => {
+  /** Every element of `type` and every string in an element tree (without rendering components). */
+  function walk(node: unknown, type: unknown, found: { elements: ReactElement[]; strings: string[] }, seen = new Set<unknown>()) {
+    if (typeof node === "string") found.strings.push(node);
+    else if (Array.isArray(node)) for (const n of node) walk(n, type, found, seen);
+    else if (isValidElement(node) && !seen.has(node)) {
+      seen.add(node);
+      if (node.type === type) found.elements.push(node);
+      walk((node as ReactElement<{ children?: ReactNode }>).props.children, type, found, seen);
+    }
+    return found;
+  }
+
+  it("show the practitioner's record and profile editor to managers and to that practitioner only, with a default specialty", async () => {
+    const { newId } = await import("./ids");
+    const { PractitionerForm } = await import("@/components/dashboard/PractitionerForm");
+    const { default: PractitionerAdminPage } = await import("@/app/dashboard/team/[id]/page");
+    const linked = newId();
+    await db.insert(users).values({ id: linked, email: `dr-${linked.toLowerCase()}@example.com`, name: "Dr Linked", passwordHash: "x" });
+    await db.insert(memberships).values({ userId: linked, orgId: a.orgId, role: "practitioner" });
+    await db.update(practitioners).set({ userId: linked, specialty: "" }).where(eq(practitioners.id, a.drB));
+    const [orgA] = await db.select().from(organizations).where(eq(organizations.id, a.orgId));
+    const as = (role: MembershipRole, userId: string): StaffSession => ({
+      sessionId: `${userId}-session`,
+      user: { id: userId, name: role, email: `${userId}@example.com`, isPlatformAdmin: false, locale: "en" },
+      org: orgA,
+      role,
+      orgs: [{ org: orgA, role }],
+    });
+    const render = async () =>
+      walk(await PractitionerAdminPage({ params: Promise.resolve({ id: a.drB }), searchParams: Promise.resolve({}) }), PractitionerForm, {
+        elements: [],
+        strings: [],
+      });
+
+    staffState.session = as("practitioner", linked);
+    const self = await render();
+    expect(self.elements).toHaveLength(1);
+    expect(self.strings).toContain("Dentist");
+    staffState.session = as("practitioner", newId());
+    expect((await render()).elements).toHaveLength(0);
+    staffState.session = as("admin", newId());
+    expect((await render()).elements).toHaveLength(1);
+    staffState.session = null;
+  });
+
+  it("the invitation shows the staff instructions document members accept, at its current version", async () => {
+    const { issueAuthToken } = await import("./security/tokens");
+    const { StaffInstructionsDocument } = await import("@/components/privacy-admin/LegalDocuments");
+    const { LEGAL_VERSIONS } = await import("./privacy/versions");
+    const { default: InvitePage } = await import("@/app/[locale]/(site)/invite/[token]/page");
+    const { token } = await issueAuthToken({ kind: "invite", email: `new-${Date.now()}@example.com`, orgId: a.orgId, role: "reception" });
+    const found = walk(await InvitePage({ params: Promise.resolve({ locale: "en", token }) }), StaffInstructionsDocument, { elements: [], strings: [] });
+    expect(found.elements).toHaveLength(1);
+    expect(found.elements[0].props).toMatchObject({ version: LEGAL_VERSIONS.staff_instructions });
+  });
+});
+
+describe("patient links handed out by staff", () => {
+  it("follow the restriction rules: a reason first for a restricted patient, never for an erased one", async () => {
+    const { newId } = await import("./ids");
+    const { grantRestrictedAccess } = await import("./privacy/erasure");
+    const linksA = await import("@/app/dashboard/actions/links");
+    const [orgA] = await db.select().from(organizations).where(eq(organizations.id, a.orgId));
+    const as = (role: MembershipRole, userId: string): StaffSession => ({
+      sessionId: `${userId}-session`,
+      user: { id: userId, name: role, email: `${userId}@example.com`, isPlatformAdmin: false, locale: "en" },
+      org: orgA,
+      role,
+      orgs: [{ org: orgA, role }],
+    });
+    const d = await createAppointment({ orgId: a.orgId, serviceId: a.visit, practitionerId: a.drC, locationId: a.milano, startsAt: at(15), patient: person({ firstName: "Rina" }), source: "staff", online: false, now: NOW });
+    const owner = newId();
+    await db.insert(users).values({ id: owner, email: `link-owner-${owner.toLowerCase()}@example.com`, name: "Owner", passwordHash: "x" });
+
+    staffState.session = as("owner", owner);
+    expect(await linksA.issuePatientLink(d.appointment.id)).toMatchObject({ ok: true, data: { url: expect.stringContaining("/a/") } });
+
+    await db.update(patients).set({ restrictedAt: new Date(), restrictionReason: "objection" }).where(eq(patients.id, d.patient.id));
+    expect(await linksA.issuePatientLink(d.appointment.id)).toMatchObject({ ok: false, code: "restricted" });
+    await grantRestrictedAccess(as("owner", owner), d.patient.id, "Patient called to reschedule");
+    expect(await linksA.issuePatientLink(d.appointment.id)).toMatchObject({ ok: true });
+    // Reception can't read restricted records at all, reason or not.
+    staffState.session = as("reception", owner);
+    expect(await linksA.issuePatientLink(d.appointment.id)).toMatchObject({ ok: false, code: "restricted" });
+
+    staffState.session = as("owner", owner);
+    await db.update(patients).set({ erasedAt: new Date() }).where(eq(patients.id, d.patient.id));
+    expect(await linksA.issuePatientLink(d.appointment.id)).toMatchObject({ ok: false, code: "erased" });
+    staffState.session = null;
   });
 });

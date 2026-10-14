@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
-import { db } from "@/db";
+import { client, db } from "@/db";
 import { auditLog, memberships, messages, patients, privacyRequests, users } from "@/db/schema";
 import { createPractice } from "@/test/fixtures";
 import { newId } from "../ids";
@@ -16,9 +16,11 @@ import {
   notifyRequester,
   privacyRequestDueAt,
   sendDeadlineReminders,
-  startPrivacyRequest,
+  joinContacts,
+  requestTextAndContact,
   splitContactSnapshot,
-  withContactSnapshot,
+  splitContacts,
+  startPrivacyRequest,
 } from "./requests";
 
 const TZ = "Europe/Rome";
@@ -49,15 +51,40 @@ const create = (receivedAt: Date, over: Partial<Parameters<typeof createPrivacyR
     createPrivacyRequest(tx, { orgId, patientId, type: "access", channel: "email", requesterLocale: "de", actor: STAFF, now: receivedAt, ...over }),
   );
 
-describe("contact kept for the answer", () => {
-  it("appends the erased record's contact once, and reads it back apart from the requester's words", () => {
-    const kept = withContactSnapshot("Vorrei la cancellazione", ["a@example.org", "+393331234567"]);
-    expect(splitContactSnapshot(kept)).toEqual({ text: "Vorrei la cancellazione", contact: "a@example.org · +393331234567" });
-    // A second erasure of a merged record replaces it rather than stacking it.
-    expect(splitContactSnapshot(withContactSnapshot(kept, ["b@example.org"]))).toEqual({ text: "Vorrei la cancellazione", contact: "b@example.org" });
-    expect(splitContactSnapshot(withContactSnapshot(null, ["b@example.org"]))).toEqual({ text: null, contact: "b@example.org" });
-    expect(withContactSnapshot("x", [])).toBe("x");
+describe("reply contact (answerContact)", () => {
+  it("joins contacts once, in order, and splits them back", () => {
+    expect(joinContacts(["a@example.org", "+393331234567"])).toBe("a@example.org · +393331234567");
+    expect(joinContacts(["b@example.org"], "a@example.org · b@example.org")).toBe("b@example.org · a@example.org");
+    expect(joinContacts([], null)).toBeNull();
+    expect(splitContacts("a@example.org · +393331234567")).toEqual(["a@example.org", "+393331234567"]);
+    expect(splitContacts(null)).toEqual([]);
+  });
+
+  it("reads the column first, and the contact older rows kept in their details after the marker", () => {
+    expect(requestTextAndContact({ details: "Vorrei la cancellazione", answerContact: "a@example.org" })).toEqual({ text: "Vorrei la cancellazione", contact: "a@example.org" });
+    const legacy = "Vorrei la cancellazione\n\n[contact] a@example.org · +393331234567";
+    expect(requestTextAndContact({ details: legacy, answerContact: null })).toEqual({ text: "Vorrei la cancellazione", contact: "a@example.org · +393331234567" });
+    expect(splitContactSnapshot("[contact] b@example.org")).toEqual({ text: null, contact: "b@example.org" });
     expect(splitContactSnapshot("Solo testo")).toEqual({ text: "Solo testo", contact: null });
+  });
+
+  it("answers a request linked to no patient at its reply contact, in the requester's language", async () => {
+    const { id } = await create(new Date("2030-06-01T09:00:00Z"), { patientId: null, answerContact: "lettera@example.org · +393339990000", requesterLocale: "it" });
+    const [stored] = await db.select().from(privacyRequests).where(eq(privacyRequests.id, id));
+    expect(stored.answerContact).toBe("lettera@example.org · +393339990000");
+    const raw = await client.execute({ sql: "select answer_contact from privacy_requests where id = ?", args: [id] });
+    expect(String(raw.rows[0].answer_contact)).toMatch(/^v1:/); // encrypted at rest
+    const done = await db.transaction((tx) =>
+      completePrivacyRequest(tx, { orgId, id, decision: "granted", reason: "Ecco i dati richiesti.", actor: STAFF, now: new Date("2030-06-10T09:00:00Z") }),
+    );
+    expect(await notifyRequester(done, "requestGranted")).toBe(true);
+    const [sent] = await db.select().from(messages).where(eq(messages.to, "lettera@example.org"));
+    expect(sent).toMatchObject({ channel: "email", patientId: null, orgId });
+    expect(sent.body).toContain("Ecco i dati richiesti.");
+    // Without a reply contact there is nobody to send it to.
+    const { id: bare } = await create(new Date("2030-06-01T09:00:00Z"), { patientId: null });
+    const closed = await db.transaction((tx) => completePrivacyRequest(tx, { orgId, id: bare, decision: "granted", reason: "Fatto.", actor: STAFF }));
+    expect(await notifyRequester(closed, "requestGranted")).toBe(false);
   });
 });
 

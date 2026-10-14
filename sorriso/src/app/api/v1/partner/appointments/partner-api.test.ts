@@ -195,5 +195,8 @@ describe("partner API responses", () => {
     expect(JSON.stringify(body)).not.toContain("f".repeat(64));
     expect(body.practitioners[0]).not.toHaveProperty("icsTokenHash");
     expect(body.practitioners[0]).not.toHaveProperty("icsToken");
+    // Nor staff account ids (who generated the feed, who approved the profile).
+    expect(body.practitioners[0]).not.toHaveProperty("icsIssuedByUserId");
+    expect(body.practitioners[0]).not.toHaveProperty("userId");
   });
 });

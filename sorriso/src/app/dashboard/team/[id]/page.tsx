@@ -48,8 +48,9 @@ export default async function PractitionerAdminPage({
       .orderBy(asc(timeOff.startsAt)),
   ]);
   const canManage = can(s.role, "team.manage");
+  const isSelf = p.userId !== null && p.userId === s.user.id;
   // The feed is the practitioner's own: only they or a manager see or change it.
-  const feedVisible = canManage || (p.userId !== null && p.userId === s.user.id);
+  const feedVisible = canManage || isSelf;
   const privacy = getPrivacy(s.org);
   const feedOn = Boolean(p.icsEnabled && p.icsTokenHash && (!p.icsTokenExpiresAt || p.icsTokenExpiresAt > new Date()));
 
@@ -62,7 +63,7 @@ export default async function PractitionerAdminPage({
         <Avatar name={p.name} color={p.color} size={56} />
         <div className="flex-1">
           <h1 className="text-2xl font-bold tracking-tight">{practitionerName(p)}</h1>
-          <p className="text-sm text-slate-500">{p.specialty}</p>
+          <p className="text-sm text-slate-500">{p.specialty.trim() || getT(locale, "marketplace")("profile.defaultSpecialty")}</p>
         </div>
         <Link
           href={lhref(locale, `/c/${s.org.slug}/${p.slug}`)}
@@ -102,7 +103,9 @@ export default async function PractitionerAdminPage({
           </Card>
         </div>
         <div className="space-y-6">
-          {canManage ? (
+          {/* The practitioner themselves too: only they approve their public profile or leave the
+              marketplace (PractitionerForm shows a non-manager the record read-only). */}
+          {canManage || isSelf ? (
             <Card className="p-6">
               <h2 className="mb-4 text-lg font-bold">{t("practitioner.profileTitle")}</h2>
               <PractitionerForm practitioner={p} services={svcs} offered={links.map((l) => l.serviceId)} />

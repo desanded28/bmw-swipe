@@ -5,6 +5,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { logout } from "@/app/auth-actions";
 import { InviteForm } from "@/components/AuthForms";
+import { StaffInstructionsDocument } from "@/components/privacy-admin/LegalDocuments";
 import { Button, Card } from "@/components/ui";
 import { db } from "@/db";
 import { organizations, users } from "@/db/schema";
@@ -51,15 +52,6 @@ export default async function InvitePage({ params }: Props) {
   const signedInAsInvitee = Boolean(session && existing && session.user.id === existing.id);
   const role = getT(locale, "common")(`roles.${row.role}`);
   const tl = getT(locale, "legalPractice");
-  const points = [
-    tl("staffInstructions.confidentiality"),
-    tl("staffInstructions.needToKnow"),
-    tl("staffInstructions.freeText"),
-    tl("staffInstructions.breaches"),
-    tl("staffInstructions.personalDevices"),
-    tl("staffInstructions.calendarSync"),
-    tl("staffInstructions.accessLog"),
-  ];
   const loginHref = lhref(locale, `/login?next=${encodeURIComponent(`/${locale}/invite/${token}`)}`);
 
   return (
@@ -89,16 +81,13 @@ export default async function InvitePage({ params }: Props) {
         <>
           <section aria-labelledby="staff-instructions" className="mt-6 rounded-2xl bg-slate-50 p-5 ring-1 ring-slate-200">
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{t("invite.instructionsLead")}</p>
-            <h2 id="staff-instructions" className="text-base font-bold">
+            <h2 id="staff-instructions" className="mb-2 text-base font-bold">
               {tl("staffInstructions.title")}
             </h2>
-            <p className="mt-2 text-sm text-slate-700">{tl("staffInstructions.intro")}</p>
-            <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-700">
-              {points.map((text) => (
-                <li key={text}>{text}</li>
-              ))}
-            </ul>
-            <p className="mt-3 text-xs text-slate-500">{tl("staffInstructions.version", { version: LEGAL_VERSIONS.staff_instructions })}</p>
+            {/* WP5's document, the same text and version members accept on the legal page. */}
+            <div className="text-sm">
+              <StaffInstructionsDocument t={tl} version={LEGAL_VERSIONS.staff_instructions} />
+            </div>
           </section>
           <div className="mt-6">
             {!existing ? (

@@ -9,13 +9,11 @@ import { fmtDay, zonedDate } from "@/i18n/datefmt";
 import { getStaffLocale, getT } from "@/i18n/server";
 import { auditStaff } from "@/lib/audit";
 import { can, requirePermission } from "@/lib/permissions";
-import { dueBadge, effectiveDueAt, getPrivacyRequest, isOpenRequest, maxExtensionUntil, requesterLabel, splitContactSnapshot } from "@/lib/privacy/requests";
+import { dueBadge, effectiveDueAt, getPrivacyRequest, isOpenRequest, maxExtensionUntil, requestTextAndContact, requesterLabel } from "@/lib/privacy/requests";
 import { db } from "@/db";
 import { patients } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
 import { addDays, zonedParts } from "@/lib/time";
-import { ComplianceBanner } from "@/components/privacy-admin/ComplianceBanner";
-import { gatePage } from "@/lib/privacy/gates";
 
 export async function generateMetadata(): Promise<Metadata> {
   return { title: getT(await getStaffLocale(), "privacyAdmin")("requests.title") };
@@ -29,7 +27,6 @@ export async function generateMetadata(): Promise<Metadata> {
  */
 export default async function PrivacyRequestPage({ params }: { params: Promise<{ id: string }> }) {
   const s = await requirePermission("privacy.requests");
-  const banner = await gatePage(s);
   const { id } = await params;
   const r = await getPrivacyRequest(s.org.id, id);
   if (!r) notFound();
@@ -38,7 +35,7 @@ export default async function PrivacyRequestPage({ params }: { params: Promise<{
   const tz = s.org.timezone;
   const now = new Date();
   // Viewing the request reads personal data (the requester's own words): audited.
-  await auditStaff(s, "patient.view", { type: "privacy_request", id: r.id }, { metadata: { patientId: r.patientId } });
+  await auditStaff(s, "privacy_request.view", { type: "privacy_request", id: r.id }, { metadata: { patientId: r.patientId } });
 
   const [patient] = r.patientId
     ? await db
@@ -50,12 +47,12 @@ export default async function PrivacyRequestPage({ params }: { params: Promise<{
   const open = isOpenRequest(r);
   const max = maxExtensionUntil(r.dueAt, tz);
   const canExtend = open && !r.extendedUntil && now.getTime() <= r.dueAt.getTime();
-  // An erased patient's open request keeps the contact the record had, to answer it.
-  const details = splitContactSnapshot(r.details);
+  // An erased patient's open request keeps the contact the record had, to answer it by hand; a
+  // request linked to no record carries the requester's reply contact.
+  const details = requestTextAndContact(r);
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      <ComplianceBanner state={banner} />
       <Link href="/dashboard/privacy" className="text-sm font-semibold text-slate-500 hover:text-ink">
         ← {t("requests.detail.back")}
       </Link>
@@ -77,6 +74,7 @@ export default async function PrivacyRequestPage({ params }: { params: Promise<{
               requester: requesterLabel(t, patient ?? null, can(s.role, "patient.restricted.read")),
               details: details.text,
               contact: details.contact,
+              contactKept: Boolean(r.patientId),
               decision: r.decision,
               decisionReason: r.decisionReason,
               closedAt: r.closedAt ? long(r.closedAt) : null,

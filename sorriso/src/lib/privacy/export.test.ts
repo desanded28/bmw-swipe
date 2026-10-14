@@ -2,10 +2,12 @@ import { and, eq } from "drizzle-orm";
 import { strFromU8, unzipSync } from "fflate";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
-import { appointments, auditLog, messages, patients, reviews, users, waitlist, type Patient } from "@/db/schema";
+import { appointments, auditLog, messages, patients, reviewReports, reviews, users, waitlist, type Patient } from "@/db/schema";
 import { createPractice } from "@/test/fixtures";
 import { audit } from "../audit";
+import { encrypt } from "../crypto";
 import { newId } from "../ids";
+import { heldCommentValue, reportDetailsValue } from "../reviews";
 import { recordConsent } from "./consent";
 import {
   buildPatientExport,
@@ -161,6 +163,126 @@ describe("buildPatientExport", () => {
     expect(fields.find((f) => f.path === "generatedAt")?.descriptionKey).toBe("instant");
     expect(fields.find((f) => f.path === "patient.birthDate")?.descriptionKey).toBe("date");
     expect(fields.find((f) => f.path === "accessLog[].actorRole")?.descriptionKey).toBe("accessLogActorRole");
+  });
+});
+
+/** The practice-wide export, unzipped. */
+async function orgExport(orgId: string) {
+  const chunks: Uint8Array[] = [];
+  const reader = orgExportStream(orgId, { now: NOW }).getReader();
+  for (let r = await reader.read(); !r.done; r = await reader.read()) chunks.push(r.value);
+  const body = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let offset = 0;
+  for (const c of chunks) {
+    body.set(c, offset);
+    offset += c.length;
+  }
+  return unzipSync(body);
+}
+
+describe("reviews and the access log in exports", () => {
+  let q: Awaited<ReturnType<typeof createPractice>>;
+  let author: Patient;
+  let heldId: string;
+  let removedId: string;
+  let practiceReport: string;
+  let noticeReport: string;
+
+  beforeAll(async () => {
+    q = await createPractice();
+    [author] = await db.insert(patients).values({ id: newId(), orgId: q.orgId, firstName: "Rita", lastName: "Levi", locale: "it" }).returning();
+    const visit = async (day: number) => {
+      const id = newId();
+      const start = new Date(Date.UTC(2030, 0, day, 9));
+      await db.insert(appointments).values({
+        id,
+        orgId: q.orgId,
+        locationId: q.milano,
+        practitionerId: q.drA,
+        serviceId: q.visit,
+        patientId: author.id,
+        startsAt: start,
+        endsAt: new Date(start.getTime() + 30 * 60_000),
+        blockedUntil: new Date(start.getTime() + 30 * 60_000),
+        status: "completed",
+        source: "online",
+        manageToken: `h:${id}`,
+      });
+      return id;
+    };
+    const base = { orgId: q.orgId, practitionerId: q.drA, rating: 2, authorName: "R." };
+    // Held by the automatic check (encrypted, never shown to the practice) and removed after a report.
+    await db.insert(reviews).values({ ...base, id: (heldId = newId()), appointmentId: await visit(5), status: "pending", comment: heldCommentValue("Testo trattenuto di Rita") });
+    await db.insert(reviews).values({
+      ...base,
+      id: (removedId = newId()),
+      appointmentId: await visit(6),
+      status: "removed",
+      comment: heldCommentValue("Testo rimosso di Rita"),
+      removedReason: encrypt("Motivazione della rimozione", "reviews.removed_reason"),
+      decidedAt: NOW,
+    });
+    const reporter = newId();
+    await db.insert(users).values({ id: reporter, email: `r-${reporter}@example.org`, name: "Reception", passwordHash: "x" });
+    await db.insert(reviewReports).values([
+      {
+        id: (practiceReport = newId()),
+        reviewId: removedId,
+        orgId: q.orgId,
+        reporterUserId: reporter,
+        ground: "other",
+        details: reportDetailsValue("Segnalazione dello studio"),
+        patientResponse: encrypt("Risposta dell'autrice", "review_reports.patient_response"),
+        decision: "remove",
+        decisionReason: encrypt("Decisione motivata", "review_reports.decision_reason"),
+        status: "decided",
+        decidedAt: NOW,
+      },
+      { id: (noticeReport = newId()), reviewId: removedId, orgId: q.orgId, reporterContactHash: "h", ground: "other", details: reportDetailsValue("Segnalazione di un terzo") },
+    ]);
+    // Accesses filed on something else than the record, naming it in metadata.patientId.
+    const staff = { type: "user" as const, id: "u1" };
+    await audit({ orgId: q.orgId, actor: staff, action: "waitlist.update", entity: { type: "waitlist", id: newId() }, metadata: { status: "removed", patientId: author.id }, at: NOW });
+    await audit({ orgId: q.orgId, actor: staff, action: "message.view", entity: { type: "message", id: newId() }, metadata: { patientId: author.id }, at: NOW });
+    await audit({ orgId: q.orgId, actor: { type: "patient_link", id: null }, action: "form.submit", entity: { type: "form_submission", id: newId() }, metadata: { patientId: author.id }, at: NOW });
+    await audit({ orgId: q.orgId, actor: staff, action: "message.view", entity: { type: "message", id: newId() }, metadata: { patientId: "someone-else" }, at: NOW });
+  });
+
+  const patientJson = async (actor: Parameters<typeof buildPatientExport>[2]["actor"]) =>
+    JSON.parse(strFromU8((await buildPatientExport(q.orgId, author.id, { locale: "it", format: "json", actor, now: NOW })).body));
+
+  it("lists accesses filed on waiting-list entries, messages and forms that name the patient", async () => {
+    const data = await patientJson(ACTOR);
+    const actions = data.accessLog.map((a: { action: string }) => a.action);
+    expect(actions).toEqual(expect.arrayContaining(["waitlist.update", "message.view", "form.submit"]));
+    expect(actions.filter((a: string) => a === "message.view")).toHaveLength(1);
+  });
+
+  it("shows staff the reviews as the practice sees them, and the patient their own text", async () => {
+    const staff = await patientJson(ACTOR);
+    const byId = (d: { reviews: { id: string }[] }, id: string) => d.reviews.find((r) => r.id === id);
+    expect(byId(staff, heldId)).toMatchObject({ comment: null, removedReason: null });
+    expect(byId(staff, removedId)).toMatchObject({ comment: null, removedReason: null });
+    const own = await patientJson({ type: "patient_session", id: null });
+    expect(patientExportSchema.safeParse(own).success).toBe(true);
+    expect(byId(own, heldId)).toMatchObject({ comment: "Testo trattenuto di Rita", removedReason: null });
+    expect(byId(own, removedId)).toMatchObject({ comment: "Testo rimosso di Rita", removedReason: "Motivazione della rimozione" });
+    expect(JSON.stringify(own)).not.toContain("v1:");
+  });
+
+  it("decrypts the practice's own review reports in the practice-wide export, and leaves Sorriso's out", async () => {
+    const zip = await orgExport(q.orgId);
+    const all = Object.values(zip).map((f) => strFromU8(f)).join("\n");
+    expect(all).not.toMatch(/"v1:|,v1:/);
+    const revs = JSON.parse(strFromU8(zip["json/reviews.json"]));
+    expect(revs.find((r: { id: string }) => r.id === heldId)).toMatchObject({ comment: null });
+    expect(revs.find((r: { id: string }) => r.id === removedId)).toMatchObject({ comment: null, removedReason: null });
+    const reports = JSON.parse(strFromU8(zip["json/review_reports.json"]));
+    expect(reports.map((r: { id: string }) => r.id)).toEqual([practiceReport]);
+    expect(reports[0]).toMatchObject({ details: "Segnalazione dello studio", decisionReason: "Decisione motivata", patientResponse: null });
+    expect(reports[0]).not.toHaveProperty("reporterContactHash");
+    expect(all).not.toContain("Segnalazione di un terzo");
+    expect(noticeReport).toBeTruthy();
   });
 });
 

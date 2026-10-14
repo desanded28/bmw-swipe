@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { auditLog, legalAcceptances, memberships, messages, organizations, users } from "@/db/schema";
 import { addDays, todayIn, zonedToUtc } from "@/lib/time";
 import { createPractice, TZ } from "@/test/fixtures";
+import { audit } from "../audit";
 import { newId } from "../ids";
 import {
   bookingBlocks,
@@ -201,11 +202,13 @@ describe("sub-processor changes", () => {
     expect(await mails()).toBe(1);
     await notifySubprocessorChanges();
     expect(await mails()).toBe(1);
-    const [notice] = await db
+    const notices = await db
       .select()
       .from(auditLog)
-      .where(and(eq(auditLog.orgId, p.orgId), eq(auditLog.action, "settings.update")));
-    expect(notice.metadata).toMatchObject({ event: "subprocessors.notified", version: LEGAL_VERSIONS.subprocessors });
+      .where(and(eq(auditLog.orgId, p.orgId), eq(auditLog.action, "legal.notify")));
+    expect(notices).toHaveLength(1);
+    expect(notices[0].metadata).toEqual({ doc: "subprocessors", version: LEGAL_VERSIONS.subprocessors });
+    expect(notices[0]).toMatchObject({ actorType: "system", entityType: "org", entityId: p.orgId });
 
     for (const doc of ["dpa", "terms"] as const) {
       await db.transaction((tx) => recordLegalAcceptance(tx, { orgId: p.orgId, userId: ownerId, doc, locale: "it" }));
@@ -213,5 +216,23 @@ describe("sub-processor changes", () => {
     const banner = await complianceBannerState({ user: { id: ownerId }, org: { id: p.orgId, name: "Studio Test" }, role: "owner" });
     expect(banner).toMatchObject({ kind: "subprocessors", version: LEGAL_VERSIONS.subprocessors });
     expect(banner && "objectMailto" in banner && banner.objectMailto).toMatch(/^mailto:/);
+  });
+
+  it("doesn't email again a practice notified before legal.notify existed (settings.update rows)", async () => {
+    const p = await createPractice();
+    const ownerId = newId();
+    await db.insert(users).values({ id: ownerId, email: `sp-old-${ownerId}@example.org`, name: "Owner", passwordHash: "x" });
+    await db.insert(memberships).values({ userId: ownerId, orgId: p.orgId, role: "owner" });
+    await db.transaction((tx) => recordLegalAcceptance(tx, { orgId: p.orgId, userId: ownerId, doc: "subprocessors", locale: "it", version: "2025-01" }));
+    await audit({
+      orgId: p.orgId,
+      actor: { type: "system", id: null },
+      action: "settings.update",
+      entity: { type: "org", id: p.orgId },
+      metadata: { event: "subprocessors.notified", version: LEGAL_VERSIONS.subprocessors },
+    });
+    await notifySubprocessorChanges();
+    expect(await db.select().from(messages).where(eq(messages.to, `sp-old-${ownerId}@example.org`))).toHaveLength(0);
+    expect(await db.select().from(auditLog).where(and(eq(auditLog.orgId, p.orgId), eq(auditLog.action, "legal.notify")))).toHaveLength(0);
   });
 });

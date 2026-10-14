@@ -224,10 +224,8 @@ describe("session rotation and revocation", () => {
     expect(await auth.switchSessionOrg(switched, newId())).toBe(false);
   });
 
-  // The real practice-switch action (WP2's actions/session.ts) still updates sessions.orgId in
-  // place; it should call switchSessionOrg(). Marked as failing until it does (CR to WP2): when
-  // this starts to pass, vitest reports it, and `.fails` comes off.
-  it.fails("the switchOrg action itself issues a new session id", async () => {
+  // The real practice-switch action (WP2's actions/session.ts), which goes through switchSessionOrg().
+  it("the switchOrg action itself issues a new session id", async () => {
     const u = await makeUser({ orgId: orgA, role: "reception", mfaSecret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP" });
     await db.insert(memberships).values({ userId: u.id, orgId: orgB, role: "reception" });
     const oldId = await auth.createSession(u.id, orgA, { mfaVerifiedAt: new Date() });
@@ -513,6 +511,8 @@ describe("signup, email confirmation and password reset", () => {
     expect(m.role).toBe("owner");
     const docs = await db.select().from(legalAcceptances).where(eq(legalAcceptances.orgId, m.orgId));
     expect(docs.map((d) => d.documentType).sort()).toEqual(["dpa", "subprocessors", "terms"]);
+    const [created] = await db.select().from(auditLog).where(and(eq(auditLog.orgId, m.orgId), eq(auditLog.action, "auth.signup")));
+    expect(created).toMatchObject({ actorId: user.id, entityType: "org", entityId: m.orgId });
     const [token] = await db.select().from(authTokens).where(and(eq(authTokens.userId, user.id), eq(authTokens.kind, "email_verify")));
     expect(token.expiresAt.getTime() - token.createdAt.getTime()).toBe(24 * 3_600_000);
     // No session: the user confirms and logs in.
@@ -536,6 +536,8 @@ describe("signup, email confirmation and password reset", () => {
     const [org] = await db.select().from(organizations).where(eq(organizations.id, m.orgId));
     expect(u2.emailVerifiedAt).toBeInstanceOf(Date);
     expect(org.emailVerifiedAt).toBeInstanceOf(Date);
+    const logged = await db.select().from(auditLog).where(and(eq(auditLog.orgId, m.orgId), eq(auditLog.action, "auth.email.verify")));
+    expect(logged.map((r) => r.entityType).sort()).toEqual(["org", "user"]);
     // Single use.
     expect(await actions.verifyEmail(null, form({ token, locale: "en" }))).toMatchObject({ error: expect.any(String) });
   });
@@ -648,6 +650,25 @@ describe("team actions stay inside the practice", () => {
     expect(await team.resetMemberMfa(solo.id)).toMatchObject({ ok: true });
     const [cleared] = await db.select().from(users).where(eq(users.id, solo.id));
     expect(cleared.totpEnabledAt).toBeNull();
+    const [logged] = await db.select().from(auditLog).where(and(eq(auditLog.orgId, a.orgId), eq(auditLog.action, "auth.mfa.reset")));
+    expect(logged).toMatchObject({ actorId: admin.id, entityType: "user", entityId: solo.id });
+  });
+
+  it("withdrawing an open invitation is audited as member.invite_withdraw, and only in its own practice", async () => {
+    const a = await createPractice();
+    const b = await createPractice();
+    const owner = await makeUser({ orgId: a.orgId, role: "owner" });
+    await actAs(owner.id, a.orgId, "owner");
+    const email = `invitee-${newId(6).toLowerCase()}@example.com`;
+    expect(await team.inviteMember({ email, role: "reception" })).toMatchObject({ ok: true });
+    const [invite] = await db.select().from(authTokens).where(and(eq(authTokens.email, email), eq(authTokens.kind, "invite")));
+    const outsider = await makeUser({ orgId: b.orgId, role: "owner" });
+    await actAs(outsider.id, b.orgId, "owner");
+    expect(await team.withdrawInvite(invite.id)).toMatchObject({ ok: false, code: "not_found" });
+    await actAs(owner.id, a.orgId, "owner");
+    expect(await team.withdrawInvite(invite.id)).toMatchObject({ ok: true });
+    const [logged] = await db.select().from(auditLog).where(and(eq(auditLog.orgId, a.orgId), eq(auditLog.action, "member.invite_withdraw")));
+    expect(logged).toMatchObject({ actorId: owner.id, metadata: { inviteId: invite.id.slice(0, 16) } });
   });
 
   it("removing someone who works elsewhere too ends only their sessions in this practice", async () => {
@@ -690,6 +711,7 @@ describe("team actions stay inside the practice", () => {
     const x = await makeUser({ orgId: p.orgId, role: "admin" });
     await actAs(x.id, p.orgId, "admin");
     expect(await ics.rotateIcsToken(p.drA)).toMatchObject({ ok: true });
+    expect(await feedOf(p.drA)).toMatchObject({ icsIssuedByUserId: x.id });
     const xKey = await newKeyBy(x.id);
     await actAs(owner.id, p.orgId, "owner");
     expect(await ics.rotateIcsToken(p.drB)).toMatchObject({ ok: true });
@@ -699,7 +721,7 @@ describe("team actions stay inside the practice", () => {
     expect(removed).toMatchObject({ ok: true });
     expect(removed.ok && removed.message).toContain("1 calendar link they generated was turned off.");
     expect(removed.ok && removed.message).toContain("1 API key they created was revoked.");
-    expect(await feedOf(p.drA)).toMatchObject({ icsEnabled: false, icsTokenHash: null });
+    expect(await feedOf(p.drA)).toMatchObject({ icsEnabled: false, icsTokenHash: null, icsIssuedByUserId: null });
     expect((await keyOf(xKey)).revokedAt).toBeInstanceOf(Date);
     // What others issued stays.
     expect(await feedOf(p.drB)).toMatchObject({ icsEnabled: true, icsTokenHash: expect.any(String) });
@@ -777,11 +799,69 @@ describe("my security: re-authentication and leftovers", () => {
     const rows = await db
       .select()
       .from(auditLog)
-      .where(and(eq(auditLog.action, "settings.update"), eq(auditLog.entityType, "user"), eq(auditLog.entityId, u.id)));
-    expect(rows.map((r) => r.metadata)).toEqual([
-      expect.objectContaining({ emailVerification: "resent" }),
-      expect.objectContaining({ emailVerified: true }),
-    ]);
+      .where(and(eq(auditLog.entityType, "user"), eq(auditLog.entityId, u.id)))
+      .orderBy(auditLog.seq);
+    expect(rows.map((r) => r.action)).toEqual(["auth.email.resend", "auth.email.verify"]);
     expect(rows.every((r) => r.orgId === orgA && r.actorId === u.id)).toBe(true);
+  });
+
+  it("turning two-step verification off is audited as auth.mfa.disable", async () => {
+    const { removeMfa } = await sec();
+    const u = await me(0);
+    const [row] = await db.select().from(users).where(eq(users.id, u.id));
+    const started = (await beginMfaEnrolment(row))!;
+    await confirmMfaEnrolment(u.id, totp(started.secret));
+    expect(await removeMfa("replace")).toMatchObject({ ok: true });
+    const [logged] = await db.select().from(auditLog).where(and(eq(auditLog.action, "auth.mfa.disable"), eq(auditLog.entityId, u.id)));
+    expect(logged).toMatchObject({ orgId: orgA, actorId: u.id, metadata: { change: "removed_for_replacement" } });
+  });
+});
+
+describe("practice email confirmation", () => {
+  async function ownerOfNewPractice() {
+    const p = await createPractice();
+    const owner = await makeUser({ orgId: p.orgId, role: "owner" });
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, p.orgId));
+    return { orgId: p.orgId, owner, org };
+  }
+
+  it("a link to the practice's address confirms the practice email only, never the owner's own address", async () => {
+    const { orgId, owner, org } = await ownerOfNewPractice();
+    const practiceEmail = `segreteria-${newId(6).toLowerCase()}@example.com`;
+    await db.update(organizations).set({ email: practiceEmail, emailVerifiedAt: null }).where(eq(organizations.id, orgId));
+    const { sendPracticeEmailVerification } = await import("./security/emails");
+    await sendPracticeEmailVerification({ org, owner: { id: owner.id, name: "Anna Verdi", locale: null }, email: practiceEmail });
+    const [mail] = await db.select().from(messages).where(eq(messages.to, practiceEmail));
+    expect(mail.body).toBe("[account email: verifyPracticeEmail]");
+    const [issued] = await db.select().from(authTokens).where(and(eq(authTokens.email, practiceEmail), eq(authTokens.kind, "email_verify")));
+    expect(issued).toMatchObject({ userId: owner.id, orgId });
+
+    // The raw token only travels by email; issue a known one the same way.
+    const { issueAuthToken } = await import("./security/tokens");
+    const { token } = await issueAuthToken({ kind: "email_verify", userId: owner.id, email: practiceEmail, orgId });
+    expect(await redirectOf(actions.verifyEmail(null, form({ token, locale: "it" })))).toBe("/it/login?notice=verified");
+    const [o] = await db.select().from(organizations).where(eq(organizations.id, orgId));
+    const [u] = await db.select().from(users).where(eq(users.id, owner.id));
+    expect(o.emailVerifiedAt).toBeInstanceOf(Date);
+    expect(u.emailVerifiedAt).toBeNull();
+    const logged = await db.select().from(auditLog).where(and(eq(auditLog.action, "auth.email.verify"), eq(auditLog.orgId, orgId)));
+    expect(logged.map((r) => [r.entityType, r.entityId])).toEqual([["org", orgId]]);
+  });
+
+  it("confirms nothing once the address is neither the practice's nor the user's any more, or the issuer no longer owns it", async () => {
+    const { orgId, owner } = await ownerOfNewPractice();
+    const { issueAuthToken } = await import("./security/tokens");
+    const old = `old-${newId(6).toLowerCase()}@example.com`;
+    await db.update(organizations).set({ email: old, emailVerifiedAt: null }).where(eq(organizations.id, orgId));
+    const stale = await issueAuthToken({ kind: "email_verify", userId: owner.id, email: old, orgId });
+    await db.update(organizations).set({ email: `new-${newId(6).toLowerCase()}@example.com` }).where(eq(organizations.id, orgId));
+    expect(await actions.verifyEmail(null, form({ token: stale.token, locale: "en" }))).toMatchObject({ error: expect.any(String) });
+
+    await db.update(organizations).set({ email: old }).where(eq(organizations.id, orgId));
+    const demoted = await issueAuthToken({ kind: "email_verify", userId: owner.id, email: old, orgId });
+    await db.update(memberships).set({ role: "admin" }).where(and(eq(memberships.userId, owner.id), eq(memberships.orgId, orgId)));
+    expect(await actions.verifyEmail(null, form({ token: demoted.token, locale: "en" }))).toMatchObject({ error: expect.any(String) });
+    const [o] = await db.select().from(organizations).where(eq(organizations.id, orgId));
+    expect(o.emailVerifiedAt).toBeNull();
   });
 });

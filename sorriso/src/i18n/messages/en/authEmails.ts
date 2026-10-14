@@ -19,6 +19,11 @@ export default {
     body: "Please confirm that this is the email address of your Sorriso account. The link is valid for 24 hours.",
     cta: "Confirm my email",
   },
+  verifyPracticeEmail: {
+    subject: "Confirm the email address of {practice}",
+    body: "{owner} entered this address as the email of {practice} on Sorriso. Patients' replies and privacy requests will be sent here, and online booking stays paused until it is confirmed. The link is valid for 24 hours. If you don't know this practice, ignore this email: nothing changes.",
+    cta: "Confirm this address",
+  },
   signupExisting: {
     subject: "Someone tried to create an account with your email",
     body: "Someone, possibly you, tried to create a new practice on Sorriso with this email address, which already has an account. If it was you, log in instead, or reset your password if you've forgotten it. If it wasn't you, you can ignore this email: nothing was changed.",

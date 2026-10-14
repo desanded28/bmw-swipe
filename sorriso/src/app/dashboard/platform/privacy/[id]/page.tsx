@@ -12,7 +12,7 @@ import { fmtDay, zonedDate } from "@/i18n/datefmt";
 import { getStaffLocale, getT } from "@/i18n/server";
 import { audit } from "@/lib/audit";
 import { requirePlatformAdmin } from "@/lib/auth";
-import { dueBadge, effectiveDueAt, getPrivacyRequest, isOpenRequest, maxExtensionUntil, requesterLabel } from "@/lib/privacy/requests";
+import { dueBadge, effectiveDueAt, getPrivacyRequest, isOpenRequest, maxExtensionUntil, requestTextAndContact, requesterLabel } from "@/lib/privacy/requests";
 import { addDays, zonedParts } from "@/lib/time";
 
 const TZ = "Europe/Rome";
@@ -30,7 +30,13 @@ export default async function PlatformPrivacyRequestPage({ params }: { params: P
   const locale = await getStaffLocale();
   const t = getT(locale, "privacyAdmin");
   const now = new Date();
-  await audit({ orgId: null, actor: { type: "platform_admin", id: s.user.id }, action: "patient.view", entity: { type: "privacy_request", id: r.id } });
+  await audit({
+    orgId: null,
+    actor: { type: "platform_admin", id: s.user.id },
+    action: "privacy_request.view",
+    entity: { type: "privacy_request", id: r.id },
+    metadata: { patientId: r.patientId },
+  });
   const [patient] = r.patientId
     ? await db
         .select({ id: patients.id, firstName: patients.firstName, lastName: patients.lastName, restrictedAt: patients.restrictedAt, erasedAt: patients.erasedAt })
@@ -40,6 +46,7 @@ export default async function PlatformPrivacyRequestPage({ params }: { params: P
   const long = (d: Date) => fmtDay(zonedDate(d, TZ), "long", locale);
   const open = isOpenRequest(r);
   const max = maxExtensionUntil(r.dueAt, TZ);
+  const details = requestTextAndContact(r);
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -60,7 +67,9 @@ export default async function PlatformPrivacyRequestPage({ params }: { params: P
           extensionReason: r.extensionReason,
           language: ENDONYM[r.requesterLocale],
           requester: requesterLabel(t, patient ?? null, true),
-          details: r.details,
+          details: details.text,
+          contact: details.contact,
+          contactKept: Boolean(r.patientId),
           decision: r.decision,
           decisionReason: r.decisionReason,
           closedAt: r.closedAt ? long(r.closedAt) : null,

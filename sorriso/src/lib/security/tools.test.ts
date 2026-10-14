@@ -7,11 +7,11 @@ import { decrypt } from "@/lib/crypto";
 import { newId } from "@/lib/ids";
 import { checkPasswordPolicy, isCommonPassword } from "@/lib/password";
 import { peekRateLimit, rateLimit } from "@/lib/rate-limit";
-import { createPractice } from "@/test/fixtures";
+import { createPractice, MONDAY, NOW, TZ } from "@/test/fixtures";
 import { ipAllowed, ipInRange, normalizeIpRange, parseIp } from "./ip";
-import { ENCRYPTED_COLUMNS, reencryptColumns } from "./reencrypt";
+import { ENCRYPTED_COLUMNS, ENCRYPTED_TEXT_VALUES, reencryptColumns } from "./reencrypt";
 import { demoSeedRefusal, fakePhone, isFakePhone } from "./seed-guard";
-import { cspNonce, cssUrls, disallowedCookies, resourceUrls, scriptsMissingNonce, thirdPartyUrls } from "./third-party";
+import { ALLOWED_COOKIES, cspNonce, cssUrls, disallowedCookies, resourceUrls, scriptsMissingNonce, thirdPartyUrls } from "./third-party";
 import { describeUserAgent, parseUserAgent } from "./user-agent";
 
 describe("password policy", () => {
@@ -147,6 +147,14 @@ describe("third-party check", () => {
     expect(disallowedCookies(["NEXT_LOCALE=it; Path=/", "__Host-sorriso_session=x; Secure", "_ga=GA1.2.3; Path=/", "_fbp=fb.1"])).toEqual(["_ga", "_fbp"]);
   });
 
+  it("allows exactly the app's own cookies: staff session, language, privacy-center session", async () => {
+    const { SESSION_COOKIE_NAMES } = await import("@/lib/auth");
+    const { PATIENT_SESSION_COOKIE_NAMES } = await import("@/lib/privacy/patient-session");
+    const { LOCALE_COOKIE } = await import("@/i18n/config");
+    expect([...ALLOWED_COOKIES].sort()).toEqual([...SESSION_COOKIE_NAMES, ...PATIENT_SESSION_COOKIE_NAMES, LOCALE_COOKIE].sort());
+    expect(disallowedCookies(["__Host-sorriso_pc=x; Secure; HttpOnly", "sorriso_pc=y"])).toEqual([]);
+  });
+
   it("spots scripts the CSP nonce would block", () => {
     const csp = "default-src 'self'; script-src 'self' 'nonce-abc' 'strict-dynamic'";
     expect(cspNonce(csp)).toBe("abc");
@@ -207,5 +215,49 @@ describe("re-encryption backfill", () => {
     // Every other column too, without failures.
     const all = await reencryptColumns(client);
     expect(all.reduce((n, r) => n + r.failed, 0)).toBe(0);
+  });
+
+  it("rotates the review texts reviews.ts encrypts, but leaves a published (public) comment in plaintext", async () => {
+    const p = await createPractice();
+    const { createAppointment } = await import("@/lib/booking");
+    const { heldCommentValue, readComment, readReportDetails, reportDetailsValue } = await import("@/lib/reviews");
+    const { zonedToUtc } = await import("@/lib/time");
+    const visit = async (lastName: string) =>
+      (
+        await createAppointment({
+          orgId: p.orgId,
+          serviceId: p.visit,
+          practitionerId: p.drA,
+          locationId: p.milano,
+          startsAt: zonedToUtc(MONDAY, 9 * 60 + (lastName === "Pub" ? 0 : 60), TZ),
+          patient: { firstName: "Rev", lastName, phone: `+3935${Date.now() % 100_000_000}${lastName.length}` },
+          source: "staff",
+          online: false,
+          force: true,
+          now: NOW,
+        })
+      ).appointment.id;
+    const published = newId();
+    const held = newId();
+    const report = newId();
+    const base = { orgId: p.orgId, practitionerId: p.drA, rating: 4, authorName: "R." };
+    await db.insert(schema.reviews).values([
+      { ...base, id: published, appointmentId: await visit("Pub"), status: "published", comment: "Great, very kind staff" },
+      { ...base, id: held, appointmentId: await visit("Held"), status: "pending", comment: heldCommentValue("They pulled my tooth after the infection") },
+    ]);
+    await db.insert(schema.reviewReports).values({ id: report, reviewId: published, orgId: p.orgId, ground: "defamation", details: reportDetailsValue("Names a colleague") });
+
+    process.env.DATA_ENCRYPTION_KEYS = `k3:${Buffer.alloc(32, 9).toString("base64")},${original}`;
+    const done = await reencryptColumns(client, { columns: ENCRYPTED_TEXT_VALUES });
+    expect(done.reduce((n, r) => n + r.failed, 0)).toBe(0);
+    const raw = async (sql: string, id: string) => String((await client.execute({ sql, args: [id] })).rows[0].v);
+    expect(await raw("SELECT comment AS v FROM reviews WHERE id = ?", published)).toBe("Great, very kind staff");
+    expect(await raw("SELECT comment AS v FROM reviews WHERE id = ?", held)).toMatch(/^v1:k3:/);
+    expect(await raw("SELECT details AS v FROM review_reports WHERE id = ?", report)).toMatch(/^v1:k3:/);
+    expect(readComment(await raw("SELECT comment AS v FROM reviews WHERE id = ?", held))).toBe("They pulled my tooth after the infection");
+    expect(readReportDetails(await raw("SELECT details AS v FROM review_reports WHERE id = ?", report)).text).toBe("Names a colleague");
+    // Idempotent, and the default run covers them.
+    const again = await reencryptColumns(client, { dryRun: true });
+    for (const c of ENCRYPTED_TEXT_VALUES) expect(again.find((r) => r.table === c.table && r.column === c.column)?.pending, `${c.table}.${c.column}`).toBe(0);
   });
 });

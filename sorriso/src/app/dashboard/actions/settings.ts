@@ -3,16 +3,16 @@
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
-import { memberships, organizations, users, type OrgSettings } from "@/db/schema";
+import { memberships, organizations, users } from "@/db/schema";
 import { DEFAULT_LOCALE } from "@/i18n/config";
 import { getStaffLocale, getT } from "@/i18n/server";
 import type { StaffSession } from "@/lib/auth";
 import { absoluteUrl } from "@/lib/config";
 import { logError } from "@/lib/log";
+import { recordPracticeNotices } from "@/lib/privacy/notices";
 import { sendAuthEmail, staffEmailLocale } from "@/lib/security/emails";
 import { issueAuthToken } from "@/lib/security/tokens";
-import { resolveSettings } from "@/lib/settings";
-import { fail, guard, ok, optional, str, type ActionResult } from "./_shared";
+import { fail, guard, ok, optional, str, updateSettings, type ActionResult } from "./_shared";
 
 /** Practice profile, controller identity and booking rules (WP5). */
 
@@ -72,6 +72,19 @@ async function reverifyPracticeEmail(s: StaffSession, email: string | null): Pro
   }
 }
 
+/**
+ * Put the practice's privacy notices, as they now read, on record in every language (WP4's
+ * recordPracticeNotices): they name the controller, its contacts and its DPO. Never fails the save.
+ */
+async function recordNotices(orgId: string) {
+  try {
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, orgId));
+    if (org) await recordPracticeNotices(org);
+  } catch (err) {
+    logError("settings", err, { step: "record-notices", orgId });
+  }
+}
+
 export async function saveProfile(_prev: unknown, fd: FormData): Promise<ActionResult> {
   return guard(
     async (s) => {
@@ -105,6 +118,7 @@ export async function saveProfile(_prev: unknown, fd: FormData): Promise<ActionR
           medicalDirector: text("medicalDirector"),
         })
         .where(eq(organizations.id, s.org.id));
+      await recordNotices(s.org.id);
       if ((email ?? "") === (s.org.email ?? "").toLowerCase()) return ok(t("settings.profile.saved"));
       const verification = await reverifyPracticeEmail(s, email);
       if (verification === "verified") return ok(t("settings.profile.saved"));
@@ -120,11 +134,8 @@ export async function saveBookingPolicy(_prev: unknown, fd: FormData): Promise<A
       const t = await tr();
       const num = (k: string, min: number, max: number) => Math.max(min, Math.min(max, Math.round(Number(str(fd, k)) || 0)));
       const step = Number(str(fd, "slotStepMinutes"));
-      const [org] = await db.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, s.org.id));
-      const resolved = resolveSettings(org?.settings);
-      // Keep keys outside the resolved shape (the register's free rows).
-      const next = {
-        ...((org?.settings ?? {}) as Record<string, unknown>),
+      // One transaction; keys outside the resolved shape (the register's free rows) are kept.
+      await updateSettings(s.org.id, (resolved) => ({
         ...resolved,
         booking: {
           minNoticeMinutes: num("minNoticeHours", 0, 24 * 14) * 60,
@@ -133,11 +144,7 @@ export async function saveBookingPolicy(_prev: unknown, fd: FormData): Promise<A
           cancelUntilHours: num("cancelUntilHours", 0, 24 * 7),
           requireApproval: fd.get("requireApproval") === "on",
         },
-      };
-      await db
-        .update(organizations)
-        .set({ settings: next as OrgSettings })
-        .where(eq(organizations.id, s.org.id));
+      }));
       return ok(t("settings.booking.saved"));
     },
     { permission: "settings.manage", audit: "settings.update" },

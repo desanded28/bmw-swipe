@@ -11,8 +11,13 @@
 
 export type FoundUrl = { url: string; where: string; inTemplate: boolean };
 
-/** Cookies a public page may set: the staff session, the language choice, the patient privacy-center session. */
-export const ALLOWED_COOKIES = ["__Host-sorriso_session", "sorriso_session", "NEXT_LOCALE", "__Host-sorriso_privacy", "sorriso_privacy"];
+/**
+ * Cookies a public page may set: the staff session (auth.ts SESSION_COOKIE_NAMES), the language
+ * choice, the patient privacy-center session (privacy/patient-session.ts
+ * PATIENT_SESSION_COOKIE_NAMES). Spelled out here so the script stays free of the database
+ * modules; tools.test.ts checks them against those constants.
+ */
+export const ALLOWED_COOKIES = ["__Host-sorriso_session", "sorriso_session", "NEXT_LOCALE", "__Host-sorriso_pc", "sorriso_pc"];
 
 /** Origins allowed only inside a <template> (click-to-load embeds). */
 export const TEMPLATE_ONLY_ORIGINS = ["https://www.openstreetmap.org"];

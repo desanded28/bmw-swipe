@@ -14,6 +14,9 @@ import { FormStatus } from "./PatientForms";
 
 type Limit = { min: number; max: number; default: number; unit: "days" | "months" | "hours" };
 
+/** Whether WhatsApp can actually be used on this server (see whatsappStatus in the page). */
+export type WhatsAppStatus = { kind: "live" | "noTemplates" | "notConnected" | "demo"; templates: number };
+
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <fieldset className="rounded-2xl bg-white p-5 shadow-card ring-1 ring-slate-200/70">
@@ -55,10 +58,12 @@ export function PrivacySettingsForm({
   settings,
   limits,
   sessionLimits,
+  whatsappStatus,
 }: {
   settings: PrivacySettings;
   limits: Record<keyof RetentionSettings, Limit>;
   sessionLimits: { min: number; max: number };
+  whatsappStatus: WhatsAppStatus;
 }) {
   const t = useT("privacyAdmin");
   const tc = useT("common");
@@ -78,7 +83,12 @@ export function PrivacySettingsForm({
         </Field>
         {detailed ? <Warning>{t("settingsPrivacy.messageContentLevel.warning")}</Warning> : null}
         <Toggle name="whatsappEnabled" label={t("settingsPrivacy.whatsapp.label")} defaultChecked={settings.whatsappEnabled} onChange={setWhatsapp}>
-          {whatsapp ? <Warning>{t("settingsPrivacy.whatsapp.warning")}</Warning> : null}
+          <p className={whatsappStatus.kind === "live" ? "text-xs text-slate-500" : "text-xs font-medium text-amber-800"}>
+            {whatsappStatus.kind === "live"
+              ? t("settingsPrivacy.whatsapp.status.live", { count: whatsappStatus.templates })
+              : t(`settingsPrivacy.whatsapp.status.${whatsappStatus.kind}`)}
+          </p>
+          {whatsapp ? <div className="mt-1.5"><Warning>{t("settingsPrivacy.whatsapp.warning")}</Warning></div> : null}
         </Toggle>
         <Toggle name="marketingEnabled" label={t("settingsPrivacy.marketing.label")} defaultChecked={settings.marketingEnabled}>
           <p className="text-xs text-slate-500">{t("settingsPrivacy.marketing.hint")}</p>

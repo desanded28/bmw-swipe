@@ -1,17 +1,29 @@
 import { ArrowRight } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { PrivacySettingsForm } from "@/components/privacy-admin/SettingsForms";
+import { PrivacySettingsForm, type WhatsAppStatus } from "@/components/privacy-admin/SettingsForms";
 import { Button, Card, PageHeader, Select } from "@/components/ui";
 import { ENDONYM, isLocale, LOCALES } from "@/i18n/config";
 import { getStaffLocale, getT } from "@/i18n/server";
 import { requireStepUp } from "@/lib/auth";
+import { providerStatus } from "@/lib/messaging";
+import { whatsappTemplates } from "@/lib/messaging/whatsapp";
 import { can, requirePermission } from "@/lib/permissions";
 import { buildNotice } from "@/lib/privacy/notices";
 import { RETENTION_LIMITS, SESSION_HOURS_LIMITS } from "@/lib/privacy/settings";
 import { resolveSettings } from "@/lib/settings";
-import { ComplianceBanner } from "@/components/privacy-admin/ComplianceBanner";
-import { gatePage } from "@/lib/privacy/gates";
+
+/**
+ * Whether turning WhatsApp on has an effect on this server (WP3): connected with approved
+ * templates; connected without any (patients get SMS); not connected while SMS is live (patients
+ * get SMS); or nothing connected (development: messages are only captured).
+ */
+function whatsappStatus(): WhatsAppStatus {
+  const providers = providerStatus();
+  const templates = Object.values(whatsappTemplates()).reduce((n, byLocale) => n + Object.keys(byLocale).length, 0);
+  if (providers.whatsapp === "twilio") return { kind: templates ? "live" : "noTemplates", templates };
+  return { kind: providers.sms === "twilio" ? "notConnected" : "demo", templates };
+}
 
 export async function generateMetadata(): Promise<Metadata> {
   return { title: getT(await getStaffLocale(), "privacyAdmin")("settingsPrivacy.title") };
@@ -26,7 +38,6 @@ export async function generateMetadata(): Promise<Metadata> {
  */
 export default async function PrivacySettingsPage({ searchParams }: { searchParams: Promise<{ notice?: string }> }) {
   const s = await requirePermission("privacy.settings");
-  const banner = await gatePage(s);
   await requireStepUp();
   const locale = await getStaffLocale();
   const t = getT(locale, "privacyAdmin");
@@ -43,7 +54,6 @@ export default async function PrivacySettingsPage({ searchParams }: { searchPara
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      <ComplianceBanner state={banner} />
       <PageHeader title={t("settingsPrivacy.title")} description={t("settingsPrivacy.description")} />
       <nav className="flex flex-wrap gap-2" aria-label={t("settingsPrivacy.title")}>
         {links.map((l) => (
@@ -52,7 +62,7 @@ export default async function PrivacySettingsPage({ searchParams }: { searchPara
           </Link>
         ))}
       </nav>
-      <PrivacySettingsForm settings={settings.privacy} limits={RETENTION_LIMITS} sessionLimits={SESSION_HOURS_LIMITS} />
+      <PrivacySettingsForm settings={settings.privacy} limits={RETENTION_LIMITS} sessionLimits={SESSION_HOURS_LIMITS} whatsappStatus={whatsappStatus()} />
 
       <Card className="p-5">
         <h2 className="text-lg font-bold">{t("settingsPrivacy.sections.notice")}</h2>

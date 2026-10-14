@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, or, type SQL } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, or, sql, type SQL } from "drizzle-orm";
 import { getTableColumns } from "drizzle-orm";
 import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 import { strToU8, Zip, ZipDeflate, zipSync } from "fflate";
@@ -40,7 +40,9 @@ import { fmtDay, fmtWhen, zonedDate } from "@/i18n/datefmt";
 import { getT } from "@/i18n/t";
 import type { AuditEvent } from "../audit";
 import { absoluteUrl, APP_NAME } from "../config";
+import { isEncrypted } from "../crypto";
 import { esc } from "../messaging/layout";
+import { readComment, readDecisionReason, readRemovedReason, readReportDetails } from "../reviews";
 import { resolveSettings } from "../settings";
 import { fhirBundle, appointmentResource, patientResource, practitionerResource, locationResource, organizationResource } from "./fhir";
 import { activePurposes, categoriesText, legalBasisText, retentionText, toCsv, transferToolText } from "./register";
@@ -183,7 +185,16 @@ export const patientExportSchema = z
       }),
     ),
     reviews: z.array(
-      z.object({ id: z.string(), appointmentId: z.string(), rating: z.number().int(), comment: text, status: z.string(), reply: text, createdAt: iso }),
+      z.object({
+        id: z.string(),
+        appointmentId: z.string(),
+        rating: z.number().int(),
+        comment: text,
+        status: z.string(),
+        reply: text,
+        removedReason: text.describe("Why the review was taken down: the statement of reasons sent to its author (only in the patient's own download)"),
+        createdAt: iso,
+      }),
     ),
     recalls: z.array(z.object({ id: z.string(), serviceId: z.string(), dueDate: day, intervalMonths: z.number().int(), status: z.string(), createdAt: iso })),
     forms: z.array(
@@ -291,6 +302,34 @@ export type PatientExport = { filename: string; contentType: string; body: Uint8
 
 const isoOrNull = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 
+/**
+ * A review's comment as the practice may read it (as reviews.ts practiceVisibleComment): only
+ * while it is the public text — a published review, or one the practice's report hides while it is
+ * checked. Never a text the automatic check held, nor a removed one (stored encrypted), and never
+ * the statement of reasons for a removal: those belong to Sorriso's moderation (Sorriso is the
+ * controller) and go to the author only.
+ */
+function practiceComment(r: { comment: string | null; status: string; publishedAt: unknown }): string | null {
+  if (!r.comment) return null;
+  if (r.status === "published") return readComment(r.comment);
+  if (r.status === "under_review" && r.publishedAt != null && !isEncrypted(r.comment)) return r.comment;
+  return null;
+}
+
+/**
+ * The audit rows about one patient, for an access log (the export's and the patient page's): rows
+ * filed on the record or on one of its appointments, and rows filed on something else that names
+ * the patient in metadata.patientId (privacy requests, messages, waiting-list entries, recalls,
+ * forms, adult confirmations). Combine with the org scope.
+ */
+export function patientAccessFilter(patientId: string, appointmentIds: readonly string[]): SQL {
+  return or(
+    and(eq(auditLog.entityType, "patient"), eq(auditLog.entityId, patientId)),
+    appointmentIds.length ? and(eq(auditLog.entityType, "appointment"), inArray(auditLog.entityId, [...appointmentIds])) : undefined,
+    sql`json_extract(${auditLog.metadata}, '$.patientId') = ${patientId}`,
+  )!;
+}
+
 function parseAnswers(raw: string): unknown {
   try {
     return JSON.parse(raw);
@@ -308,8 +347,13 @@ type Collected = {
   appointmentRows: (typeof appointments.$inferSelect & { service: typeof services.$inferSelect })[];
 };
 
-/** Everything about one patient of `orgId` (org-scoped; throws when the patient isn't the org's). */
-export async function collectPatientData(orgId: string, patientId: string, opts: { locale: Locale; now?: Date }): Promise<Collected> {
+/**
+ * Everything about one patient of `orgId` (org-scoped; throws when the patient isn't the org's).
+ * `forPatient`: the patient downloads it themselves (privacy center), so their reviews carry
+ * their own text even while held or after removal, and the statement of reasons; staff exports
+ * show reviews as the practice sees them.
+ */
+export async function collectPatientData(orgId: string, patientId: string, opts: { locale: Locale; now?: Date; forPatient?: boolean }): Promise<Collected> {
   const now = opts.now ?? new Date();
   const [row] = await db
     .select({ p: patients, org: organizations })
@@ -350,15 +394,7 @@ export async function collectPatientData(orgId: string, patientId: string, opts:
       .select({ log: auditLog, role: memberships.role })
       .from(auditLog)
       .leftJoin(memberships, and(eq(memberships.userId, auditLog.actorId), eq(memberships.orgId, orgId), eq(auditLog.actorType, "user")))
-      .where(
-        and(
-          eq(auditLog.orgId, orgId),
-          or(
-            and(eq(auditLog.entityType, "patient"), eq(auditLog.entityId, patientId)),
-            apptIds.length ? and(eq(auditLog.entityType, "appointment"), inArray(auditLog.entityId, apptIds)) : undefined,
-          ),
-        ),
-      )
+      .where(and(eq(auditLog.orgId, orgId), patientAccessFilter(patientId, apptIds)))
       .orderBy(asc(auditLog.seq)),
   ]);
 
@@ -462,9 +498,10 @@ export async function collectPatientData(orgId: string, patientId: string, opts:
       id: r.id,
       appointmentId: r.appointmentId,
       rating: r.rating,
-      comment: r.comment,
+      comment: opts.forPatient ? readComment(r.comment) : practiceComment(r),
       status: r.status,
       reply: r.reply,
+      removedReason: opts.forPatient ? readRemovedReason(r.removedReason) : null,
       createdAt: r.createdAt.toISOString(),
     })),
     recalls: recallRows.map((r) => ({
@@ -660,7 +697,9 @@ export async function buildPatientExport(
   opts: { locale: Locale; format: "json" | "zip"; actor: AuditEvent["actor"]; now?: Date },
 ): Promise<PatientExport> {
   const now = opts.now ?? new Date();
-  const c = await collectPatientData(orgId, patientId, { locale: opts.locale, now });
+  // Downloaded by the patient (privacy center, appointment link) or by staff for them.
+  const forPatient = opts.actor.type === "patient_session" || opts.actor.type === "patient_link";
+  const c = await collectPatientData(orgId, patientId, { locale: opts.locale, now, forPatient });
   const stamp = now.toISOString().slice(0, 10);
   const json = JSON.stringify(c.data, null, 2);
   if (opts.format === "json") {
@@ -703,7 +742,14 @@ function columnsOf(table: SQLiteTable, omit: string[] = []): string[] {
   return Object.keys(getTableColumns(table)).filter((c) => !omit.includes(c));
 }
 
-function plainTable(name: string, table: SQLiteTable, where: (orgId: string) => SQL | undefined, omit: string[] = []): OrgTable {
+function plainTable(
+  name: string,
+  table: SQLiteTable,
+  where: (orgId: string) => SQL | undefined,
+  omit: string[] = [],
+  /** Rewrites a row before export (e.g. decrypts the columns encrypted by hand). */
+  map: (row: Row) => Row = (row) => row,
+): OrgTable {
   const columns = columnsOf(table, omit);
   const cols = getTableColumns(table);
   const order = (cols as Record<string, Parameters<typeof asc>[0]>).id ?? Object.values(cols)[0];
@@ -712,9 +758,25 @@ function plainTable(name: string, table: SQLiteTable, where: (orgId: string) => 
     columns,
     page: async (orgId, offset, limit) => {
       const rows = (await db.select().from(table).where(where(orgId)).orderBy(asc(order)).limit(limit).offset(offset)) as Row[];
-      return rows.map((r) => Object.fromEntries(columns.map((c) => [c, r[c]])));
+      return rows.map((r) => map(Object.fromEntries(columns.map((c) => [c, r[c]]))));
     },
   };
+}
+
+/** A review row as the practice may read it (comment and removal reason: see practiceComment). */
+function practiceReviewRow(r: Row): Row {
+  return { ...r, comment: practiceComment({ comment: typeof r.comment === "string" ? r.comment : null, status: String(r.status), publishedAt: r.publishedAt }), removedReason: null };
+}
+
+/**
+ * The practice's own reports about its reviews (DSA notices from the public and the automatic
+ * check are Sorriso's, as controller): what the practice wrote and the statement of reasons for
+ * the decision, decrypted. The author's response is part of the moderation Sorriso runs, and is
+ * left out.
+ */
+function practiceReportRow(r: Row): Row {
+  const str = (v: unknown) => (typeof v === "string" ? v : null);
+  return { ...r, details: readReportDetails(str(r.details)).text ?? null, patientResponse: null, decisionReason: readDecisionReason(str(r.decisionReason)) };
 }
 
 const orgLocations = (orgId: string) => db.select({ id: locations.id }).from(locations).where(eq(locations.orgId, orgId));
@@ -753,8 +815,14 @@ export const ORG_EXPORT_TABLES: OrgTable[] = [
   plainTable("reminders", reminders, (o) => inArray(reminders.appointmentId, orgAppointments(o))),
   plainTable("messages", messages, (o) => eq(messages.orgId, o)),
   plainTable("waitlist", waitlist, (o) => eq(waitlist.orgId, o)),
-  plainTable("reviews", reviews, (o) => eq(reviews.orgId, o)),
-  plainTable("review_reports", reviewReports, (o) => inArray(reviewReports.reviewId, orgReviews(o))),
+  plainTable("reviews", reviews, (o) => eq(reviews.orgId, o), [], practiceReviewRow),
+  plainTable(
+    "review_reports",
+    reviewReports,
+    (o) => and(inArray(reviewReports.reviewId, orgReviews(o)), isNotNull(reviewReports.reporterUserId)),
+    ["reporterContactHash"],
+    practiceReportRow,
+  ),
   plainTable("recalls", recalls, (o) => eq(recalls.orgId, o)),
   plainTable("form_templates", formTemplates, (o) => eq(formTemplates.orgId, o)),
   plainTable("form_submissions", formSubmissions, (o) => eq(formSubmissions.orgId, o)),

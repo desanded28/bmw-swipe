@@ -6,9 +6,10 @@ import { describe, expect, it } from "vitest";
 import { db } from "@/db";
 import { auditLog } from "@/db/schema";
 import { getT } from "@/i18n/t";
-import { audit, verifyAuditChain } from "@/lib/audit";
+import { audit, AUDIT_ACTIONS, AUDIT_ENTITY_TYPES, verifyAuditChain } from "@/lib/audit";
 import { createPractice } from "@/test/fixtures";
 import { AuditChainStatus } from "./AuditChainStatus";
+import { auditActionLabel } from "./PrivacyPanel";
 
 const t = getT("en", "privacyAdmin");
 const render = (result: Awaited<ReturnType<typeof verifyAuditChain>>) => renderToStaticMarkup(createElement(AuditChainStatus, { t, result }));
@@ -42,5 +43,16 @@ describe("audit viewer: chain status", () => {
     const broken = await verifyAuditChain(orgId);
     expect(broken).toMatchObject({ ok: false, brokenAtId: rows[2].id, reason: "link" });
     expect(render(broken)).toContain("entries were deleted, inserted or reordered");
+  });
+});
+
+describe("audit viewer: labels", () => {
+  it("has an English label for every audit action and record type (none falls back to the raw name)", () => {
+    const unlabelled = AUDIT_ACTIONS.filter((a) => !t.has(`audit.actions.${a}`) || typeof auditActionLabel(t, a) !== "string" || auditActionLabel(t, a) === a);
+    expect(unlabelled).toEqual([]);
+    expect(AUDIT_ENTITY_TYPES.filter((e) => !t.has(`audit.entities.${e}`))).toEqual([]);
+    expect(auditActionLabel(t, "legal.notify")).toBe("Notified of a legal document change");
+    expect(auditActionLabel(t, "practitioner.marketplace.opt_out")).toBe("Changed the marketplace listing");
+    expect(t("audit.entities.waitlist")).toBe("Waiting-list entry");
   });
 });

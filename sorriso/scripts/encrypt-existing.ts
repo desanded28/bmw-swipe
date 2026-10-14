@@ -1,7 +1,10 @@
 /**
  * Re-encrypt every encryptedText column under the active key (the first entry of
  * DATA_ENCRYPTION_KEYS): plaintext rows written before encryption, and rows encrypted with an
- * older key after a rotation (see needsReencrypt in src/lib/crypto.ts).
+ * older key after a rotation (see needsReencrypt in src/lib/crypto.ts). The review texts that
+ * src/lib/reviews.ts encrypts itself (comments held for moderation, report details, the author's
+ * response, statements of reasons) are rotated too, but plaintext there stays plaintext: a
+ * published comment is public (ENCRYPTED_TEXT_VALUES in src/lib/security/reencrypt.ts).
  *
  *   npm run db:encrypt              # rewrite, in batches of 500
  *   npm run db:encrypt -- --dry-run # only count what would change

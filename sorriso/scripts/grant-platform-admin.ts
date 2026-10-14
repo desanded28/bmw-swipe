@@ -3,10 +3,11 @@
  * moderation, the platform privacy inbox). Platform admins must use two-step verification, and
  * every access is audited (platform.access).
  *
- *   npx tsx scripts/grant-platform-admin.ts someone@sorriso.example
- *   npx tsx scripts/grant-platform-admin.ts someone@sorriso.example --revoke
+ *   npm run platform:grant -- someone@sorriso.example
+ *   npm run platform:grant -- someone@sorriso.example --revoke
  *
- * The change itself is recorded on the platform audit chain. Revoking also ends the user's sessions.
+ * The change itself is recorded on the platform audit chain (platform.admin_grant). Revoking also
+ * ends the user's sessions.
  */
 import { eq } from "drizzle-orm";
 import { db } from "../src/db";
@@ -17,7 +18,7 @@ async function main() {
   const email = process.argv[2]?.trim().toLowerCase();
   const revoke = process.argv.includes("--revoke");
   if (!email || !email.includes("@")) {
-    console.error("Usage: npx tsx scripts/grant-platform-admin.ts <email> [--revoke]");
+    console.error("Usage: npm run platform:grant -- <email> [--revoke]");
     process.exit(1);
   }
   const [user] = await db.select().from(users).where(eq(users.email, email));
@@ -30,9 +31,9 @@ async function main() {
   await audit({
     orgId: null,
     actor: { type: "system", id: null },
-    action: "member.role_change",
+    action: "platform.admin_grant",
     entity: { type: "user", id: user.id },
-    metadata: { scope: "platform", platformAdmin: !revoke },
+    metadata: { platformAdmin: !revoke },
   });
   console.log(revoke ? "Platform-admin rights removed; the user's sessions were ended." : "Platform-admin rights granted. They must enrol in two-step verification at next sign-in.");
 }

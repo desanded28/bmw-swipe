@@ -29,8 +29,8 @@ import {
   isOpenRequest,
   messageDate,
   notifyPatientDirect,
+  joinContacts,
   notifyRequester,
-  withContactSnapshot,
 } from "./requests";
 
 /**
@@ -45,13 +45,14 @@ import {
  *  - restrict: the practice must keep the data on a legal ground (Art. 17(3)(b)/(c)/(e), e.g.
  *    the 10-year retention of clinical records): the record is restricted until `retainUntil`,
  *    future visits are cancelled and nothing is sent to the patient any more. The erasure is only
- *    deferred: the record is marked (restrictionReason "erasure:<reason>") and the retention job
+ *    deferred: the record is marked (patients.erasureRequestedAt) and the retention job
  *    pseudonymises it the day after `retainUntil`, whatever the practice's erasureDefault.
  *
  * Answering the request (opts.answer): the request is closed in the same transaction and the
  * answer is sent afterwards to the contact the record had, so erasing never leaves staff unable
- * to answer (Art. 12(3)-(4), 19). Other open requests of the patient keep their text plus that
- * contact (encrypted) until they are answered; closed ones lose their free text.
+ * to answer (Art. 12(3)-(4), 19). Other open requests of the patient keep their text, and that
+ * contact in their (encrypted) answerContact, until they are answered; closed ones lose their free
+ * text and contact.
  *
  * Scope (critique 18): only rows linked to this record by patientId or appointmentId — never
  * rows matched by phone or email, which families share.
@@ -73,22 +74,26 @@ export const ERASED_NAME = `${ERASED_FIRST_NAME} ${ERASED_LAST_NAME}`;
 export type ErasureMode = "anonymise" | "restrict";
 
 /**
- * restrictionReason of a record whose erasure was deferred to retainUntil (erasePatient in
- * 'restrict' mode), followed by the reason given. The retention job erases these once the date
- * has passed.
+ * Before patients.erasureRequestedAt existed, a deferred erasure was marked by this prefix on
+ * restrictionReason ("erasure:<reason>"). Migration 0003 copied those marks into the column; the
+ * prefix is still read (isDeferredErasure, restrictionReasonView) and no longer written.
  */
 export const ERASURE_DEFERRED_PREFIX = "erasure:";
 
 /** restrictionReason codes written by the retention job (shown translated, never as is). */
 export const RETENTION_REASONS = { inactive: "retention:inactive", never_seen: "retention:never_seen" } as const;
 
-export function isDeferredErasure(p: Pick<Patient, "restrictedAt" | "restrictionReason">): boolean {
-  return Boolean(p.restrictedAt && p.restrictionReason?.startsWith(ERASURE_DEFERRED_PREFIX));
+/**
+ * A restricted record whose erasure was requested and deferred to retainUntil (erasePatient in
+ * 'restrict' mode): the retention job pseudonymises it once that date has passed.
+ */
+export function isDeferredErasure(p: Pick<Patient, "restrictedAt" | "restrictionReason" | "erasureRequestedAt">): boolean {
+  return Boolean(p.restrictedAt && (p.erasureRequestedAt || p.restrictionReason?.startsWith(ERASURE_DEFERRED_PREFIX)));
 }
 
 /**
- * A restriction reason for display: a deferred erasure (with the reason staff gave), a retention
- * code (to translate), or the free text staff typed.
+ * A restriction reason for display: a deferred erasure marked the old way (with the reason staff
+ * gave), a retention code (to translate), or the free text staff typed.
  */
 export function restrictionReasonView(reason: string | null): { kind: "erasure" | "retention_inactive" | "retention_never_seen" | "text"; text: string | null } {
   if (!reason) return { kind: "text", text: null };
@@ -243,7 +248,7 @@ async function deleteCopies(copies: ProviderCopy[]) {
   }
 }
 
-const NO_REQUEST_TEXT = { details: null, decisionReason: null, extensionReason: null } as const;
+const NO_REQUEST_TEXT = { details: null, decisionReason: null, extensionReason: null, answerContact: null } as const;
 
 /**
  * Erase or restrict one patient of `orgId`. Throws ErasureError for a refused request; the
@@ -286,7 +291,10 @@ export async function erasePatient(orgId: string, patientId: string, opts: Erasu
     const [{ unexported }] = await tx
       .select({ unexported: sql<number>`count(*)` })
       .from(formSubmissions)
-      .where(and(eq(formSubmissions.orgId, orgId), inArray(formSubmissions.patientId, ids), isNull(formSubmissions.exportedAt)));
+      // Signed forms only: an unsigned row just records that an invitation was sent (no answers).
+      .where(
+        and(eq(formSubmissions.orgId, orgId), inArray(formSubmissions.patientId, ids), isNotNull(formSubmissions.signedAt), isNull(formSubmissions.exportedAt)),
+      );
     if (mode === "anonymise" && unexported > 0) {
       const policy = opts.unexportedForms ?? "fail";
       if (policy === "fail") throw new ErasureError("forms_not_exported");
@@ -314,11 +322,17 @@ export async function erasePatient(orgId: string, patientId: string, opts: Erasu
     counts.remindersCancelled = future.reminders;
 
     if (mode === "restrict") {
-      // A restriction asked for in place of erasure is marked, so it is carried out after retainUntil.
-      const marked = opts.mode === "restrict" ? `${ERASURE_DEFERRED_PREFIX}${reason}` : reason;
+      // A restriction asked for in place of erasure is marked (erasureRequestedAt), so it is
+      // carried out after retainUntil; one forced by unexported forms (the retention job) is not.
+      const deferred = opts.mode === "restrict";
       await tx
         .update(patients)
-        .set({ restrictedAt: p.restrictedAt ?? now, restrictionReason: marked.slice(0, 500), retainUntil: opts.retainUntil ?? p.retainUntil })
+        .set({
+          restrictedAt: p.restrictedAt ?? now,
+          restrictionReason: reason.slice(0, 500),
+          retainUntil: opts.retainUntil ?? p.retainUntil,
+          ...(deferred ? { erasureRequestedAt: p.erasureRequestedAt ?? now } : {}),
+        })
         .where(and(eq(patients.orgId, orgId), inArray(patients.id, ids)));
       // Not clinical, and the patient asked to leave: the waitlist goes, recalls stop.
       counts.waitlistDeleted = (await tx.delete(waitlist).where(and(eq(waitlist.orgId, orgId), inArray(waitlist.patientId, ids)))).rowsAffected;
@@ -377,11 +391,11 @@ export async function erasePatient(orgId: string, patientId: string, opts: Erasu
     ).rowsAffected;
 
     // The ledger stays as proof of what was consented (Art. 7(1), 17(3)(e)), unlinked from the
-    // record; retention deletes it after consentMonths.
+    // record; retention deletes it consentMonths after unlinkedAt.
     counts.consentsUnlinked = (
       await tx
         .update(consents)
-        .set({ patientId: null })
+        .set({ patientId: null, unlinkedAt: now })
         .where(and(eq(consents.orgId, orgId), inArray(consents.patientId, ids)))
     ).rowsAffected;
 
@@ -413,17 +427,18 @@ export async function erasePatient(orgId: string, patientId: string, opts: Erasu
 
     // Privacy requests keep their type, dates and decision (accountability). Closed ones lose
     // their free text, which may name the patient. Open ones are still to be answered: they keep
-    // it, with the contact the record had (encrypted), until answered (or 30 days after closing).
+    // it, and the contact the record had in answerContact (encrypted), until answered (or 30 days
+    // after closing).
     const contacts = contactsOf(p);
     for (const r of await tx
-      .select({ id: privacyRequests.id, status: privacyRequests.status, details: privacyRequests.details })
+      .select({ id: privacyRequests.id, status: privacyRequests.status, answerContact: privacyRequests.answerContact })
       .from(privacyRequests)
       .where(and(eq(privacyRequests.orgId, orgId), inArray(privacyRequests.patientId, ids)))) {
       // The request answered now is handled once its answer is sent.
       if (answered && r.id === answered.id) continue;
       await tx
         .update(privacyRequests)
-        .set(isOpenRequest(r) ? { details: withContactSnapshot(r.details, contacts) } : NO_REQUEST_TEXT)
+        .set(isOpenRequest(r) ? { answerContact: joinContacts(contacts, r.answerContact) } : NO_REQUEST_TEXT)
         .where(eq(privacyRequests.id, r.id));
     }
 
@@ -448,6 +463,7 @@ export async function erasePatient(orgId: string, patientId: string, opts: Erasu
         verifiedContacts: [],
         restrictionReason: null,
         retainUntil: null,
+        erasureRequestedAt: null,
         possibleDuplicateOfId: null,
         erasedAt: now,
       })
@@ -480,8 +496,8 @@ export async function erasePatient(orgId: string, patientId: string, opts: Erasu
  * Send the answer of the request an erasure closed, to the contact the record had. After a
  * pseudonymisation the answer is erased like every other message of the record (masked address,
  * no text) and the request loses its free text; if it could not be sent, the request keeps the
- * answer and that contact (encrypted) so staff can send it by hand, until the retention job
- * clears them ERASED_REQUEST_TEXT_DAYS after closing.
+ * answer and that contact (answerContact, encrypted) so staff can send it by hand, until the
+ * retention job clears them ERASED_REQUEST_TEXT_DAYS after closing.
  */
 async function sendAnswer(
   orgId: string,
@@ -500,7 +516,7 @@ async function sendAnswer(
       const redacted = await db.transaction((tx) => redactLinkedMessages(tx, orgId, ids, [], now, true));
       await db
         .update(privacyRequests)
-        .set(notified ? NO_REQUEST_TEXT : { details: withContactSnapshot(r.details, contactsOf(before)) })
+        .set(notified ? NO_REQUEST_TEXT : { answerContact: joinContacts(contactsOf(before), r.answerContact) })
         .where(and(eq(privacyRequests.orgId, orgId), eq(privacyRequests.id, r.id)));
       await deleteCopies(redacted.copies);
     } catch (err) {
@@ -528,7 +544,7 @@ async function loadPatient(tx: Tx, orgId: string, patientId: string): Promise<Pa
  * only staff with patient.restricted.read can open it, giving a reason each time. Appointments are
  * left as they are (the front desk decides); a restriction in place of erasure goes through
  * erasePatient(mode 'restrict'). Calling it again updates the reason; a deferred erasure stays
- * marked as one (it is still carried out after retainUntil).
+ * one (erasureRequestedAt is kept: it is still carried out after retainUntil).
  */
 export async function restrictPatient(orgId: string, patientId: string, i: RestrictionInput): Promise<void> {
   const now = i.now ?? new Date();
@@ -538,10 +554,11 @@ export async function restrictPatient(orgId: string, patientId: string, i: Restr
   await db.transaction(async (tx) => {
     const p = await loadPatient(tx, orgId, patientId);
     if (p.erasedAt) throw new ErasureError("erased");
-    const stored = isDeferredErasure(p) ? `${ERASURE_DEFERRED_PREFIX}${reason}` : reason;
+    // A record still marked the old way (prefix only) keeps its deferred erasure in the column.
+    const deferredSince = p.erasureRequestedAt ?? (isDeferredErasure(p) ? (p.restrictedAt ?? now) : null);
     await tx
       .update(patients)
-      .set({ restrictedAt: p.restrictedAt ?? now, restrictionReason: stored.slice(0, 500), retainUntil: i.retainUntil ?? p.retainUntil })
+      .set({ restrictedAt: p.restrictedAt ?? now, restrictionReason: reason.slice(0, 500), retainUntil: i.retainUntil ?? p.retainUntil, erasureRequestedAt: deferredSince })
       .where(and(eq(patients.orgId, orgId), eq(patients.id, patientId)));
     await audit(
       {
@@ -587,7 +604,7 @@ export async function unrestrictPatient(
   await db.transaction(async (tx) => {
     await tx
       .update(patients)
-      .set({ restrictedAt: null, restrictionReason: null })
+      .set({ restrictedAt: null, restrictionReason: null, erasureRequestedAt: null })
       .where(and(eq(patients.orgId, orgId), eq(patients.id, patientId)));
     await audit(
       {

@@ -2,7 +2,19 @@ import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import type { MembershipRole } from "@/db/enums";
-import { auditLog, authTokens, legalAcceptances, memberships, messages, organizations, patients, privacyRequests, users, type StoredOrgSettings } from "@/db/schema";
+import {
+  auditLog,
+  authTokens,
+  legalAcceptances,
+  memberships,
+  messages,
+  noticeVersions,
+  organizations,
+  patients,
+  privacyRequests,
+  users,
+  type StoredOrgSettings,
+} from "@/db/schema";
 import { erasePatient } from "@/lib/privacy/erasure";
 import type { StaffSession } from "@/lib/auth";
 import { newId } from "@/lib/ids";
@@ -112,6 +124,19 @@ describe("privacy settings", () => {
     expect(((await stored()).settings as StoredOrgSettings).booking?.maxAdvanceDays).toBe(60);
   });
 
+  it("put the practice's notices, as they now read, on record in every language (WP4)", async () => {
+    await signIn("owner");
+    const versions = async () => db.select().from(noticeVersions).where(eq(noticeVersions.orgId, orgId));
+    const before = (await versions()).length;
+    // The notice names the transfer to Meta only while WhatsApp is on: a new wording.
+    const current = resolveSettings((await stored()).settings).privacy;
+    const toggled = { whatsappEnabled: current.whatsappEnabled ? "" : "on", erasureDefault: current.erasureDefault, sessionHours: String(current.sessionHours) };
+    expect((await savePrivacySettings(null, form(toggled))).ok).toBe(true);
+    const after = await versions();
+    expect(after.length).toBeGreaterThan(before);
+    expect(new Set(after.map((v) => v.locale)).size).toBe(8);
+  });
+
   it("are for managers only", async () => {
     await signIn("reception");
     expect(await savePrivacySettings(null, form({}))).toMatchObject({ ok: false, code: "forbidden" });
@@ -126,8 +151,12 @@ describe("practice profile", () => {
     expect(await saveProfile(null, form({ ...base, website: "javascript:alert(1)" }))).toMatchObject({ ok: false, code: "invalid_website" });
     expect(await saveProfile(null, form({ ...base, website: "ftp://studio.it" }))).toMatchObject({ ok: false, code: "invalid_website" });
     expect(await saveProfile(null, form({ ...base, website: "https://studio", privacyEmail: "nope" }))).toMatchObject({ ok: false });
+    const notices = async () => (await db.select().from(noticeVersions).where(eq(noticeVersions.orgId, orgId))).length;
+    const before = await notices();
     expect((await saveProfile(null, form({ ...base, website: "www.studio.it" }))).ok).toBe(true);
     expect(await stored()).toMatchObject({ website: "https://www.studio.it", legalName: "Studio Test S.r.l.", vatNumber: "IT01234567890", dpoEmail: "dpo@studio.it", medicalDirector: "Dr. Bianchi" });
+    // The notices name the controller and its DPO: the new wording is on record at once.
+    expect(await notices()).toBeGreaterThan(before);
   });
 });
 
@@ -208,6 +237,20 @@ describe("privacy requests inbox", () => {
     expect(sent.map((m) => m.to)).toEqual(["ada.n@example.org", "ada.n@example.org"]);
     expect(sent.at(-1)!.body).toContain("Copia inviata via email.");
   });
+
+  it("answers a request linked to no patient at the reply contact staff entered", async () => {
+    await signIn("owner");
+    const today = todayIn("Europe/Rome");
+    const base = { type: "access", channel: "email", receivedAt: today, details: "Lettera di un ex paziente", language: "it" };
+    expect(await logPrivacyRequest(null, form({ ...base, answerContact: "non un contatto" }))).toMatchObject({ ok: false, code: "invalid_contact" });
+    expect((await logPrivacyRequest(null, form({ ...base, answerContact: " Ex.Paziente@Example.org " }))).ok).toBe(true);
+    const [r] = await db.select().from(privacyRequests).where(eq(privacyRequests.answerContact, "ex.paziente@example.org"));
+    expect(r).toMatchObject({ patientId: null, details: "Lettera di un ex paziente" });
+    const res = await completePrivacyRequestAction(r.id, null, form({ decision: "granted", reason: "Non risultano dati." }));
+    expect(res).toMatchObject({ ok: true, message: "Request closed; the answer was sent." });
+    const [sent] = await db.select().from(messages).where(eq(messages.to, "ex.paziente@example.org"));
+    expect(sent.body).toContain("Non risultano dati.");
+  });
 });
 
 describe("requests of an erased patient", () => {
@@ -223,8 +266,8 @@ describe("requests of an erased patient", () => {
     const res = await completePrivacyRequestAction(id, null, form({ decision: "granted", reason: "Copia consegnata a mano." }));
     expect(res.ok && res.message).toContain("contact kept on the request");
     const [r] = await db.select().from(privacyRequests).where(eq(privacyRequests.id, id));
-    expect(r.details).toContain("bruno.s@example.org");
-    expect(r.status).toBe("completed");
+    expect(r).toMatchObject({ details: "Vuole una copia", answerContact: "bruno.s@example.org · +393351112233", status: "completed" });
+    expect(await db.select().from(messages).where(eq(messages.to, "bruno.s@example.org"))).toEqual([]);
   });
 });
 

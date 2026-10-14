@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { auditLog, memberships, organizations, type LegalDoc, type MembershipRole, type Organization } from "@/db/schema";
 import { audit } from "../audit";
@@ -12,17 +12,17 @@ import { LEGAL_VERSIONS } from "./versions";
 /**
  * Compliance gates.
  *
- * Dashboard (enforceDashboardGates, called by the dashboard layout, and gatePage, called by page
- * loaders — Next doesn't re-render a shared layout on client-side navigation, so the layout's
- * check alone can be walked past by clicking a sidebar link):
+ * Dashboard (enforceDashboardGates; requireStaff() in src/lib/auth.ts runs it on every dashboard
+ * page render and route handler, since Next doesn't re-render a shared layout on client-side
+ * navigation, and the layout runs it through gatePage together with the banner state):
  *  - owners and admins (legal.accept) are sent to /dashboard/legal until the practice has
  *    accepted the DPA (Art. 28(3): processing only under a binding contract) and the terms in
  *    their current versions; the other staff see a banner (ComplianceBanner) instead;
  *  - every member is sent to /dashboard/legal?doc=staff_instructions until they accept the
  *    current staff instructions (Art. 29 and 32(4); Art. 2-quaterdecies Codice privacy).
- *  The layout passes through /dashboard/legal itself (via the proxy's x-pathname header) and the
+ *  The gate passes through /dashboard/legal itself (via the proxy's x-pathname header) and the
  *  pages an owner may need before accepting: their own account security and the account closure
- *  with its export.
+ *  with its export. Server actions are never redirected.
  *
  * Bookings (canAcceptOnlineBookings, called by the public booking and waitlist routes): a
  * practice takes online bookings only once an owner accepted the DPA, its email is verified
@@ -118,9 +118,9 @@ export async function enforceDashboardGates(s: GateSession, pending?: PendingLeg
 }
 
 /**
- * For page loaders, right after requirePermission(): the same gate as the layout (the proxy sets
- * x-pathname on every request, client-side navigations included), and the compliance banner
- * the page shows (<ComplianceBanner state={…} />).
+ * For the dashboard layout: the gate (the proxy sets x-pathname on every request) and the state of
+ * the dashboard-wide compliance banner (<ComplianceBanner state={…} />) from one pendingLegal()
+ * read. Pages need neither: requireStaff() gates them and the layout renders the banner.
  */
 export async function gatePage(s: GateSession & { org: { id: string; name: string } }): Promise<ComplianceBannerState> {
   const pending = await pendingLegal(s);
@@ -193,7 +193,11 @@ export async function complianceBannerState(s: GateSession & { org: { id: string
 
 // ---------------------------------------------------------------- sub-processor change notices
 
-/** Has this practice already been emailed about this sub-processor list version? */
+/**
+ * Has this practice already been emailed about this sub-processor list version? Matches the
+ * legal.notify rows and the settings.update rows (event subprocessors.notified) written before
+ * that action existed, so no practice is emailed twice about the same version.
+ */
 async function notifiedOf(orgId: string, version: string): Promise<boolean> {
   const [row] = await db
     .select({ id: auditLog.id })
@@ -201,8 +205,10 @@ async function notifiedOf(orgId: string, version: string): Promise<boolean> {
     .where(
       and(
         eq(auditLog.orgId, orgId),
-        eq(auditLog.action, "settings.update"),
-        sql`json_extract(${auditLog.metadata}, '$.event') = 'subprocessors.notified'`,
+        or(
+          and(eq(auditLog.action, "legal.notify"), sql`json_extract(${auditLog.metadata}, '$.doc') = 'subprocessors'`),
+          and(eq(auditLog.action, "settings.update"), sql`json_extract(${auditLog.metadata}, '$.event') = 'subprocessors.notified'`),
+        ),
         sql`json_extract(${auditLog.metadata}, '$.version') = ${version}`,
       ),
     )
@@ -213,8 +219,8 @@ async function notifiedOf(orgId: string, version: string): Promise<boolean> {
 /**
  * Email the owners of every practice that accepted an older sub-processor list, once per version
  * (run daily by the retention job). Practices that never accepted any list see it at first
- * acceptance instead. The notice is recorded in the practice's audit chain (until a dedicated
- * audit action exists: settings.update with event subprocessors.notified).
+ * acceptance instead. The notice is recorded in the practice's audit chain as legal.notify
+ * (metadata { doc: "subprocessors", version }).
  */
 export async function notifySubprocessorChanges(now: Date = new Date()): Promise<number> {
   const version = LEGAL_VERSIONS.subprocessors;
@@ -241,9 +247,9 @@ export async function notifySubprocessorChanges(now: Date = new Date()): Promise
       await audit({
         orgId: org.id,
         actor: { type: "system", id: null },
-        action: "settings.update",
+        action: "legal.notify",
         entity: { type: "org", id: org.id },
-        metadata: { event: "subprocessors.notified", version },
+        metadata: { doc: "subprocessors", version },
         at: now,
       });
       notified++;

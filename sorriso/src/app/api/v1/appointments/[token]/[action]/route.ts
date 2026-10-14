@@ -1,6 +1,9 @@
 import { apiError, handleApiError, json, limitByIp, preflight } from "@/lib/api";
 import { canPatientCancel, canPatientReschedule, getAppointmentDetails } from "@/lib/appointments";
 import { cancelAppointment, confirmAttendance, rescheduleAppointment } from "@/lib/booking";
+import { markContactVerified } from "@/lib/contact";
+import { logError } from "@/lib/log";
+import { manageLinkContact } from "@/lib/security/link-contact";
 import { publicAppointment } from "@/lib/serializers";
 import { rescheduleInputSchema } from "@/lib/validation";
 
@@ -11,6 +14,9 @@ export const OPTIONS = preflight;
  * POST /api/v1/appointments/:token/cancel       { reason? }
  * POST /api/v1/appointments/:token/reschedule   { start, practitionerId?, locationId? }
  * Rate-limited per network (20 changes per 10 minutes).
+ *
+ * Each is an explicit act through the link, so afterwards the contact the link was delivered to is
+ * recorded as proven for the patient, when exactly one contact can hold it (manageLinkContact).
  */
 export async function POST(req: Request, { params }: { params: Promise<{ token: string; action: string }> }) {
   try {
@@ -49,6 +55,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
       }
       default:
         return apiError(404, "not_found", `Unknown action "${action}".`);
+    }
+    try {
+      const contact = await manageLinkContact(details, token);
+      if (contact) await markContactVerified(details.patient.id, contact);
+    } catch (err) {
+      logError("manage-link", err, { step: "verify-contact", appointmentId: id });
     }
     const updated = await getAppointmentDetails({ id });
     return json({ appointment: publicAppointment(updated!) });

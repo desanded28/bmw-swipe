@@ -19,6 +19,7 @@ import {
   patients,
   patientSessions,
   privacyRequests,
+  profileStats,
   rateLimits,
   reminders,
   reviewReports,
@@ -36,7 +37,6 @@ import { addDays } from "../time";
 import { recordConsent } from "./consent";
 import { ERASED_FIRST_NAME, ERASED_LAST_NAME } from "./erasure";
 import { certificateToken, loadCertificate } from "./org-closure";
-import { CONTACT_SNAPSHOT_MARK } from "./requests";
 import { daysAgo, monthsAgo, runRetention, type RetentionSummary } from "./retention";
 
 /**
@@ -177,13 +177,16 @@ beforeAll(async () => {
     cancelReason: "reason cleared",
   });
 
-  // ---- waitlist
+  // ---- waitlist: closed entries 30 days after closedAt (older rows without it: last offer, else creation)
   const wl = { orgId: p.orgId, patientId: holder.id, serviceId: p.visit, earliestDate: "2026-01-01" };
+  const longAgo = daysAgo(NOW, 200);
   await db.insert(waitlist).values([
     { ...wl, id: (ids.wlActiveKept = newId()), latestDate: addDays(TODAY, -90) },
     { ...wl, id: (ids.wlActiveGone = newId()), latestDate: addDays(TODAY, -91) },
-    { ...wl, id: (ids.wlClosedKept = newId()), latestDate: TODAY, status: "booked", createdAt: daysAgo(NOW, 30) },
-    { ...wl, id: (ids.wlClosedGone = newId()), latestDate: TODAY, status: "removed", createdAt: new Date(daysAgo(NOW, 30).getTime() - MS) },
+    { ...wl, id: (ids.wlClosedKept = newId()), latestDate: TODAY, status: "booked", createdAt: longAgo, lastOfferedAt: longAgo, closedAt: daysAgo(NOW, 30) },
+    { ...wl, id: (ids.wlClosedGone = newId()), latestDate: TODAY, status: "removed", createdAt: longAgo, closedAt: new Date(daysAgo(NOW, 30).getTime() - MS) },
+    { ...wl, id: (ids.wlLegacyKept = newId()), latestDate: TODAY, status: "booked", createdAt: longAgo, lastOfferedAt: daysAgo(NOW, 30) },
+    { ...wl, id: (ids.wlLegacyGone = newId()), latestDate: TODAY, status: "removed", createdAt: new Date(daysAgo(NOW, 30).getTime() - MS) },
   ]);
 
   // ---- never-seen patients (12 months)
@@ -225,15 +228,30 @@ beforeAll(async () => {
   await addAppointment(ids.restrictedNoShow, daysAgo(NOW, 20), { status: "no_show" });
 
   // ---- erasures deferred to retainUntil: carried out the day after, however recent the last visit
-  const deferred = { restrictedAt: monthsAgo(NOW, 36), restrictionReason: "erasure:Cartella clinica", phone: "+393335550001" };
+  const deferred = { restrictedAt: monthsAgo(NOW, 36), erasureRequestedAt: monthsAgo(NOW, 36), restrictionReason: "Cartella clinica", phone: "+393335550001" };
   ids.deferredDue = (await addPatient({ ...deferred, firstName: "DeferredDue", retainUntil: addDays(TODAY, -1) })).id;
   await addAppointment(ids.deferredDue, daysAgo(NOW, 10));
-  // A form never copied to the clinical record: its keep-until date has passed too.
+  // A signed form never copied to the clinical record: its keep-until date has passed too.
   const deferredTemplate = newId();
   await db.insert(formTemplates).values({ id: deferredTemplate, orgId: p.orgId, kind: "anamnesis", version: "d1", schema: { version: "1", sections: [] } });
-  await db.insert(formSubmissions).values({ id: (ids.deferredForm = newId()), orgId: p.orgId, patientId: ids.deferredDue, templateId: deferredTemplate, version: "1", locale: "it", answers: "{}" });
+  await db.insert(formSubmissions).values({
+    id: (ids.deferredForm = newId()),
+    orgId: p.orgId,
+    patientId: ids.deferredDue,
+    templateId: deferredTemplate,
+    version: "1",
+    locale: "it",
+    answers: "{}",
+    signerName: "DeferredDue",
+    signedAt: monthsAgo(NOW, 40),
+  });
   ids.deferredHeld = (await addPatient({ ...deferred, firstName: "DeferredHeld", retainUntil: TODAY })).id;
   await addAppointment(ids.deferredHeld, daysAgo(NOW, 10));
+  // Marked before erasureRequestedAt existed (restrictionReason prefix only): still carried out.
+  ids.deferredLegacy = (
+    await addPatient({ restrictedAt: monthsAgo(NOW, 36), restrictionReason: "erasure:Cartella clinica", phone: "+393335550002", firstName: "DeferredLegacy", retainUntil: addDays(TODAY, -1) })
+  ).id;
+  await addAppointment(ids.deferredLegacy, daysAgo(NOW, 10));
 
   // ---- free text of an erased patient's closed requests: 30 days after closing
   const erasedReq = {
@@ -242,7 +260,8 @@ beforeAll(async () => {
     type: "erasure" as const,
     channel: "phone" as const,
     status: "completed" as const,
-    details: `Chiede la cancellazione\n\n${CONTACT_SNAPSHOT_MARK}mario@example.org`,
+    details: "Chiede la cancellazione",
+    answerContact: "mario@example.org",
     decisionReason: "Fatto, Mario",
     receivedAt: daysAgo(NOW, 60),
     dueAt: daysAgo(NOW, 30),
@@ -263,6 +282,24 @@ beforeAll(async () => {
     { ...report, id: (ids.reportOpen = newId()), status: "open" },
   ]);
 
+  // ---- removed reviews lose their text once the decision is final (183-day appeal window, no appeal open)
+  const removedReview = async (decidedAt: Date) => {
+    const id = newId();
+    const appointmentId = await addAppointment(holder.id, monthsAgo(NOW, 12));
+    await db.insert(reviews).values({ id, orgId: p.orgId, practitionerId: p.drA, appointmentId, rating: 1, authorName: "T. P.", status: "removed", comment: "testo rimosso", removedReason: "motivo", decidedAt });
+    return id;
+  };
+  ids.removedKept = await removedReview(daysAgo(NOW, 183));
+  ids.removedGone = await removedReview(new Date(daysAgo(NOW, 183).getTime() - MS));
+  ids.removedAppealed = await removedReview(daysAgo(NOW, 300));
+  await db.insert(reviewReports).values({ id: newId(), reviewId: ids.removedAppealed, orgId: p.orgId, ground: "other", status: "open", appealOfId: newId() });
+
+  // ---- practitioners' profile statistics: 24 months
+  await db.insert(profileStats).values([
+    { practitionerId: p.drA, day: "2024-06-15", views: 3 },
+    { practitionerId: p.drA, day: "2024-06-14", views: 2 },
+  ]);
+
   // ---- privacy-notice versions: 10 years after a newer one was published
   const notice = { orgId: p.orgId, kind: "practice_patient" as const, version: "1" };
   await db.insert(noticeVersions).values([
@@ -278,11 +315,14 @@ beforeAll(async () => {
   ids.minor = (await addPatient({ firstName: "Minor", birthDate: "2008-06-16", guardianName: "Papà", guardianPhone: "+393330008888" })).id;
   await addAppointment(ids.minor, daysAgo(NOW, 3));
 
-  // ---- consent proofs (unlinked) after 120 months; closed requests after 60 months; exported forms after 120 months
+  // ---- consent proofs 120 months after they were unlinked (older rows: their own date); closed
+  // requests after 60 months; exported forms 120 months after the export
   const proof = { orgId: p.orgId, patientId: null, purpose: "marketing" as const, granted: true, textKey: "consents.marketing.label", textVersion: "1", locale: "it" as const, method: "web_checkbox" as const, source: "booking" as const };
   await db.insert(consents).values([
-    { ...proof, id: (ids.proofKept = newId()), createdAt: monthsAgo(NOW, 120) },
-    { ...proof, id: (ids.proofGone = newId()), createdAt: new Date(monthsAgo(NOW, 120).getTime() - MS) },
+    { ...proof, id: (ids.proofKept = newId()), createdAt: monthsAgo(NOW, 200), unlinkedAt: monthsAgo(NOW, 120) },
+    { ...proof, id: (ids.proofGone = newId()), createdAt: monthsAgo(NOW, 200), unlinkedAt: new Date(monthsAgo(NOW, 120).getTime() - MS) },
+    { ...proof, id: (ids.proofLegacyKept = newId()), createdAt: monthsAgo(NOW, 120) },
+    { ...proof, id: (ids.proofLegacyGone = newId()), createdAt: new Date(monthsAgo(NOW, 120).getTime() - MS) },
   ]);
   const req = { orgId: p.orgId, type: "access" as const, channel: "email" as const, status: "completed" as const, receivedAt: monthsAgo(NOW, 70), dueAt: monthsAgo(NOW, 69) };
   await db.insert(privacyRequests).values([
@@ -291,11 +331,14 @@ beforeAll(async () => {
   ]);
   const templateId = newId();
   await db.insert(formTemplates).values({ id: templateId, orgId: p.orgId, kind: "anamnesis", version: "r1", schema: { version: "1", sections: [] } });
-  const form = { orgId: p.orgId, patientId: holder.id, templateId, version: "1", locale: "it" as const, answers: "{}", exportedAt: daysAgo(NOW, 1) };
+  const signed = monthsAgo(NOW, 200);
+  const form = { orgId: p.orgId, patientId: holder.id, templateId, version: "1", locale: "it" as const, answers: "{}", signerName: "Holder", signedAt: signed, createdAt: signed };
   await db.insert(formSubmissions).values([
-    { ...form, id: (ids.formKept = newId()), createdAt: monthsAgo(NOW, 120) },
-    { ...form, id: (ids.formGone = newId()), createdAt: new Date(monthsAgo(NOW, 120).getTime() - MS) },
-    { ...form, id: (ids.formUnexported = newId()), createdAt: monthsAgo(NOW, 200), exportedAt: null },
+    { ...form, id: (ids.formKept = newId()), exportedAt: monthsAgo(NOW, 120) },
+    { ...form, id: (ids.formGone = newId()), exportedAt: new Date(monthsAgo(NOW, 120).getTime() - MS) },
+    { ...form, id: (ids.formUnexported = newId()), exportedAt: null },
+    // An invitation sent (unsigned, no answers): never deleted here, it keeps the job from inviting twice.
+    { ...form, id: (ids.formInvitation = newId()), signerName: null, signedAt: null, exportedAt: null },
   ]);
 
   // ---- an open request due in 3 days: the 7-day reminder goes to the owner once
@@ -317,6 +360,12 @@ beforeAll(async () => {
     .set({ settings: { ...org.settings, privacy: { ...org.settings.privacy, erasureDefault: "anonymise" } } })
     .where(eq(organizations.id, anon.orgId));
   ids.anonInactive = (await addPatient({ firstName: "AnonInactive", phone: "+393334445556" }, anon.orgId)).id;
+  // An unsigned form (an invitation once sent) doesn't hold up the pseudonymisation.
+  const anonTemplate = newId();
+  await db.insert(formTemplates).values({ id: anonTemplate, orgId: anon.orgId, kind: "anamnesis", version: "a1", schema: { version: "1", sections: [] } });
+  await db
+    .insert(formSubmissions)
+    .values({ id: (ids.anonInvitation = newId()), orgId: anon.orgId, patientId: ids.anonInactive, templateId: anonTemplate, version: "1", locale: "it", answers: "{}", createdAt: monthsAgo(NOW, 121) });
   await db.insert(appointments).values({
     id: newId(),
     orgId: anon.orgId,
@@ -388,6 +437,8 @@ describe("runRetention: each category at its boundary", () => {
     expect(await exists(waitlist, waitlist.id, ids.wlActiveGone)).toBe(false);
     expect(await exists(waitlist, waitlist.id, ids.wlClosedKept)).toBe(true);
     expect(await exists(waitlist, waitlist.id, ids.wlClosedGone)).toBe(false);
+    expect(await exists(waitlist, waitlist.id, ids.wlLegacyKept)).toBe(true);
+    expect(await exists(waitlist, waitlist.id, ids.wlLegacyGone)).toBe(false);
     const [kept] = await db.select().from(appointments).where(eq(appointments.id, ids.noteKept));
     expect(kept.patientNote).toBe("note kept");
     const [cleared] = await db.select().from(appointments).where(eq(appointments.id, ids.noteGone));
@@ -408,6 +459,7 @@ describe("runRetention: each category at its boundary", () => {
     const anon = await get(ids.anonInactive);
     expect(anon.erasedAt?.getTime()).toBe(NOW.getTime());
     expect(anon.phone).toBeNull();
+    expect(await exists(formSubmissions, formSubmissions.id, ids.anonInvitation)).toBe(false);
   });
 
   it("lapses marketing consent after 24 months without contact, with a retention row", async () => {
@@ -434,11 +486,14 @@ describe("runRetention: each category at its boundary", () => {
   it("deletes old consent proofs, closed requests and exported forms only", async () => {
     expect(await exists(consents, consents.id, ids.proofKept)).toBe(true);
     expect(await exists(consents, consents.id, ids.proofGone)).toBe(false);
+    expect(await exists(consents, consents.id, ids.proofLegacyKept)).toBe(true);
+    expect(await exists(consents, consents.id, ids.proofLegacyGone)).toBe(false);
     expect(await exists(privacyRequests, privacyRequests.id, ids.reqKept)).toBe(true);
     expect(await exists(privacyRequests, privacyRequests.id, ids.reqGone)).toBe(false);
     expect(await exists(formSubmissions, formSubmissions.id, ids.formKept)).toBe(true);
     expect(await exists(formSubmissions, formSubmissions.id, ids.formGone)).toBe(false);
     expect(await exists(formSubmissions, formSubmissions.id, ids.formUnexported)).toBe(true);
+    expect(await exists(formSubmissions, formSubmissions.id, ids.formInvitation)).toBe(true);
   });
 
   it("prunes the audit log behind an anchor and the chain still verifies", async () => {
@@ -468,11 +523,13 @@ describe("runRetention: each category at its boundary", () => {
   it("carries out an erasure deferred to retainUntil the day after, forms included", async () => {
     const [due] = await db.select().from(patients).where(eq(patients.id, ids.deferredDue));
     expect(due.erasedAt?.getTime()).toBe(NOW.getTime());
-    expect(due).toMatchObject({ firstName: ERASED_FIRST_NAME, phone: null, restrictionReason: null });
+    expect(due).toMatchObject({ firstName: ERASED_FIRST_NAME, phone: null, restrictionReason: null, erasureRequestedAt: null });
     expect(await exists(formSubmissions, formSubmissions.id, ids.deferredForm)).toBe(false);
     const [held] = await db.select().from(patients).where(eq(patients.id, ids.deferredHeld));
     expect(held).toMatchObject({ erasedAt: null, firstName: "DeferredHeld", phone: "+393335550001" });
-    expect(first.counts.deferredErasuresCompleted).toBe(1);
+    const [legacy] = await db.select().from(patients).where(eq(patients.id, ids.deferredLegacy));
+    expect(legacy.erasedAt?.getTime()).toBe(NOW.getTime());
+    expect(first.counts.deferredErasuresCompleted).toBe(2);
   });
 
   it("never gives erased or restricted records their no-show history back", async () => {
@@ -484,9 +541,9 @@ describe("runRetention: each category at its boundary", () => {
 
   it("clears an erased patient's request text 30 days after closing", async () => {
     const [kept] = await db.select().from(privacyRequests).where(eq(privacyRequests.id, ids.erasedReqKept));
-    expect(kept.decisionReason).toBe("Fatto, Mario");
+    expect(kept).toMatchObject({ decisionReason: "Fatto, Mario", answerContact: "mario@example.org" });
     const [cleared] = await db.select().from(privacyRequests).where(eq(privacyRequests.id, ids.erasedReqCleared));
-    expect(cleared).toMatchObject({ details: null, decisionReason: null, extensionReason: null, decision: null, status: "completed" });
+    expect(cleared).toMatchObject({ details: null, decisionReason: null, extensionReason: null, answerContact: null, decision: null, status: "completed" });
   });
 
   it("deletes review reports 24 months after the decision, and superseded notice versions after 10 years", async () => {
@@ -497,6 +554,19 @@ describe("runRetention: each category at its boundary", () => {
     expect(await exists(noticeVersions, noticeVersions.id, ids.noticeKeptNext)).toBe(true);
     expect(await exists(noticeVersions, noticeVersions.id, ids.noticeGone)).toBe(false);
     expect(await exists(noticeVersions, noticeVersions.id, ids.noticeGoneNext)).toBe(true);
+  });
+
+  it("clears the text of removed reviews once the appeal window has passed with no appeal open", async () => {
+    const get = async (id: string) => (await db.select().from(reviews).where(eq(reviews.id, id)))[0];
+    expect(await get(ids.removedKept)).toMatchObject({ comment: "testo rimosso", removedReason: "motivo" });
+    expect(await get(ids.removedGone)).toMatchObject({ comment: null, removedReason: null, status: "removed", rating: 1 });
+    expect(await get(ids.removedAppealed)).toMatchObject({ comment: "testo rimosso", removedReason: "motivo" });
+  });
+
+  it("deletes practitioners' profile statistics after 24 months", async () => {
+    const days = (await db.select().from(profileStats).where(eq(profileStats.practitionerId, p.drA))).map((r) => r.day);
+    expect(days).toContain("2024-06-15");
+    expect(days).not.toContain("2024-06-14");
   });
 
   it("keeps certificates of deletion for 10 years, past the audit-log pruning", async () => {
@@ -526,16 +596,18 @@ describe("runRetention: accountability and idempotency", () => {
       messagesRedacted: 3,
       messagesDeleted: 1,
       remindersDeleted: 1,
-      waitlistDeleted: 2,
+      waitlistDeleted: 3,
       appointmentNotesCleared: 1,
       neverSeenPseudonymised: 1,
       inactiveRestricted: 1,
       marketingLapsed: 1,
       noShowCountsUpdated: 1,
       guardiansCleared: 1,
-      consentProofsDeleted: 1,
+      consentProofsDeleted: 2,
       privacyRequestsDeleted: 1,
       formsDeleted: 1,
+      removedReviewTextsCleared: 1,
+      profileStatsDeleted: 1,
     });
     for (const v of Object.values(row.metadata ?? {})) expect(typeof v).toBe("number");
   });

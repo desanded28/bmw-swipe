@@ -282,6 +282,17 @@ export async function signup(_prev: FormState, fd: FormData): Promise<FormState>
     for (const doc of ["terms", "dpa", "subprocessors"] as const) {
       await recordLegalAcceptance(tx, { orgId, userId, doc, locale, headers: h });
     }
+    await audit(
+      {
+        orgId,
+        actor: { type: "user", id: userId },
+        action: "auth.signup",
+        entity: { type: "org", id: orgId },
+        metadata: { practitioner: input.isDentist },
+        headers: h,
+      },
+      tx,
+    );
     return issueAuthToken({ kind: "email_verify", userId, email: input.email, orgId }, tx);
   });
 
@@ -299,47 +310,57 @@ export async function signup(_prev: FormState, fd: FormData): Promise<FormState>
 
 // ---------------------------------------------------------------- email confirmation
 
-export async function verifyEmail(_prev: FormState, fd: FormData): Promise<FormState> {
-  const locale = localeOf(fd);
-  const t = getT(locale, "auth");
-  const row = await findAuthToken(field(fd, "token"), "email_verify");
-  if (!row?.userId || !(await consumeAuthToken(row.id))) return { error: t("verify.invalid") };
-  const now = new Date();
-  const h = await requestHeaders();
-  await db.update(users).set({ emailVerifiedAt: now }).where(eq(users.id, row.userId));
-  // Every confirmation is on record (as a change to the account: there is no auth.email.* action yet),
-  // in the chain of the practice it was issued for, else the user's own.
-  const auditOrg = row.orgId ?? (await defaultOrgFor(row.userId))?.id ?? null;
-  await audit({
-    orgId: auditOrg,
-    actor: { type: "user", id: row.userId },
-    action: "settings.update",
-    entity: { type: "user", id: row.userId },
-    metadata: { emailVerified: true, tokenId: row.id.slice(0, 16) },
-    headers: h,
-    at: now,
-  });
+/**
+ * What an email_verify link confirms. One token kind serves two addresses, and the token's own
+ * address decides which:
+ * - the user's sign-in address (signup, "send the link again"): users.emailVerifiedAt;
+ * - the practice's email (signup, where it is the owner's address, or a practice email changed in
+ *   the settings: sendPracticeEmailVerification): organizations.emailVerifiedAt, when the token
+ *   was issued for that practice by one of its owners and the address is still the practice's.
+ * So a link sent to the practice's mailbox never confirms the owner's own address, and a link
+ * whose address is neither any more (changed since it was sent) confirms nothing.
+ */
+async function verificationTargets(row: { userId: string; email: string | null; orgId: string | null }) {
+  const [user] = await db.select({ email: users.email }).from(users).where(eq(users.id, row.userId));
+  if (!user) return { own: false, practice: false };
+  const address = (row.email ?? user.email).toLowerCase();
+  let practice = false;
   if (row.orgId) {
-    // The practice's email is confirmed only through its owner's own address.
     const [owner] = await db
       .select({ role: memberships.role })
       .from(memberships)
       .where(and(eq(memberships.orgId, row.orgId), eq(memberships.userId, row.userId)));
     const [org] = await db.select({ email: organizations.email }).from(organizations).where(eq(organizations.id, row.orgId));
-    if (owner?.role === "owner" && org?.email?.toLowerCase() === row.email?.toLowerCase()) {
-      await db.update(organizations).set({ emailVerifiedAt: now }).where(eq(organizations.id, row.orgId));
-      await audit({
-        orgId: row.orgId,
-        actor: { type: "user", id: row.userId },
-        action: "settings.update",
-        entity: { type: "org", id: row.orgId },
-        metadata: { emailVerified: true },
-        headers: h,
-      });
-    }
+    practice = owner?.role === "owner" && org?.email?.toLowerCase() === address;
+  }
+  return { own: user.email.toLowerCase() === address, practice };
+}
+
+export async function verifyEmail(_prev: FormState, fd: FormData): Promise<FormState> {
+  const locale = localeOf(fd);
+  const t = getT(locale, "auth");
+  const row = await findAuthToken(field(fd, "token"), "email_verify");
+  if (!row?.userId) return { error: t("verify.invalid") };
+  const userId = row.userId;
+  const target = await verificationTargets({ userId, email: row.email, orgId: row.orgId });
+  if ((!target.own && !target.practice) || !(await consumeAuthToken(row.id))) return { error: t("verify.invalid") };
+  const now = new Date();
+  const h = await requestHeaders();
+  const actor = { type: "user" as const, id: userId };
+  const tokenId = row.id.slice(0, 16);
+  if (target.own) {
+    await db.update(users).set({ emailVerifiedAt: now }).where(eq(users.id, userId));
+    // In the chain of the practice the link was issued for, else the user's own.
+    const auditOrg = row.orgId ?? (await defaultOrgFor(userId))?.id ?? null;
+    await audit({ orgId: auditOrg, actor, action: "auth.email.verify", entity: { type: "user", id: userId }, metadata: { tokenId }, headers: h, at: now });
+  }
+  if (target.practice && row.orgId) {
+    await db.update(organizations).set({ emailVerifiedAt: now }).where(eq(organizations.id, row.orgId));
+    await audit({ orgId: row.orgId, actor, action: "auth.email.verify", entity: { type: "org", id: row.orgId }, metadata: { tokenId }, headers: h, at: now });
   }
   const session = await getSession();
-  redirect(session ? "/dashboard/account/security?verified=1" : `/${locale}/login?notice=verified`);
+  if (!session) redirect(`/${locale}/login?notice=verified`);
+  redirect(target.own ? "/dashboard/account/security?verified=1" : "/dashboard/settings?emailVerified=1");
 }
 
 // ---------------------------------------------------------------- password reset

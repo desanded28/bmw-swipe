@@ -256,5 +256,7 @@ export default {
   },
   links: {
     issued: "Patient link ready.",
+    restricted: "This patient's data is restricted. Open the appointment and give a reason before you share their link.",
+    erased: "This patient's data was erased: there is no patient link to share.",
   },
 } as const;

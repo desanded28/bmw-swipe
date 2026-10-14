@@ -39,6 +39,8 @@ export default async function TeamPage() {
   const s = await requirePermission("calendar.read");
   const locale = await getStaffLocale();
   const t = getT(locale, "security");
+  // "Areas of interest" may be left empty (WP7): the marketplace's translated default then.
+  const defaultSpecialty = getT(locale, "marketplace")("profile.defaultSpecialty");
   const canManage = can(s.role, "team.manage");
   const [team, locs, svcs, members, invites] = await Promise.all([
     db.select().from(practitioners).where(eq(practitioners.orgId, s.org.id)).orderBy(asc(practitioners.name)),
@@ -115,7 +117,7 @@ export default async function TeamPage() {
                   <Avatar name={p.name} color={p.color} size={46} />
                   <div className="min-w-0 flex-1">
                     <p className="font-bold">{practitionerName(p)}</p>
-                    <p className="text-sm text-slate-500">{p.specialty}</p>
+                    <p className="text-sm text-slate-500">{p.specialty.trim() || defaultSpecialty}</p>
                     <div className="mt-1 flex flex-wrap gap-1">
                       <Badge>{t("team.treatments", { count: links.filter((l) => l.practitionerId === p.id).length })}</Badge>
                       {!p.active ? <Badge tone="red">{t("team.inactive")}</Badge> : null}
