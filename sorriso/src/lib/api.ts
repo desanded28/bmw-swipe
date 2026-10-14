@@ -2,10 +2,20 @@ import { and, eq, isNull } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { db } from "@/db";
-import { apiKeys, organizations, type ApiKey, type ApiScope, type Organization } from "@/db/schema";
+import { API_SCOPES, apiKeys, organizations, type ApiKey, type ApiScope, type Organization } from "@/db/schema";
+import { audit } from "./audit";
 import { BookingError, bookingRuleMessage } from "./booking";
 import { newId, newToken, sha256 } from "./ids";
 import { logError } from "./log";
+import { clientIp, rateLimit, rateLimitByIp } from "./rate-limit";
+import { ipAllowed } from "./security/ip";
+
+/**
+ * Public API (booking, availability, the patient's own appointment): CORS-open, so third-party
+ * sites and the widget can call it. Partner API (/api/v1/partner/**): API keys only, never CORS
+ * (a browser page must not be able to call it with a key), scoped, IP-restricted and audited;
+ * routes go through partnerRoute().
+ */
 
 export const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -24,6 +34,22 @@ export function apiError(status: number, code: string, message: string, extra: R
 
 export function preflight() {
   return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
+}
+
+/** 429 with Retry-After. */
+export function rateLimited(retryAfterSec: number, message = "Too many requests. Please try again in a few minutes.") {
+  const res = apiError(429, "rate_limited", message);
+  res.headers.set("Retry-After", String(Math.max(1, retryAfterSec)));
+  return res;
+}
+
+/**
+ * Per-IP rate limit for a public endpoint: null when the call may proceed, else a 429.
+ *   const limited = await limitByIp(req, "book", 10, 10 * 60_000); if (limited) return limited;
+ */
+export async function limitByIp(req: Request, bucket: string, limit: number, windowMs: number): Promise<NextResponse | null> {
+  const res = await rateLimitByIp(req.headers, bucket, limit, windowMs);
+  return res.ok ? null : rateLimited(res.retryAfterSec);
 }
 
 /** Map thrown errors to consistent JSON responses. */
@@ -48,54 +74,150 @@ export function handleApiError(err: unknown) {
 
 // ---- API keys (partner integrations) ----
 
-export async function createApiKey(orgId: string, name: string) {
+export const DEFAULT_SCOPES: ApiScope[] = ["appointments:read", "appointments:write", "patients:read"];
+export const API_KEY_DEFAULT_MONTHS = 12;
+export const API_KEY_MAX_MONTHS = 24;
+
+export type CreateApiKeyInput = {
+  name: string;
+  scopes?: readonly ApiScope[];
+  /** Months until expiry (1-24, default 12). Keys always expire. */
+  expiresInMonths?: number;
+  /** Exact IPs or CIDR ranges; empty or null = any address. */
+  allowedIps?: string[] | null;
+  createdByUserId?: string | null;
+  now?: Date;
+};
+
+export function addMonths(d: Date, months: number): Date {
+  const out = new Date(d);
+  out.setUTCMonth(out.getUTCMonth() + months);
+  return out;
+}
+
+/** Create a key; the secret is returned once (only its sha256 is stored). */
+export async function createApiKey(orgId: string, input: string | CreateApiKeyInput) {
+  const i: CreateApiKeyInput = typeof input === "string" ? { name: input } : input;
   const secret = `sk_${newToken()}`;
   const prefix = secret.slice(0, 10);
-  await db.insert(apiKeys).values({ id: newId(), orgId, name, prefix, keyHash: sha256(secret) });
-  return { prefix, secret };
+  const scopes = [...new Set((i.scopes?.length ? i.scopes : DEFAULT_SCOPES).filter((s) => API_SCOPES.includes(s)))];
+  const months = Math.min(API_KEY_MAX_MONTHS, Math.max(1, Math.round(i.expiresInMonths ?? API_KEY_DEFAULT_MONTHS)));
+  const expiresAt = addMonths(i.now ?? new Date(), months);
+  const id = newId();
+  await db.insert(apiKeys).values({
+    id,
+    orgId,
+    name: i.name.trim().slice(0, 80) || "API key",
+    prefix,
+    keyHash: sha256(secret),
+    scopes,
+    expiresAt,
+    allowedIps: i.allowedIps?.length ? i.allowedIps : null,
+    createdByUserId: i.createdByUserId ?? null,
+  });
+  return { id, prefix, secret, scopes, expiresAt };
 }
 
 export type ApiAuth = { org: Organization; key: ApiKey };
 
-/** Resolve `Authorization: Bearer sk_…` to the key and its practice; null if unknown, revoked or expired. */
-export async function authenticateApiKey(req: Request): Promise<ApiAuth | null> {
-  const header = req.headers.get("authorization") ?? "";
-  const m = header.match(/^Bearer\s+(sk_[A-Za-z0-9_-]+)$/);
-  if (!m) return null;
+export type ApiKeyCheck =
+  | { ok: true; auth: ApiAuth }
+  /** none: no Authorization header at all (a public call). */
+  | { ok: false; status: 401 | 403; code: "none" | "unauthorized" | "ip_not_allowed" };
+
+/**
+ * Check `Authorization: Bearer sk_…`: unknown, revoked and expired keys are 401; a key with an
+ * IP allow-list called from another address is 403. Updates lastUsedAt on success.
+ */
+export async function checkApiKey(req: Request, now: Date = new Date()): Promise<ApiKeyCheck> {
+  const header = req.headers.get("authorization");
+  if (!header) return { ok: false, status: 401, code: "none" };
+  const m = header.match(/^Bearer\s+(sk_[A-Za-z0-9_-]{10,100})$/);
+  if (!m) return { ok: false, status: 401, code: "unauthorized" };
   const [row] = await db
     .select({ key: apiKeys, org: organizations })
     .from(apiKeys)
     .innerJoin(organizations, eq(organizations.id, apiKeys.orgId))
     .where(and(eq(apiKeys.keyHash, sha256(m[1])), isNull(apiKeys.revokedAt)));
-  if (!row) return null;
-  if (row.key.expiresAt && row.key.expiresAt.getTime() <= Date.now()) return null;
-  await db.update(apiKeys).set({ lastUsedAt: new Date() }).where(eq(apiKeys.id, row.key.id));
-  return row;
+  if (!row) return { ok: false, status: 401, code: "unauthorized" };
+  if (row.key.expiresAt && row.key.expiresAt.getTime() <= now.getTime()) return { ok: false, status: 401, code: "unauthorized" };
+  if (!ipAllowed(clientIp(req.headers), row.key.allowedIps)) return { ok: false, status: 403, code: "ip_not_allowed" };
+  // At most once a minute: a busy integration shouldn't turn every call into a write.
+  if (!row.key.lastUsedAt || now.getTime() - row.key.lastUsedAt.getTime() > 60_000) {
+    await db.update(apiKeys).set({ lastUsedAt: now }).where(eq(apiKeys.id, row.key.id));
+  }
+  return { ok: true, auth: row };
+}
+
+/** Resolve the key and its practice; null if missing, unknown, revoked, expired or called from a disallowed IP. */
+export async function authenticateApiKey(req: Request): Promise<ApiAuth | null> {
+  const res = await checkApiKey(req);
+  return res.ok ? res.auth : null;
+}
+
+/** The JSON error for a failed checkApiKey() (none counts as unauthorized). */
+export function apiKeyError(res: Extract<ApiKeyCheck, { ok: false }>) {
+  return res.code === "ip_not_allowed"
+    ? apiError(403, "ip_not_allowed", "This API key can't be used from this IP address.")
+    : apiError(401, "unauthorized", "Missing or invalid API key.");
+}
+
+export function hasScope(auth: ApiAuth, scope: ApiScope): boolean {
+  return auth.key.scopes.includes(scope);
 }
 
 /**
  * 403 unless the key was granted `scope`; null when the call may proceed.
  *   const denied = requireScope(auth, "patients:erase"); if (denied) return denied;
- * WP6 extends it (IP allow-lists, audit of denials) without changing the signature.
  */
 export function requireScope(auth: ApiAuth, scope: ApiScope): NextResponse | null {
-  if (auth.key.scopes.includes(scope)) return null;
+  if (hasScope(auth, scope)) return null;
   return apiError(403, "insufficient_scope", `This API key lacks the ${scope} scope.`, { scope });
 }
 
-// ---- naive in-memory rate limit for public endpoints (per instance) ----
+/** Calls per key per minute. */
+const PARTNER_RATE = { limit: 600, windowMs: 60_000 };
 
-const buckets = new Map<string, { count: number; resetAt: number }>();
+function withoutCors(res: Response): Response {
+  for (const name of [...res.headers.keys()]) if (name.toLowerCase().startsWith("access-control-")) res.headers.delete(name);
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
 
-export function rateLimit(req: Request, key: string, limit: number, windowMs: number): boolean {
-  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? req.headers.get("x-real-ip") ?? "local";
-  const id = `${key}:${ip}`;
-  const now = Date.now();
-  const bucket = buckets.get(id);
-  if (!bucket || bucket.resetAt < now) {
-    buckets.set(id, { count: 1, resetAt: now + windowMs });
-    return true;
+/**
+ * Run a partner API handler: authenticates the key (401/403), checks `scope` (403), rate-limits
+ * per key (429), turns thrown errors into JSON, strips every CORS header, and audits api.request
+ * (method, route, status; actor = the key).
+ *
+ *   export const GET = (req: Request) => partnerRoute(req, "appointments:read", "appointments.list", async (auth) => json(...));
+ */
+export async function partnerRoute(
+  req: Request,
+  scope: ApiScope,
+  route: string,
+  handler: (auth: ApiAuth) => Promise<Response>,
+): Promise<Response> {
+  const check = await checkApiKey(req);
+  if (!check.ok) return withoutCors(apiKeyError(check));
+  const { auth } = check;
+  let res: Response;
+  const limit = await rateLimit(`partner:${auth.key.id}`, PARTNER_RATE.limit, PARTNER_RATE.windowMs);
+  if (!limit.ok) res = rateLimited(limit.retryAfterSec);
+  else if (!hasScope(auth, scope)) res = requireScope(auth, scope)!;
+  else {
+    try {
+      res = await handler(auth);
+    } catch (err) {
+      res = handleApiError(err);
+    }
   }
-  bucket.count++;
-  return bucket.count <= limit;
+  await audit({
+    orgId: auth.org.id,
+    actor: { type: "api_key", id: auth.key.id },
+    action: "api.request",
+    entity: { type: "api_key", id: auth.key.id },
+    metadata: { method: req.method, route, status: res.status },
+    headers: req.headers,
+  });
+  return withoutCors(res);
 }

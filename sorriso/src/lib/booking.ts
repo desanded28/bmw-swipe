@@ -1,9 +1,13 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import {
   appointments,
+  formSubmissions,
+  messages,
   orgFunds,
   patients,
+  privacyRequests,
+  recalls,
   reminders,
   waitlist,
   type ActorRelation,
@@ -24,8 +28,17 @@ import {
   textChannelFor,
   type AppointmentDetails,
 } from "./appointments";
-import { evaluateSlot, loadAvailabilityContext, REJECTION_LABELS, type AvailabilityContext, type SlotRejection } from "./availability";
-import { isMinor, recipientFor } from "./contact";
+import { audit, type AuditEvent } from "./audit";
+import {
+  evaluateSlot,
+  findSlots,
+  loadAvailabilityContext,
+  rangeForDates,
+  REJECTION_LABELS,
+  type AvailabilityContext,
+  type SlotRejection,
+} from "./availability";
+import { isMinor, isRestricted, recipientFor } from "./contact";
 import { newId } from "./ids";
 import { issueManageToken } from "./links";
 import { logError } from "./log";
@@ -40,8 +53,11 @@ import {
   type BookingRelationInput,
 } from "./privacy/consent";
 import { validateBookingRelation } from "./privacy/minors";
+import { dropRecallForVisit, markRecallBooked, reopenRecallsFor, upsertRecall } from "./recalls";
 import { cancelPendingReminders, enqueueNow, processDueReminders, scheduleReminders } from "./reminders";
+import { refreshAppointmentRisk } from "./risk";
 import { resolveSettings } from "./settings";
+import { addDays, diffDays, todayIn, zonedParts } from "./time";
 import { offerFreedSlot } from "./waitlist";
 
 export class BookingError extends Error {
@@ -51,7 +67,8 @@ export class BookingError extends Error {
   public field?: string;
 
   constructor(
-    public code: SlotRejection | "not_found" | "invalid" | "not_allowed",
+    /** restricted: the patient's data is restricted (Art. 18) and staff gave no reason to book anyway. */
+    public code: SlotRejection | "not_found" | "invalid" | "not_allowed" | "restricted",
     message: string,
     detail?: { reason: string; field?: string },
   ) {
@@ -123,8 +140,13 @@ function guardianFields(input: NewPatientInput) {
 /**
  * Find the patient's existing record in this practice or create one.
  *
- * - "staff" (front desk, partner API): matches on (email or phone) AND first name and
- *   updates the record with what was entered.
+ * Candidates are the practice's records with the same first name and a contact in common
+ * (merged tombstones and erased records never match).
+ *
+ * - "staff" (front desk, partner API): the first candidate whose birth date doesn't contradict
+ *   the one entered (both present and different) is reused and updated with what was entered.
+ *   Same name and contact but a different birth date is a different person until staff say
+ *   otherwise: a new record, flagged possibleDuplicateOfId (never merged silently).
  * - "public" (website, widget, waitlist — unauthenticated): an existing record is reused
  *   only if EVERY identifier given matches it exactly, and it is never modified. Otherwise
  *   a new record is created. This stops anyone who knows a patient's name and number from
@@ -133,11 +155,15 @@ function guardianFields(input: NewPatientInput) {
  *   both possibly empty), so every age rule downstream (validateBookingRelation, recordConsent)
  *   sees exactly what the requester typed: a stored record can't change the answer, and the
  *   public routes can't be used to learn whether someone is a patient here, or a minor.
+ *   A restricted record (Art. 18) is never reused by a public booking: the new booking gets a
+ *   record of its own, flagged as a possible duplicate for the practice to review.
  *   The opt-ins of a new record follow the contacts given — the guardian's too, since a
  *   child's messages go to them (recipientFor); client-sent flags are ignored.
  *
  * Either way a parent booking for their child with the same contact details gets a
- * separate record, because the first name differs.
+ * separate record, because the first name differs; and a new record that shares the first name
+ * and a contact with an existing one is flagged for the duplicates queue
+ * (/dashboard/patients/duplicates), whatever the mode.
  */
 export async function upsertPatient(
   tx: Tx,
@@ -149,31 +175,54 @@ export async function upsertPatient(
   const phone = normalizePhone(input.phone, input.phoneCountry);
   const firstName = input.firstName.trim();
   const lastName = input.lastName.trim();
-  if (!email && !phone) throw new BookingError("invalid", "An email address or phone number is required.");
   const guardian = guardianFields(input);
-
-  const contactMatch =
-    mode === "public"
-      ? and(email ? eq(patients.email, email) : undefined, phone ? eq(patients.phone, phone) : undefined)
-      : email && phone
-        ? sql`(${patients.email} = ${email} OR ${patients.phone} = ${phone})`
-        : email
-          ? eq(patients.email, email)
-          : eq(patients.phone, phone!);
-
+  // A child may have no contacts of their own: the guardian's then identify the record (and
+  // receive the messages, recipientFor).
+  const viaGuardian = !email && !phone;
+  if (viaGuardian && !guardian.guardianPhone && !guardian.guardianEmail) {
+    throw new BookingError("invalid", "An email address or phone number is required.");
+  }
   const birthDate = input.birthDate || null;
-  const birthDateMatch =
-    mode === "public" ? (birthDate ? eq(patients.birthDate, birthDate) : sql`coalesce(${patients.birthDate}, '') = ''`) : undefined;
 
+  type TextColumn = typeof patients.email | typeof patients.guardianEmail | typeof patients.phone | typeof patients.guardianPhone;
+  const contactMatch = (e: string | null, ph: string | null, emailCol: TextColumn, phoneCol: TextColumn) =>
+    e && ph ? sql`(${emailCol} = ${e} OR ${phoneCol} = ${ph})` : e ? eq(emailCol, e) : eq(phoneCol, ph!);
+  const anyContact = viaGuardian
+    ? and(
+        contactMatch(guardian.guardianEmail, guardian.guardianPhone, patients.guardianEmail, patients.guardianPhone),
+        isNull(patients.email),
+        isNull(patients.phone),
+      )
+    : contactMatch(email, phone, patients.email, patients.phone);
   const candidates = await tx
     .select()
     .from(patients)
     .where(
-      and(eq(patients.orgId, orgId), sql`lower(${patients.firstName}) = ${firstName.toLowerCase()}`, contactMatch, birthDateMatch),
+      and(
+        eq(patients.orgId, orgId),
+        sql`lower(${patients.firstName}) = ${firstName.toLowerCase()}`,
+        anyContact,
+        isNull(patients.mergedIntoId),
+        isNull(patients.erasedAt),
+      ),
     )
-    .limit(1);
+    .orderBy(asc(patients.createdAt))
+    .limit(20);
 
-  const existing = candidates[0];
+  const existing =
+    mode === "public"
+      ? candidates.find(
+          (c) =>
+            (viaGuardian
+              ? (!guardian.guardianEmail || c.guardianEmail === guardian.guardianEmail) &&
+                (!guardian.guardianPhone || c.guardianPhone === guardian.guardianPhone)
+              : (!email || c.email === email) && (!phone || c.phone === phone)) &&
+            (c.birthDate || "") === (birthDate || "") &&
+            !isRestricted(c),
+        )
+      : (candidates.find((c) => birthDate && c.birthDate === birthDate) ??
+        candidates.find((c) => !(birthDate && c.birthDate && c.birthDate !== birthDate)));
+
   if (existing && mode === "public") return { patient: existing, created: false };
   if (existing) {
     const [updated] = await tx
@@ -212,7 +261,9 @@ export async function upsertPatient(
       // the guardian's, which a child under 14's messages go to (recipientFor).
       emailOptIn: mode === "public" ? Boolean(email || guardian.guardianEmail) : (input.emailOptIn ?? true),
       smsOptIn: mode === "public" ? Boolean(phone || guardian.guardianPhone) : (input.smsOptIn ?? true),
-      preferredChannel: input.preferredChannel ?? (phone ? "sms" : "email"),
+      // A child reachable only through the guardian's phone still gets texts.
+      preferredChannel: input.preferredChannel ?? (phone || guardian.guardianPhone ? "sms" : "email"),
+      possibleDuplicateOfId: candidates[0]?.id ?? null,
       ...guardian,
     })
     .returning();
@@ -443,8 +494,59 @@ export type CreateAppointmentInput = {
   relation?: BookingRelation;
   /** "I will use fund X": stored only if org_funds lists it for this practice. */
   fundId?: string | null;
+  /**
+   * Staff only: why a restricted patient (Art. 18) is booked anyway. Without it such a booking
+   * fails with BookingError "restricted"; with it the access is audited (patient.restricted_access).
+   */
+  restrictedAccessReason?: string | null;
+  /** Who is booking, for the audit log (default: an unidentified staff user). */
+  actor?: AuditEvent["actor"];
   now?: Date;
 };
+
+/** Merged duplicates are tombstones: a booking by id lands on the record they were merged into. */
+async function survivingPatient(tx: Tx, orgId: string, id: string): Promise<Patient | null> {
+  let [p] = await tx
+    .select()
+    .from(patients)
+    .where(and(eq(patients.id, id), eq(patients.orgId, orgId)));
+  for (let hop = 0; p?.mergedIntoId && hop < 5; hop++) {
+    [p] = await tx
+      .select()
+      .from(patients)
+      .where(and(eq(patients.id, p.mergedIntoId), eq(patients.orgId, orgId)));
+  }
+  return p ?? null;
+}
+
+/**
+ * Restriction (Art. 18): the data is kept but not used. A new booking for a restricted patient
+ * needs a staff reason, recorded in the audit log; patient-facing bookings never reach a restricted
+ * record (upsertPatient gives them a record of their own). Erased records can't be booked.
+ */
+async function assertMayBook(tx: Tx, patient: Patient, input: CreateAppointmentInput, now: Date): Promise<void> {
+  if (patient.erasedAt) throw new BookingError("not_allowed", "This patient record was erased.", { reason: "patient_erased" });
+  if (!patient.restrictedAt) return;
+  const reason = input.restrictedAccessReason?.trim();
+  if (input.online || !reason) {
+    throw new BookingError("restricted", "This patient's data is restricted. Give a reason to book anyway.", {
+      reason: "restriction_reason_required",
+      field: "restrictedAccessReason",
+    });
+  }
+  await audit(
+    {
+      orgId: input.orgId,
+      actor: input.actor ?? { type: "user", id: null },
+      action: "patient.restricted_access",
+      entity: { type: "patient", id: patient.id },
+      reason: reason.slice(0, 500),
+      metadata: { purpose: "booking" },
+      at: now,
+    },
+    tx,
+  );
+}
 
 export async function createAppointment(input: CreateAppointmentInput): Promise<AppointmentDetails> {
   const now = input.now ?? new Date();
@@ -496,10 +598,7 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
     const planFor = (preferredChannel: Channel) =>
       planBookingPrivacy({ context, relation, privacy: input.privacy, preferredChannel, org: ctx.settings.privacy });
     if ("id" in input.patient) {
-      const [p] = await tx
-        .select()
-        .from(patients)
-        .where(and(eq(patients.id, input.patient.id), eq(patients.orgId, input.orgId)));
+      const p = await survivingPatient(tx, input.orgId, input.patient.id);
       if (!p) throw new BookingError("not_found", "Patient not found.");
       patient = p;
       plan = planFor(p.preferredChannel);
@@ -514,6 +613,7 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
       patient = res.patient;
       createdPatient = res.created;
     }
+    await assertMayBook(tx, patient, input, now);
     // The stored birth date when there is one: recordConsent reads that one too.
     const birthDate = patient.birthDate || ("id" in input.patient ? null : input.patient.birthDate) || null;
     checkBookingRelation(relation, birthDate, start, context, now);
@@ -551,12 +651,18 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
         noticeLocale: plan.noticeLocale,
         minorFlag: isMinor({ birthDate }, start),
         fundId: await listedFund(tx, input.orgId, input.serviceId, input.fundId),
+        createdAt: now,
+        updatedAt: now,
       })
       .returning();
 
     if (input.privacy) {
       await recordBookingChoices(tx, { orgId: input.orgId, patientId: patient.id, appointmentId: id, plan, privacy: input.privacy, now });
     }
+    // The patient booked the treatment they were recalled for: the recall stops sending.
+    await markRecallBooked(tx, { orgId: input.orgId, patientId: patient.id, serviceId: input.serviceId, appointmentId: id, now });
+    // No-show risk, only where the practice uses it and the patient hasn't objected (src/lib/risk.ts).
+    await refreshAppointmentRisk(tx, id, now);
 
     const willAsk = await scheduleReminders(tx, appointment, ctx.settings, now);
     // Booked by the patient themselves too close to the visit for a confirmation
@@ -589,15 +695,15 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
   return (await getAppointmentDetails({ id: appointmentId }))!;
 }
 
-/** The channel for a message the patient didn't ask for (staff cancelled or moved the visit). */
+/**
+ * The channel for a message the patient didn't ask for (staff cancelled or moved the visit): the
+ * preferred one when it reaches the recipient, else the other. Both look at recipientFor(), so a
+ * child under 14 reachable only through the guardian's phone still gets a text.
+ */
 async function textOrEmail(d: AppointmentDetails): Promise<Channel | null> {
-  if (d.patient.preferredChannel !== "email") {
-    // To the recipient's phone (the guardian's for a child under 14): textChannelFor checks it.
-    const text = await textChannelFor(d.patient, d.org);
-    if (text) return text;
-  }
-  if (canReachByEmail(d.patient)) return "email";
-  return null;
+  const text = await textChannelFor(d.patient, d.org);
+  const email = canReachByEmail(d.patient) ? ("email" as const) : null;
+  return d.patient.preferredChannel === "email" ? (email ?? text) : (text ?? email);
 }
 
 /** Patient confirmed they'll attend (reply, link, or staff phoned them). */
@@ -630,7 +736,11 @@ export async function cancelAppointment(
       })
       .where(and(eq(appointments.id, appointmentId), sql`${appointments.status} in ('scheduled', 'requested')`))
       .returning();
-    if (row) await cancelPendingReminders(tx, appointmentId);
+    if (row) {
+      await cancelPendingReminders(tx, appointmentId);
+      // A recall this visit had booked is open again.
+      await reopenRecallsFor(tx, row.orgId, appointmentId, now);
+    }
     return row;
   });
   if (!updated) return null;
@@ -684,6 +794,14 @@ export async function rescheduleAppointment(
     by: "patient" | "staff";
     force?: boolean;
     notifyPatient?: boolean;
+    /**
+     * The patient picks a new time because the practice closed (rebooking assistant,
+     * src/lib/rebooking.ts). The practice caused the move, so the patient policies don't apply
+     * (cancelUntilHours, minimum notice, maximum advance) and the same practitioner may keep the
+     * visit even without a service link; the slot must still be free, inside working hours and at
+     * least MOVE_MIN_LEAD_MS ahead.
+     */
+    practiceMoved?: boolean;
     now?: Date;
   },
 ): Promise<AppointmentDetails> {
@@ -694,6 +812,10 @@ export async function rescheduleAppointment(
     throw new BookingError("not_allowed", "Only upcoming appointments can be moved.");
 
   const online = opts.by === "patient";
+  const moved = online && Boolean(opts.practiceMoved);
+  if (moved && opts.startsAt.getTime() < now.getTime() + MOVE_MIN_LEAD_MS) {
+    throw new BookingError("too_soon", REJECTION_LABELS.too_soon);
+  }
   const practitionerId = opts.practitionerId ?? before.appointment.practitionerId;
   const locationId = opts.locationId ?? before.appointment.locationId;
   const duration =
@@ -709,12 +831,13 @@ export async function rescheduleAppointment(
         locationId,
         rangeStart: new Date(opts.startsAt.getTime() - 86_400_000),
         rangeEnd: new Date(opts.startsAt.getTime() + 2 * 86_400_000),
-        requireServiceLink: online,
+        requireServiceLink: online && !(moved && practitionerId === before.appointment.practitionerId),
       },
       tx,
     );
     if (!ctx || !ctx.locations.has(locationId)) throw new BookingError("not_found", "Location not found.");
     assertBookableResources(ctx, practitionerId, locationId, opts.roomId, online);
+    const enforcePolicy = online && !moved;
     // Keep the same chair if it's still free at the same office.
     const keepRoom = locationId === before.appointment.locationId ? before.appointment.roomId : null;
     let evaluation = evaluateSlot(ctx, {
@@ -724,7 +847,7 @@ export async function rescheduleAppointment(
       durationMinutes: duration,
       roomId: opts.roomId !== undefined ? opts.roomId : keepRoom,
       ignoreAppointmentId: appointmentId,
-      enforcePolicy: online,
+      enforcePolicy,
       requireWorkingHours: online,
       now,
     });
@@ -735,7 +858,7 @@ export async function rescheduleAppointment(
         start: opts.startsAt,
         durationMinutes: duration,
         ignoreAppointmentId: appointmentId,
-        enforcePolicy: online,
+        enforcePolicy,
         requireWorkingHours: online,
         now,
       });
@@ -764,6 +887,7 @@ export async function rescheduleAppointment(
       .returning();
     if (!updated) throw new BookingError("not_allowed", "This appointment was cancelled or completed in the meantime.");
     await scheduleReminders(tx, updated, ctx.settings, now);
+    await refreshAppointmentRisk(tx, appointmentId, now);
   });
 
   const after = (await getAppointmentDetails({ id: appointmentId }))!;
@@ -844,6 +968,10 @@ export async function setOutcome(appointmentId: string, outcome: "completed" | "
         .where(eq(patients.id, before.patient.id));
     }
     const settings = resolveSettings(before.org.settings);
+    // A completed visit gets its recall (clinician-confirmed before anything is sent, src/lib/recalls.ts);
+    // undoing "completed" takes back a recall nothing was sent for.
+    if (outcome === "completed") await upsertRecall(tx, { orgId: row.orgId, appointmentId, now });
+    else if (before.appointment.status === "completed") await dropRecallForVisit(tx, row.orgId, appointmentId);
     if (outcome === "scheduled") {
       // Undoing a mistaken outcome: bring back the reminders, drop the review request.
       await cancelPendingReminders(tx, appointmentId, ["review_request"]);
@@ -874,4 +1002,295 @@ export async function sendReminderNow(appointmentId: string, channel: Channel, a
     sendAt: now,
   });
   return processDueReminders({ appointmentId, now });
+}
+
+// ---------------------------------------------------------------- alternatives (rebooking assistant)
+
+/** Alternatives start at least this far ahead (time to read the message and pick one). */
+const MOVE_MIN_LEAD_MS = 2 * 3_600_000;
+/** How far around the original day alternatives are searched. */
+const ALT_DAYS_BEFORE = 14;
+const ALT_DAYS_AFTER = 28;
+
+export type Alternative = {
+  start: Date;
+  end: Date;
+  practitionerId: string;
+  locationId: string;
+  roomId: string | null;
+  /** With the same practitioner as the original visit. */
+  samePractitioner: boolean;
+};
+
+/**
+ * Up to `n` free times to move an appointment to, when the practice can't keep it (rebooking
+ * assistant). The same practitioner first (at the same office first), then another practitioner
+ * offering the service at the same office; within each, the days closest to the original one,
+ * one per day before a second on the same day, and the time of day closest to the original.
+ * Slots are checked by the availability engine (never busy, never in a closure), keep the
+ * visit's own length, and start at least two hours from now; the patient booking policies don't
+ * apply (the practice is moving the visit). Returned in chronological order. An appointment
+ * that is not upcoming, or not in `orgId`, gets none.
+ */
+export async function proposeAlternatives(
+  appointmentId: string,
+  n = 3,
+  opts: { now?: Date; orgId?: string } = {},
+): Promise<Alternative[]> {
+  const now = opts.now ?? new Date();
+  const d = await getAppointmentDetails({ id: appointmentId });
+  if (!d || (opts.orgId && d.org.id !== opts.orgId)) return [];
+  const a = d.appointment;
+  if (!["scheduled", "requested"].includes(a.status) || n <= 0) return [];
+  const tz = d.location.timezone;
+  const duration = Math.round((a.endsAt.getTime() - a.startsAt.getTime()) / 60_000);
+  const earliest = now.getTime() + MOVE_MIN_LEAD_MS;
+  const original = zonedParts(a.startsAt, tz);
+  const today = todayIn(tz, new Date(earliest));
+  const fromDate = [today, addDays(original.date, -ALT_DAYS_BEFORE)].sort().at(-1)!;
+  const untilDate = addDays([today, original.date].sort().at(-1)!, ALT_DAYS_AFTER);
+  const days = diffDays(untilDate, fromDate) + 1;
+  const range = rangeForDates(fromDate, days, tz);
+  const base = { orgId: d.org.id, serviceId: d.service.id, ...range };
+
+  const [same, others] = await Promise.all([
+    loadAvailabilityContext({ ...base, practitionerIds: [a.practitionerId], requireServiceLink: false }),
+    loadAvailabilityContext({ ...base, locationId: a.locationId, requireServiceLink: true }),
+  ]);
+  const slotOpts = { fromDate, days, now, enforcePolicy: false, durationMinutes: duration, ignoreAppointmentId: a.id };
+  const sameSlots = same ? findSlots(same, slotOpts) : [];
+  const otherSlots = others ? findSlots(others, slotOpts).filter((s) => s.practitionerId !== a.practitionerId) : [];
+
+  const rank = (slots: typeof sameSlots) =>
+    slots
+      .filter((s) => s.start.getTime() >= earliest)
+      .map((s) => {
+        const local = zonedParts(s.start, tz);
+        return {
+          s,
+          date: local.date,
+          office: s.locationId === a.locationId ? 0 : 1,
+          day: Math.abs(diffDays(local.date, original.date)),
+          minutes: Math.abs(local.minutes - original.minutes),
+        };
+      })
+      .sort((x, y) => x.office - y.office || x.day - y.day || x.minutes - y.minutes || x.s.start.getTime() - y.s.start.getTime());
+
+  const picked: Alternative[] = [];
+  for (const group of [rank(sameSlots), rank(otherSlots)]) {
+    // One per day first, then fill from what is left.
+    const usedDays = new Set<string>();
+    const first = group.filter((r) => !usedDays.has(r.date) && usedDays.add(r.date));
+    const rest = group.filter((r) => !first.includes(r));
+    for (const r of [...first, ...rest]) {
+      if (picked.length >= n) break;
+      picked.push({
+        start: r.s.start,
+        end: r.s.end,
+        practitionerId: r.s.practitionerId,
+        locationId: r.s.locationId,
+        roomId: r.s.roomId,
+        samePractitioner: r.s.practitionerId === a.practitionerId,
+      });
+    }
+  }
+  return picked.sort((x, y) => x.start.getTime() - y.start.getTime());
+}
+
+// ---------------------------------------------------------------- possible duplicates
+
+export type DuplicateSide = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  birthDate: string | null;
+  /** null unless the viewer may read contacts. */
+  email: string | null;
+  phone: string | null;
+  createdAt: Date;
+  restricted: boolean;
+  appointments: number;
+  lastVisit: Date | null;
+};
+
+export type DuplicatePair = { patient: DuplicateSide; other: DuplicateSide };
+
+/**
+ * Records flagged possibleDuplicateOfId (upsertPatient: same first name and a shared contact, but
+ * a birth date or identifier that didn't match), each with the record it may duplicate. Both
+ * must be live records of this practice (not merged, not erased).
+ */
+export async function listDuplicatePairs(orgId: string, opts: { contacts: boolean; limit?: number }): Promise<DuplicatePair[]> {
+  const live = and(eq(patients.orgId, orgId), isNull(patients.mergedIntoId), isNull(patients.erasedAt));
+  const flagged = await db
+    .select()
+    .from(patients)
+    .where(and(live, isNotNull(patients.possibleDuplicateOfId)))
+    .orderBy(desc(patients.createdAt))
+    .limit(opts.limit ?? 100);
+  const otherIds = [...new Set(flagged.map((p) => p.possibleDuplicateOfId!))];
+  const others = otherIds.length ? await db.select().from(patients).where(and(live, inArray(patients.id, otherIds))) : [];
+  const ids = [...flagged.map((p) => p.id), ...others.map((p) => p.id)];
+  const visits = ids.length
+    ? await db
+        .select({ patientId: appointments.patientId, n: count(), last: sql<number | null>`max(case when ${appointments.status} = 'completed' then ${appointments.startsAt} end)` })
+        .from(appointments)
+        .where(and(eq(appointments.orgId, orgId), inArray(appointments.patientId, ids)))
+        .groupBy(appointments.patientId)
+    : [];
+  const side = (p: Patient): DuplicateSide => {
+    const v = visits.find((x) => x.patientId === p.id);
+    return {
+      id: p.id,
+      firstName: p.firstName,
+      lastName: p.lastName,
+      birthDate: p.birthDate,
+      email: opts.contacts ? p.email : null,
+      phone: opts.contacts ? p.phone : null,
+      createdAt: p.createdAt,
+      restricted: isRestricted(p),
+      appointments: Number(v?.n ?? 0),
+      lastVisit: v?.last ? new Date(Number(v.last)) : null,
+    };
+  };
+  return flagged.flatMap((p) => {
+    const other = others.find((o) => o.id === p.possibleDuplicateOfId);
+    return other && other.id !== p.id ? [{ patient: side(p), other: side(other) }] : [];
+  });
+}
+
+export type MergeResult =
+  | { ok: true; moved: Record<"appointments" | "messages" | "recalls" | "forms" | "waitlist" | "privacyRequests", number> }
+  | { ok: false; code: "not_found" | "same" | "restricted" };
+
+/**
+ * Merge two records of the same person, after staff confirmed it. Everything that belongs to the
+ * person moves to `keepId`: appointments (and with them reminders and reviews), messages, recalls,
+ * forms, waitlist entries and privacy requests. The consent ledger is append-only and is NOT
+ * rewritten: the merged record stays as a tombstone (mergedIntoId) that consent lookups and the
+ * privacy center follow. Contacts and birth date missing on the kept record are taken from the
+ * other one; no-show counts add up. Restricted records are refused (lift the restriction first:
+ * merging would put restricted data back into use). Audited as patient.merge.
+ */
+export async function mergePatients(i: {
+  orgId: string;
+  keepId: string;
+  mergeId: string;
+  actor: AuditEvent["actor"];
+  headers?: Headers;
+  now?: Date;
+}): Promise<MergeResult> {
+  const now = i.now ?? new Date();
+  if (i.keepId === i.mergeId) return { ok: false, code: "same" };
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .select()
+      .from(patients)
+      .where(and(eq(patients.orgId, i.orgId), inArray(patients.id, [i.keepId, i.mergeId]), isNull(patients.mergedIntoId), isNull(patients.erasedAt)));
+    const keep = rows.find((p) => p.id === i.keepId);
+    const drop = rows.find((p) => p.id === i.mergeId);
+    if (!keep || !drop) return { ok: false, code: "not_found" } as const;
+    if (keep.restrictedAt || drop.restrictedAt) return { ok: false, code: "restricted" } as const;
+
+    const move = async (
+      table: typeof appointments | typeof messages | typeof recalls | typeof formSubmissions | typeof waitlist | typeof privacyRequests,
+    ) => {
+      const moved = await tx
+        .update(table)
+        .set({ patientId: keep.id })
+        .where(and(eq(table.orgId, i.orgId), eq(table.patientId, drop.id)))
+        .returning({ id: table.id });
+      return moved.length;
+    };
+    const moved = {
+      appointments: await move(appointments),
+      messages: await move(messages),
+      recalls: await move(recalls),
+      forms: await move(formSubmissions),
+      waitlist: await move(waitlist),
+      privacyRequests: await move(privacyRequests),
+    };
+
+    // Two open recalls for the same treatment would both send: keep the one due last.
+    const open = await tx
+      .select({ id: recalls.id, serviceId: recalls.serviceId, dueDate: recalls.dueDate })
+      .from(recalls)
+      .where(and(eq(recalls.orgId, i.orgId), eq(recalls.patientId, keep.id), inArray(recalls.status, ["due", "sent", "call"])))
+      .orderBy(desc(recalls.dueDate));
+    const seen = new Set<string>();
+    const superseded = open.filter((r) => seen.has(r.serviceId) || !seen.add(r.serviceId)).map((r) => r.id);
+    if (superseded.length) {
+      await tx
+        .update(recalls)
+        .set({ status: "dismissed", leaseUntil: null, updatedAt: now })
+        .where(and(eq(recalls.orgId, i.orgId), inArray(recalls.id, superseded)));
+    }
+
+    await tx
+      .update(patients)
+      .set({
+        email: keep.email ?? drop.email,
+        phone: keep.phone ?? drop.phone,
+        birthDate: keep.birthDate ?? drop.birthDate,
+        guardianName: keep.guardianName ?? drop.guardianName,
+        guardianRelation: keep.guardianRelation ?? drop.guardianRelation,
+        guardianPhone: keep.guardianPhone ?? drop.guardianPhone,
+        guardianEmail: keep.guardianEmail ?? drop.guardianEmail,
+        noShowCount: keep.noShowCount + drop.noShowCount,
+        verifiedContacts: [...new Set([...keep.verifiedContacts, ...drop.verifiedContacts])],
+        possibleDuplicateOfId: keep.possibleDuplicateOfId === drop.id ? null : keep.possibleDuplicateOfId,
+      })
+      .where(and(eq(patients.id, keep.id), eq(patients.orgId, i.orgId)));
+    await tx
+      .update(patients)
+      .set({ mergedIntoId: keep.id, possibleDuplicateOfId: null })
+      .where(and(eq(patients.id, drop.id), eq(patients.orgId, i.orgId)));
+    // Records flagged as duplicates of the merged one now point at the survivor.
+    await tx
+      .update(patients)
+      .set({ possibleDuplicateOfId: keep.id })
+      .where(and(eq(patients.orgId, i.orgId), eq(patients.possibleDuplicateOfId, drop.id), ne(patients.id, keep.id)));
+
+    await audit(
+      {
+        orgId: i.orgId,
+        actor: i.actor,
+        action: "patient.merge",
+        entity: { type: "patient", id: keep.id },
+        metadata: { mergedId: drop.id, ...moved, recallsSuperseded: superseded.length },
+        headers: i.headers,
+        at: now,
+      },
+      tx,
+    );
+    return { ok: true, moved } as const;
+  });
+}
+
+/** Staff checked a flagged pair: two different people. Audited as patient.update. */
+export async function dismissDuplicate(i: { orgId: string; patientId: string; actor: AuditEvent["actor"]; headers?: Headers; now?: Date }): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({ id: patients.id, other: patients.possibleDuplicateOfId })
+      .from(patients)
+      .where(and(eq(patients.id, i.patientId), eq(patients.orgId, i.orgId), isNotNull(patients.possibleDuplicateOfId)));
+    if (!row) return false;
+    await tx
+      .update(patients)
+      .set({ possibleDuplicateOfId: null })
+      .where(and(eq(patients.id, row.id), eq(patients.orgId, i.orgId)));
+    await audit(
+      {
+        orgId: i.orgId,
+        actor: i.actor,
+        action: "patient.update",
+        entity: { type: "patient", id: row.id },
+        metadata: { duplicate: "dismissed", otherId: row.other },
+        headers: i.headers,
+        at: i.now,
+      },
+      tx,
+    );
+    return true;
+  });
 }

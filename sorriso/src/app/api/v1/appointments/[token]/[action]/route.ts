@@ -1,4 +1,4 @@
-import { apiError, handleApiError, json, preflight } from "@/lib/api";
+import { apiError, handleApiError, json, limitByIp, preflight } from "@/lib/api";
 import { canPatientCancel, canPatientReschedule, getAppointmentDetails } from "@/lib/appointments";
 import { cancelAppointment, confirmAttendance, rescheduleAppointment } from "@/lib/booking";
 import { publicAppointment } from "@/lib/serializers";
@@ -10,9 +10,12 @@ export const OPTIONS = preflight;
  * POST /api/v1/appointments/:token/confirm
  * POST /api/v1/appointments/:token/cancel       { reason? }
  * POST /api/v1/appointments/:token/reschedule   { start, practitionerId?, locationId? }
+ * Rate-limited per network (20 changes per 10 minutes).
  */
 export async function POST(req: Request, { params }: { params: Promise<{ token: string; action: string }> }) {
   try {
+    const limited = await limitByIp(req, "manage-write", 20, 10 * 60_000);
+    if (limited) return limited;
     const { token, action } = await params;
     const details = await getAppointmentDetails({ token });
     if (!details) return apiError(404, "not_found", "Appointment not found.");

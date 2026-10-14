@@ -79,6 +79,18 @@ export function can(role: MembershipRole | null | undefined, p: Permission): boo
   return !!role && (SETS.get(role)?.has(p) ?? false);
 }
 
+/**
+ * Patient fields that need more than patient.read (clinical free text). Loaders that return a
+ * patient row to a page pass it through visiblePatient() so a role without the permission never
+ * receives the value, not just never sees it rendered.
+ */
+export const PATIENT_FIELD_PERMISSIONS = { notes: "patient.notes.read" } as const satisfies Record<string, Permission>;
+
+/** A copy of the patient row with the fields this role may not read set to null. */
+export function visiblePatient<T extends { notes?: string | null }>(role: MembershipRole | null | undefined, patient: T): T {
+  return can(role, PATIENT_FIELD_PERMISSIONS.notes) ? patient : { ...patient, notes: null };
+}
+
 /** The role's permissions, for handing to client components (e.g. which sidebar entries to show). */
 export function permissionsFor(role: MembershipRole): Permission[] {
   return [...ROLE_PERMISSIONS[role]];

@@ -13,15 +13,17 @@ import {
   type Organization,
   type Patient,
   type Practitioner,
+  type PrivacySettings,
   type Room,
   type Service,
 } from "@/db/schema";
+import { lhref } from "@/i18n/href";
 import { absoluteUrl } from "./config";
+import { isContactVerified, recipientFor, type ContactKind } from "./contact";
 import { practitionerName } from "./format";
-import type { AppointmentTemplateData } from "./messaging/templates";
-import { pickTextChannel } from "./contact";
 import { hashToken, isManageLinkValid, manageTokenOf } from "./links";
-import { isAllowed } from "./privacy/consent";
+import { templates, type AppointmentTemplateData, type ContentLevel } from "./messaging/templates";
+import { chooseTextChannel } from "./messaging/whatsapp";
 import { signPracticeRef } from "./privacy/context";
 import { getPrivacy } from "./privacy/settings";
 import { resolveSettings } from "./settings";
@@ -34,20 +36,19 @@ export { canReachByEmail, canReachByPhone } from "./contact";
 
 /**
  * The text channel for a message to this patient, or null when they can't be texted. Every text
- * sender decides through here: pickTextChannel() gives WhatsApp only where the practice enabled it
- * and the patient chose it, and on top of that WhatsApp needs a current whatsapp_channel grant in
- * the consent ledger. A WhatsApp preference without one (a record from before the ledger, or one
- * set by staff without recording the patient's consent) gets SMS, so nothing reaches Meta without
- * the consent. WP3 adds the per-locale template fallback behind this.
+ * sender decides through here (chooseTextChannel in src/lib/messaging/whatsapp.ts): WhatsApp only
+ * where the practice enabled it, the patient chose it, the consent ledger holds a current
+ * whatsapp_channel grant and an approved template exists for `kind` in the patient's language;
+ * otherwise SMS if the patient accepts texts. Without a `kind` (a message with no WhatsApp
+ * template) the answer is SMS, so nothing reaches Meta as free text outside the 24-hour window.
  */
 export async function textChannelFor(
   patient: Patient,
   org: Pick<Organization, "settings">,
   now: Date = new Date(),
+  kind?: string,
 ): Promise<"sms" | "whatsapp" | null> {
-  const whatsappEnabled =
-    getPrivacy(org).whatsappEnabled && patient.preferredChannel === "whatsapp" && (await isAllowed(patient.id, "whatsapp_channel"));
-  return pickTextChannel(patient, { whatsappEnabled }, now);
+  return chooseTextChannel(patient, getPrivacy(org), { kind, now });
 }
 
 export type AppointmentDetails = {
@@ -107,14 +108,46 @@ export function appointmentLinks(d: Pick<AppointmentDetails, "appointment" | "or
     manageUrl: token ? absoluteUrl(`/a/${token}`) : clinicUrl,
     icsUrl: token ? absoluteUrl(`/api/ics/appointment/${token}`) : clinicUrl,
     reviewUrl: token ? absoluteUrl(`/a/${token}/review`) : clinicUrl,
+    /** The patient's privacy choices for this visit (WP4's page); the privacy center without a token. */
+    preferencesUrl: token ? absoluteUrl(`/a/${token}/privacy`) : absoluteUrl("/privacy"),
     rebookUrl: absoluteUrl(
       `/book/${d.org.slug}?service=${d.appointment.serviceId}&practitioner=${d.appointment.practitionerId}${ref}`,
     ),
   };
 }
 
-export function templateData(d: AppointmentDetails): AppointmentTemplateData {
+/** The practice's privacy notice, in the patient's language. */
+export function practiceNoticeUrl(org: Pick<Organization, "slug">, locale: Patient["locale"]): string {
+  return absoluteUrl(lhref(locale, `/c/${org.slug}/privacy`));
+}
+
+/**
+ * How much a message to this contact may say (docs/messaging.md). "detailed" (treatment and
+ * practitioner in SMS, subjects and email bodies) only when all of these hold:
+ * - the practice chose detailed messages (privacy.messageContentLevel);
+ * - the treatment is not marked sensitive (its name alone would reveal health information);
+ * - the patient record has a verified contact (contactVerifiedAt) and the very contact this
+ *   message goes to is one of the verified ones, so a mistyped number or address never gets more
+ *   than the discreet text.
+ * Everything else is "discreet".
+ */
+export function contentLevelFor(i: {
+  privacy: Pick<PrivacySettings, "messageContentLevel">;
+  service: Pick<Service, "sensitive">;
+  patient: Pick<Patient, "contactVerifiedAt" | "verifiedContacts">;
+  contact: { kind: ContactKind; value: string | null };
+}): ContentLevel {
+  if (i.privacy.messageContentLevel !== "detailed" || i.service.sensitive || !i.patient.contactVerifiedAt) return "discreet";
+  return isContactVerified(i.patient, i.contact.kind, i.contact.value) ? "detailed" : "discreet";
+}
+
+export function templateData(d: AppointmentDetails, now: Date = new Date()): AppointmentTemplateData {
   const links = appointmentLinks(d);
+  const privacy = getPrivacy(d.org);
+  const to = recipientFor(d.patient, now);
+  const address = `${d.location.address}, ${d.location.city}`;
+  const level = (kind: ContactKind, value: string | null) =>
+    contentLevelFor({ privacy, service: d.service, patient: d.patient, contact: { kind, value } });
   return {
     locale: d.patient.locale,
     patientFirstName: d.patient.firstName,
@@ -126,10 +159,31 @@ export function templateData(d: AppointmentDetails): AppointmentTemplateData {
     start: d.appointment.startsAt,
     timezone: d.location.timezone,
     locationName: d.location.name,
-    address: `${d.location.address}, ${d.location.city}`,
+    address,
     manageUrl: links.manageUrl,
     icsUrl: links.icsUrl,
+    recipientName: to.viaGuardian ? to.name : null,
+    viaGuardian: to.viaGuardian,
+    contentLevel: { email: level("email", to.email), text: level("phone", to.phone) },
+    smsAsciiFallback: resolveSettings(d.org.settings).reminders.smsAsciiFallback,
+    legalName: d.org.legalName ?? d.org.name,
+    legalAddress: d.org.registeredAddress ?? address,
+    privacyUrl: practiceNoticeUrl(d.org, d.patient.locale),
+    preferencesUrl: links.preferencesUrl,
+    reason: "appointment",
   };
+}
+
+/**
+ * The WhatsApp fields of an appointment message for deliver(): the template kind (whatsapp.ts),
+ * the patient's language and the discreet variables (name, date, practice, link).
+ */
+export function appointmentWhatsApp(
+  d: AppointmentDetails,
+  kind: string,
+  link?: string,
+): { whatsappKind: string; locale: Patient["locale"]; whatsappVariables: Record<string, string> } {
+  return { whatsappKind: kind, locale: d.patient.locale, whatsappVariables: templates.whatsappVariables(templateData(d), link) };
 }
 
 /** Is the patient still allowed to reschedule online? */

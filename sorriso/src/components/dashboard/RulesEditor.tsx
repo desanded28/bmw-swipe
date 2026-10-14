@@ -1,10 +1,11 @@
 "use client";
 
 import { Plus, Trash2 } from "lucide-react";
-import { useState } from "react";
-import { runRemindersNow, saveReminderSettings } from "@/app/dashboard/actions/reminders";
+import { useId, useState } from "react";
+import { runRemindersNow, saveInboundNumber, saveReminderSettings } from "@/app/dashboard/actions/reminders";
 import type { ReminderRule } from "@/db/schema";
-import { Button, Select } from "../ui";
+import { useT } from "@/i18n/provider";
+import { Button, Field, Input, Select } from "../ui";
 import { useRunAction } from "./useRunAction";
 
 type Settings = {
@@ -12,114 +13,238 @@ type Settings = {
   sendBookingConfirmation: boolean;
   requestReviews: boolean;
   autoOfferToWaitlist: boolean;
+  smsAsciiFallback: boolean;
 };
 
-type EditableRule = ReminderRule & { amount: number; unit: "hours" | "days" };
+/** "sms" and "whatsapp" rules both mean "a text": the patient's channel decides (reminders.ts). */
+type EditableRule = Omit<ReminderRule, "channel"> & { channel: "email" | "text"; amount: number; unit: "hours" | "days" };
 
 function toEditable(r: ReminderRule): EditableRule {
   const days = r.offsetMinutes % 1440 === 0;
-  return { ...r, unit: days ? "days" : "hours", amount: days ? r.offsetMinutes / 1440 : Math.round((r.offsetMinutes / 60) * 4) / 4 };
+  return {
+    ...r,
+    channel: r.channel === "email" ? "email" : "text",
+    unit: days ? "days" : "hours",
+    amount: days ? r.offsetMinutes / 1440 : Math.round((r.offsetMinutes / 60) * 4) / 4,
+  };
 }
 
-export function RulesEditor({ initial, canManage }: { initial: Settings; canManage: boolean }) {
+function toRule({ amount, unit, channel, ...r }: EditableRule): ReminderRule {
+  return { ...r, channel: channel === "email" ? "email" : "sms", offsetMinutes: Math.round(amount * (unit === "days" ? 1440 : 60)) };
+}
+
+const control = "!h-9 !w-auto !py-0";
+
+export function RulesEditor({
+  initial,
+  canManage,
+  canRun,
+  riskEnabled,
+}: {
+  initial: Settings;
+  canManage: boolean;
+  canRun: boolean;
+  /** privacy.riskBasedReminders: without it, rules limited by risk never send. */
+  riskEnabled: boolean;
+}) {
+  const t = useT("reminders");
   const [rules, setRules] = useState<EditableRule[]>(() => initial.rules.map(toEditable));
   const [flags, setFlags] = useState({
     sendBookingConfirmation: initial.sendBookingConfirmation,
     requestReviews: initial.requestReviews,
     autoOfferToWaitlist: initial.autoOfferToWaitlist,
+    smsAsciiFallback: initial.smsAsciiFallback,
   });
   const { run, pending } = useRunAction();
+  const baseId = useId();
   const set = (id: string, patch: Partial<EditableRule>) => setRules(rules.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const hasRiskRules = rules.some((r) => r.onlyIfRisk);
 
   return (
     <div>
-      <div className="space-y-2">
-        {rules.map((r) => (
-          <div key={r.id} className="flex flex-wrap items-center gap-2 rounded-xl bg-white p-3 ring-1 ring-slate-200">
-            <Select className="!h-9 !w-auto !py-0" value={r.channel} disabled={!canManage} onChange={(e) => set(r.id, { channel: e.target.value as ReminderRule["channel"] })}>
-              <option value="email">Email</option>
-              <option value="sms">Text (SMS, or WhatsApp if preferred)</option>
-              <option value="whatsapp">WhatsApp</option>
-            </Select>
-            <input
-              type="number"
-              min={1}
-              step={r.unit === "hours" ? 0.25 : 1}
-              disabled={!canManage}
-              value={r.amount}
-              onChange={(e) => set(r.id, { amount: Number(e.target.value) })}
-              className="h-9 w-20 rounded-lg px-2 text-sm ring-1 ring-slate-200"
-              aria-label="How long before"
-            />
-            <Select className="!h-9 !w-auto !py-0" value={r.unit} disabled={!canManage} onChange={(e) => set(r.id, { unit: e.target.value as "hours" | "days" })}>
-              <option value="hours">hours before</option>
-              <option value="days">days before</option>
-            </Select>
-            <label className="ml-2 flex items-center gap-1.5 text-sm">
-              <input type="checkbox" className="h-4 w-4 accent-brand-700" disabled={!canManage} checked={r.askConfirmation} onChange={(e) => set(r.id, { askConfirmation: e.target.checked })} />
-              Ask to confirm (SI/NO)
-            </label>
-            {r.channel !== "email" ? (
-              <label className="flex items-center gap-1.5 text-sm text-slate-600">
-                <input type="checkbox" className="h-4 w-4 accent-brand-700" disabled={!canManage} checked={r.fallbackToEmail} onChange={(e) => set(r.id, { fallbackToEmail: e.target.checked })} />
-                Email if no mobile
-              </label>
-            ) : null}
-            {canManage ? (
-              <button type="button" className="ml-auto rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600" aria-label="Remove rule" onClick={() => setRules(rules.filter((x) => x.id !== r.id))}>
-                <Trash2 size={15} />
-              </button>
-            ) : null}
-          </div>
-        ))}
-      </div>
-      {canManage && rules.length < 6 ? (
-        <button
-          type="button"
-          className="mt-2 inline-flex items-center gap-1 text-sm font-semibold text-brand-700 hover:underline"
-          onClick={() =>
-            setRules([...rules, { id: `r${Date.now()}`, channel: "sms", amount: 3, unit: "hours", offsetMinutes: 180, askConfirmation: false, fallbackToEmail: false }])
-          }
-        >
-          <Plus size={14} /> Add reminder
-        </button>
+      {!canManage ? <p className="mb-3 text-sm text-slate-500">{t("rules.readOnly")}</p> : null}
+      <ol className="space-y-2">
+        {rules.map((r, i) => {
+          const id = `${baseId}-${i}`;
+          const number = i + 1;
+          return (
+            <li key={r.id} className="rounded-xl bg-white p-3 ring-1 ring-slate-200">
+              <fieldset className="flex flex-wrap items-center gap-2" disabled={!canManage}>
+                <legend className="sr-only">{t("rules.rule", { number })}</legend>
+                <label className="sr-only" htmlFor={`${id}-channel`}>
+                  {t("rules.channelLabel")}
+                </label>
+                <Select id={`${id}-channel`} className={control} value={r.channel} onChange={(e) => set(r.id, { channel: e.target.value as EditableRule["channel"] })}>
+                  <option value="email">{t("rules.channelEmail")}</option>
+                  <option value="text">{t("rules.channelText")}</option>
+                </Select>
+                <label className="sr-only" htmlFor={`${id}-amount`}>
+                  {t("rules.amountLabel")}
+                </label>
+                <Input
+                  id={`${id}-amount`}
+                  type="number"
+                  inputMode="decimal"
+                  min={r.unit === "hours" ? 0.25 : 1}
+                  max={r.unit === "hours" ? 336 : 14}
+                  step={r.unit === "hours" ? 0.25 : 1}
+                  value={r.amount}
+                  onChange={(e) => set(r.id, { amount: Number(e.target.value) })}
+                  className="!h-9 !w-20 !px-2"
+                />
+                <label className="sr-only" htmlFor={`${id}-unit`}>
+                  {t("rules.unitLabel")}
+                </label>
+                <Select id={`${id}-unit`} className={control} value={r.unit} onChange={(e) => set(r.id, { unit: e.target.value as "hours" | "days" })}>
+                  <option value="hours">{t("rules.hoursBefore")}</option>
+                  <option value="days">{t("rules.daysBefore")}</option>
+                </Select>
+                <label className="sr-only" htmlFor={`${id}-risk`}>
+                  {t("rules.riskLabel")}
+                </label>
+                <Select
+                  id={`${id}-risk`}
+                  className={control}
+                  value={r.onlyIfRisk ?? ""}
+                  onChange={(e) => set(r.id, { onlyIfRisk: (e.target.value || undefined) as ReminderRule["onlyIfRisk"] })}
+                >
+                  <option value="">{t("rules.riskAll")}</option>
+                  <option value="medium">{t("rules.riskMedium")}</option>
+                  <option value="high">{t("rules.riskHigh")}</option>
+                </Select>
+                <label className="flex items-center gap-1.5 text-sm">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 accent-brand-700"
+                    checked={r.askConfirmation}
+                    onChange={(e) => set(r.id, { askConfirmation: e.target.checked })}
+                  />
+                  {t("rules.askConfirmation")}
+                </label>
+                {r.channel !== "email" ? (
+                  <label className="flex items-center gap-1.5 text-sm text-slate-600">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 accent-brand-700"
+                      checked={r.fallbackToEmail}
+                      onChange={(e) => set(r.id, { fallbackToEmail: e.target.checked })}
+                    />
+                    {t("rules.fallbackToEmail")}
+                  </label>
+                ) : null}
+                {canManage ? (
+                  <button
+                    type="button"
+                    className="ml-auto rounded-lg p-2 text-slate-500 hover:bg-red-50 hover:text-red-700 focus-visible:outline-2 focus-visible:outline-brand-600"
+                    aria-label={t("rules.remove", { number })}
+                    onClick={() => setRules(rules.filter((x) => x.id !== r.id))}
+                  >
+                    <Trash2 size={15} aria-hidden />
+                  </button>
+                ) : null}
+              </fieldset>
+            </li>
+          );
+        })}
+      </ol>
+      {canManage ? (
+        rules.length < 6 ? (
+          <button
+            type="button"
+            className="mt-2 inline-flex items-center gap-1 rounded text-sm font-semibold text-brand-700 hover:underline focus-visible:outline-2 focus-visible:outline-brand-600"
+            onClick={() =>
+              setRules([
+                ...rules,
+                { id: `r${Date.now().toString(36)}`, channel: "text", amount: 3, unit: "hours", offsetMinutes: 180, askConfirmation: false, fallbackToEmail: false },
+              ])
+            }
+          >
+            <Plus size={14} aria-hidden /> {t("rules.add")}
+          </button>
+        ) : (
+          <p className="mt-2 text-xs text-slate-500">{t("rules.max")}</p>
+        )
+      ) : null}
+      {hasRiskRules ? (
+        <p className="mt-3 rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
+          {riskEnabled ? t("rules.riskObjection") : t("rules.riskOff")}
+        </p>
       ) : null}
 
-      <div className="mt-6 space-y-2 text-sm">
+      <fieldset className="mt-6 space-y-3 text-sm" disabled={!canManage}>
+        <legend className="mb-2 font-semibold text-slate-800">{t("rules.flagsTitle")}</legend>
         {(
           [
-            ["sendBookingConfirmation", "Send a booking confirmation with a calendar invite right after booking"],
-            ["autoOfferToWaitlist", "Offer freed-up slots to matching waitlist patients automatically"],
-            ["requestReviews", "Ask for a verified review 2 hours after a visit is marked completed"],
+            ["sendBookingConfirmation", null],
+            ["autoOfferToWaitlist", null],
+            ["requestReviews", "rules.requestReviewsHint"],
+            ["smsAsciiFallback", "rules.smsAsciiFallbackHint"],
           ] as const
-        ).map(([key, label]) => (
-          <label key={key} className="flex items-center gap-2">
-            <input type="checkbox" className="h-4 w-4 accent-brand-700" disabled={!canManage} checked={flags[key]} onChange={(e) => setFlags({ ...flags, [key]: e.target.checked })} />
-            {label}
+        ).map(([key, hint]) => (
+          <label key={key} className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 shrink-0 accent-brand-700"
+              checked={flags[key]}
+              onChange={(e) => setFlags({ ...flags, [key]: e.target.checked })}
+            />
+            <span>
+              {t(`rules.${key}`)}
+              {hint ? <span className="mt-0.5 block text-xs text-slate-500">{t(hint)}</span> : null}
+            </span>
           </label>
         ))}
-      </div>
+      </fieldset>
 
       <div className="mt-6 flex flex-wrap gap-2">
         {canManage ? (
-          <Button
-            disabled={pending}
-            onClick={() =>
-              run(() =>
-                saveReminderSettings({
-                  rules: rules.map(({ amount, unit, ...r }) => ({ ...r, offsetMinutes: Math.round(amount * (unit === "days" ? 1440 : 60)) })),
-                  ...flags,
-                }),
-              )
-            }
-          >
-            Save reminder rules
+          <Button disabled={pending} onClick={() => run(() => saveReminderSettings({ rules: rules.map(toRule), ...flags }))}>
+            {t("rules.save")}
           </Button>
         ) : null}
-        <Button variant="secondary" disabled={pending} onClick={() => run(() => runRemindersNow())}>
-          Send due reminders now
-        </Button>
+        {canRun ? (
+          <Button variant="secondary" disabled={pending} onClick={() => run(() => runRemindersNow())}>
+            {t("rules.runNow")}
+          </Button>
+        ) : null}
       </div>
     </div>
+  );
+}
+
+/**
+ * The practice's own reply number (organizations.inboundNumber): replies to it are matched to this
+ * practice only. Editable by the owner.
+ */
+export function InboundNumberEditor({ initial, canEdit }: { initial: string | null; canEdit: boolean }) {
+  const t = useT("reminders");
+  const [value, setValue] = useState(initial ?? "");
+  const { run, pending } = useRunAction();
+  return (
+    <form
+      className="space-y-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        run(() => saveInboundNumber(value));
+      }}
+    >
+      <Field label={t("inbound.label")} hint={canEdit ? t("inbound.hint") : t("inbound.ownerOnly")}>
+        <Input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          disabled={!canEdit}
+          inputMode="tel"
+          autoComplete="off"
+          spellCheck={false}
+          maxLength={40}
+          placeholder={t("inbound.placeholder")}
+        />
+      </Field>
+      {canEdit ? (
+        <Button type="submit" variant="secondary" disabled={pending}>
+          {t("inbound.save")}
+        </Button>
+      ) : null}
+    </form>
   );
 }

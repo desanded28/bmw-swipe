@@ -1,9 +1,14 @@
 "use server";
 
 import { and, eq } from "drizzle-orm";
+import { headers } from "next/headers";
 import { z } from "zod";
+import type { DetailResult } from "@/components/dashboard/types";
 import { db } from "@/db";
-import { appointments, locations, practitioners, type Channel } from "@/db/schema";
+import { appointments, CHANNELS, locations, practitioners, type Channel } from "@/db/schema";
+import { getT } from "@/i18n/server";
+import { zodErrorMap } from "@/i18n/zod";
+import { auditStaff } from "@/lib/audit";
 import {
   approveRequest,
   cancelAppointment,
@@ -13,47 +18,66 @@ import {
   sendReminderNow,
   setOutcome,
 } from "@/lib/booking";
+import { calendarTexts, dashboardAction, loadAppointmentDetail, type CalendarT } from "@/lib/dashboard";
+import { logError } from "@/lib/log";
+import { can, PermissionError } from "@/lib/permissions";
+import { ErasureError, grantRestrictedAccess } from "@/lib/privacy/erasure";
 import { normalizePhone } from "@/lib/phone";
 import { hhmmToMinutes, zonedToUtc } from "@/lib/time";
-import { fail, guard, ok, ownAppointment, type ActionResult } from "./_shared";
+import type { Locale } from "@/i18n/config";
+import { fail, ok, ownAppointment, staff, type ActionResult } from "./_shared";
 
-/** Calendar and appointment actions (WP2). */
+/**
+ * Calendar and appointment actions (WP2). Every message is in the staff member's language
+ * (dashboardAction): input is parsed with zodErrorMap(locale), BookingError codes read
+ * calendar.errors.<code>. Changes need appointment.write and are audited; the drawer's detail
+ * needs calendar.read and is audited as appointment.view.
+ */
 
-const staffBookingSchema = z.object({
-  patientId: z.string().optional(),
-  firstName: z.string().trim().optional(),
-  lastName: z.string().trim().optional(),
-  phone: z.string().trim().optional(),
-  email: z.string().trim().optional(),
-  serviceId: z.string().min(1, "Choose a service"),
-  practitionerId: z.string().min(1, "Choose a practitioner"),
-  locationId: z.string().min(1, "Choose an office"),
-  roomId: z.string().optional(),
-  date: z.iso.date("Choose a date"),
-  time: z.string().regex(/^\d{1,2}:\d{2}$/, "Choose a time"),
-  durationMinutes: z.coerce.number().int().min(5).max(480).optional(),
-  internalNote: z.string().optional(),
-  notifyPatient: z.boolean(),
-  force: z.boolean(),
-});
+const TIME = /^\d{1,2}:\d{2}$/;
+/** Free text kept with the appointment (staff note, cancellation reason): encrypted at rest. */
+const NOTE_MAX = 2000;
 
-export async function createStaffAppointment(input: z.input<typeof staffBookingSchema>): Promise<ActionResult> {
-  return guard(
-    async (s) => {
-      const v = staffBookingSchema.parse(input);
+const staffBookingSchema = (t: CalendarT) =>
+  z.object({
+    patientId: z.string().max(40).optional(),
+    firstName: z.string().trim().max(80).optional(),
+    lastName: z.string().trim().max(80).optional(),
+    phone: z.string().trim().max(40).optional(),
+    email: z.union([z.literal(""), z.email().max(254)]).optional(),
+    serviceId: z.string().min(1, { error: t("errors.chooseService") }).max(40),
+    practitionerId: z.string().min(1, { error: t("errors.choosePractitioner") }).max(40),
+    locationId: z.string().min(1, { error: t("errors.chooseOffice") }).max(40),
+    roomId: z.string().max(40).optional(),
+    date: z.iso.date({ error: t("errors.chooseDate") }),
+    time: z.string().regex(TIME, { error: t("errors.invalidTime") }),
+    durationMinutes: z.coerce.number().int().min(5).max(480).optional(),
+    internalNote: z.string().max(NOTE_MAX).optional(),
+    notifyPatient: z.boolean(),
+    force: z.boolean(),
+    restrictedAccessReason: z.string().trim().max(500).optional(),
+  });
+
+export type StaffBookingInput = z.input<ReturnType<typeof staffBookingSchema>>;
+
+/** Book from the dashboard (new or existing patient). Audited as appointment.create. */
+export async function createStaffAppointment(input: StaffBookingInput): Promise<ActionResult> {
+  return dashboardAction(
+    async (s, t, locale) => {
+      const v = staffBookingSchema(t).parse(input, { error: zodErrorMap(locale) });
       const [loc] = await db
         .select()
         .from(locations)
         .where(and(eq(locations.id, v.locationId), eq(locations.orgId, s.org.id)));
-      if (!loc) return fail("Office not found.");
+      if (!loc) return fail(t("errors.officeNotFound"), "not_found");
       const minutes = hhmmToMinutes(v.time);
-      if (minutes == null) return fail("Invalid time.");
-      let patient: { id: string } | Parameters<typeof createAppointment>[0]["patient"];
+      if (minutes == null) return fail(t("errors.invalidTime"), "invalid");
+      let patient: Parameters<typeof createAppointment>[0]["patient"];
       if (v.patientId) patient = { id: v.patientId };
       else {
-        if (!v.firstName || !v.lastName) return fail("Enter the patient's first and last name.");
-        if (!v.phone && !v.email) return fail("Enter a phone number or email for the patient.");
-        if (v.phone && !normalizePhone(v.phone)) return fail("That phone number doesn't look right.");
+        if (!v.firstName || !v.lastName) return fail(t("errors.patientName"), "invalid");
+        if (!v.phone && !v.email) return fail(t("errors.patientContact"), "invalid");
+        if (v.phone && !normalizePhone(v.phone)) return fail(t("errors.phoneInvalid"), "invalid");
         patient = { firstName: v.firstName, lastName: v.lastName, phone: v.phone || null, email: v.email || null };
       }
       const d = await createAppointment({
@@ -68,139 +92,245 @@ export async function createStaffAppointment(input: z.input<typeof staffBookingS
         source: "staff",
         online: false,
         force: v.force,
-        internalNote: v.internalNote,
+        internalNote: v.internalNote?.trim() || null,
         notifyPatient: v.notifyPatient,
+        restrictedAccessReason: v.restrictedAccessReason || null,
+        actor: { type: "user", id: s.user.id },
       });
-      return ok("Appointment booked.", { id: d.appointment.id });
+      await auditStaff(s, "appointment.create", { type: "appointment", id: d.appointment.id }, { metadata: { source: "staff" } });
+      return ok(t("done.booked"), { id: d.appointment.id });
     },
     { permission: "appointment.write" },
   );
 }
 
-export async function moveAppointment(input: {
-  id: string;
-  date: string;
-  time: string;
-  practitionerId?: string;
-  locationId?: string;
-  roomId?: string | null;
-  durationMinutes?: number;
-  notifyPatient: boolean;
-  force?: boolean;
-}): Promise<ActionResult> {
-  return guard(
-    async (s) => {
-      const d = await ownAppointment(s.org.id, input.id);
-      const locationId = input.locationId ?? d.location.id;
+const moveSchema = z.object({
+  id: z.string().min(1).max(40),
+  date: z.iso.date(),
+  time: z.string().regex(TIME),
+  practitionerId: z.string().max(40).optional(),
+  locationId: z.string().max(40).optional(),
+  roomId: z.string().max(40).nullable().optional(),
+  durationMinutes: z.number().int().min(5).max(480).optional(),
+  notifyPatient: z.boolean(),
+  force: z.boolean().optional(),
+});
+
+/** Move an appointment to another time, practitioner, office or chair. Audited as appointment.update. */
+export async function moveAppointment(input: z.input<typeof moveSchema>): Promise<ActionResult> {
+  return dashboardAction(
+    async (s, t, locale) => {
+      const v = moveSchema.parse(input, { error: zodErrorMap(locale) });
+      const d = await ownAppointment(s.org.id, v.id);
+      const locationId = v.locationId || d.location.id;
       const [loc] = await db
         .select()
         .from(locations)
         .where(and(eq(locations.id, locationId), eq(locations.orgId, s.org.id)));
-      if (!loc) return fail("Office not found.");
-      if (input.practitionerId) {
+      if (!loc) return fail(t("errors.officeNotFound"), "not_found");
+      if (v.practitionerId) {
         const [p] = await db
           .select({ id: practitioners.id })
           .from(practitioners)
-          .where(and(eq(practitioners.id, input.practitionerId), eq(practitioners.orgId, s.org.id)));
-        if (!p) return fail("Practitioner not found.");
+          .where(and(eq(practitioners.id, v.practitionerId), eq(practitioners.orgId, s.org.id)));
+        if (!p) return fail(t("errors.practitionerNotFound"), "not_found");
       }
-      const minutes = hhmmToMinutes(input.time);
-      if (minutes == null) return fail("Invalid time.");
-      await rescheduleAppointment(input.id, {
-        startsAt: zonedToUtc(input.date, minutes, loc.timezone),
-        practitionerId: input.practitionerId,
+      const minutes = hhmmToMinutes(v.time);
+      if (minutes == null) return fail(t("errors.invalidTime"), "invalid");
+      await rescheduleAppointment(v.id, {
+        startsAt: zonedToUtc(v.date, minutes, loc.timezone),
+        practitionerId: v.practitionerId || undefined,
         locationId,
-        roomId: input.roomId,
-        durationMinutes: input.durationMinutes,
+        roomId: v.roomId,
+        durationMinutes: v.durationMinutes,
         by: "staff",
-        force: input.force,
-        notifyPatient: input.notifyPatient,
+        force: v.force,
+        notifyPatient: v.notifyPatient,
       });
-      return ok(input.notifyPatient ? "Moved — patient notified." : "Moved.");
+      await auditStaff(s, "appointment.update", { type: "appointment", id: v.id }, { metadata: { change: "move", notified: v.notifyPatient } });
+      return ok(v.notifyPatient ? t("done.movedNotified") : t("done.moved"));
     },
     { permission: "appointment.write" },
   );
 }
 
+const reasonSchema = z.string().max(500);
+
+/** Cancel (or decline a request). The reason is internal and stored encrypted. Audited as appointment.cancel. */
 export async function cancelByStaff(id: string, reason: string, notifyPatient: boolean): Promise<ActionResult> {
-  return guard(
-    async (s) => {
-      await ownAppointment(s.org.id, id);
-      const res = await cancelAppointment(id, { by: "staff", reason, notifyPatient });
-      return res ? ok("Appointment cancelled. Waitlist notified if anyone matches.") : fail("Already cancelled.");
+  return dashboardAction(
+    async (s, t, locale) => {
+      const text = reasonSchema.parse(reason ?? "", { error: zodErrorMap(locale) }).trim();
+      const d = await ownAppointment(s.org.id, id);
+      const wasRequest = d.appointment.status === "requested";
+      const res = await cancelAppointment(id, { by: "staff", reason: text || null, notifyPatient: Boolean(notifyPatient) });
+      if (!res) return fail(t("errors.alreadyCancelled"), "not_allowed");
+      await auditStaff(s, "appointment.cancel", { type: "appointment", id }, { metadata: { notified: Boolean(notifyPatient), request: wasRequest } });
+      return ok(wasRequest ? t("done.declined") : t("done.cancelled"));
     },
     { permission: "appointment.write" },
   );
 }
 
+const outcomeSchema = z.enum(["completed", "no_show", "scheduled"]);
+
+/** Record the visit's outcome (or clear it). Audited as appointment.update. */
 export async function recordOutcome(id: string, outcome: "completed" | "no_show" | "scheduled"): Promise<ActionResult> {
-  return guard(
-    async (s) => {
+  return dashboardAction(
+    async (s, t, locale) => {
+      const v = outcomeSchema.parse(outcome, { error: zodErrorMap(locale) });
       await ownAppointment(s.org.id, id);
-      await setOutcome(id, outcome);
-      return ok(outcome === "completed" ? "Marked as completed." : outcome === "no_show" ? "Marked as no-show." : "Reset.");
+      await setOutcome(id, v);
+      await auditStaff(s, "appointment.update", { type: "appointment", id }, { metadata: { change: "outcome", outcome: v } });
+      return ok(v === "completed" ? t("done.completed") : v === "no_show" ? t("done.noShow") : t("done.reset"));
     },
     { permission: "appointment.write" },
   );
 }
 
+/** The patient confirmed by phone or at the desk. Audited as appointment.update. */
 export async function confirmByPhone(id: string): Promise<ActionResult> {
-  return guard(
-    async (s) => {
+  return dashboardAction(
+    async (s, t) => {
       await ownAppointment(s.org.id, id);
       const res = await confirmAttendance(id, "staff");
-      return res ? ok("Confirmed.") : fail("Only scheduled appointments can be confirmed.");
+      if (!res) return fail(t("errors.notConfirmable"), "not_allowed");
+      await auditStaff(s, "appointment.update", { type: "appointment", id }, { metadata: { change: "confirm" } });
+      return ok(t("done.confirmed"));
     },
     { permission: "appointment.write" },
   );
 }
 
+/** Approve an online request (when the practice reviews online bookings). Audited as appointment.update. */
 export async function approve(id: string): Promise<ActionResult> {
-  return guard(
-    async (s) => {
+  return dashboardAction(
+    async (s, t) => {
       await ownAppointment(s.org.id, id);
-      return (await approveRequest(id)) ? ok("Request approved — patient notified.") : fail("Not a pending request.");
+      if (!(await approveRequest(id))) return fail(t("errors.notRequest"), "not_allowed");
+      await auditStaff(s, "appointment.update", { type: "appointment", id }, { metadata: { change: "approve" } });
+      return ok(t("done.approved"));
     },
     { permission: "appointment.write" },
   );
 }
 
+/** Send a reminder now on one channel. Audited as appointment.update (the message itself is logged by deliver()). */
 export async function remindNow(id: string, channel: Channel): Promise<ActionResult> {
-  return guard(
-    async (s) => {
+  return dashboardAction(
+    async (s, t, locale) => {
+      const c = z.enum(CHANNELS).parse(channel, { error: zodErrorMap(locale) });
       const d = await ownAppointment(s.org.id, id);
-      if (d.appointment.status !== "scheduled") return fail("Only scheduled appointments get reminders.");
-      const summary = await sendReminderNow(id, channel, d.appointment.confirmation === "pending");
-      if (summary.sent) return ok(`Reminder sent by ${channel}.`);
-      return fail(channel === "email" ? "Patient has no email (or opted out)." : "Patient has no mobile number (or opted out).");
+      if (d.appointment.status !== "scheduled") return fail(t("errors.reminderNotScheduled"), "not_allowed");
+      const summary = await sendReminderNow(id, c, d.appointment.confirmation === "pending");
+      if (!summary.sent) return fail(c === "email" ? t("errors.noEmail") : t("errors.noPhone"), "unreachable");
+      await auditStaff(s, "appointment.update", { type: "appointment", id }, { metadata: { change: "reminder", channel: c } });
+      return ok(t("done.reminderSent", { channel: getT(locale, "common")(`channels.${c}`) }));
     },
     { permission: "appointment.write" },
   );
 }
 
+/** The staff note on the appointment (encrypted at rest). Audited as appointment.note.update. */
 export async function saveInternalNote(id: string, note: string): Promise<ActionResult> {
-  return guard(
-    async (s) => {
+  return dashboardAction(
+    async (s, t, locale) => {
+      const text = z.string().max(NOTE_MAX).parse(note ?? "", { error: zodErrorMap(locale) }).trim();
       await ownAppointment(s.org.id, id);
       await db
         .update(appointments)
-        .set({ internalNote: note.trim() || null, updatedAt: new Date() })
-        .where(eq(appointments.id, id));
-      return ok("Note saved.");
+        .set({ internalNote: text || null, updatedAt: new Date() })
+        .where(and(eq(appointments.id, id), eq(appointments.orgId, s.org.id)));
+      await auditStaff(s, "appointment.note.update", { type: "appointment", id }, { metadata: { cleared: !text } });
+      return ok(t("done.noteSaved"));
     },
     { permission: "appointment.notes.write" },
   );
 }
 
+/** The front desk dealt with a reply the system couldn't understand. Audited as appointment.update. */
 export async function clearAttention(id: string): Promise<ActionResult> {
-  return guard(
-    async (s) => {
-      await db
+  return dashboardAction(
+    async (s, t) => {
+      const [row] = await db
         .update(appointments)
         .set({ needsAttention: false })
-        .where(and(eq(appointments.id, id), eq(appointments.orgId, s.org.id)));
-      return ok("Marked as handled.");
+        .where(and(eq(appointments.id, id), eq(appointments.orgId, s.org.id)))
+        .returning({ id: appointments.id });
+      if (!row) return fail(t("errors.not_found"), "not_found");
+      await auditStaff(s, "appointment.update", { type: "appointment", id }, { metadata: { change: "handled" } });
+      return ok(t("done.handled"));
     },
     { permission: "appointment.write" },
   );
+}
+
+/**
+ * Read-only actions don't go through guard(): it revalidates the whole dashboard after every
+ * success, which would re-render (and re-audit) the calendar each time a drawer opens.
+ */
+async function readAction(
+  fn: (s: Awaited<ReturnType<typeof staff>>, t: CalendarT, locale: Locale) => Promise<DetailResult>,
+): Promise<DetailResult> {
+  const s = await staff();
+  const { t, locale } = await calendarTexts(s);
+  try {
+    if (!can(s.role, "calendar.read")) return { ok: false, error: t("errors.forbidden"), code: "forbidden" };
+    return await fn(s, t, locale);
+  } catch (err) {
+    if (err instanceof PermissionError) return { ok: false, error: t("errors.forbidden"), code: "forbidden" };
+    if (err && typeof err === "object" && "digest" in err) throw err;
+    logError("appointment detail", err);
+    return { ok: false, error: t("errors.loadFailed"), code: "unexpected" };
+  }
+}
+
+/**
+ * The drawer's view of one appointment: contacts only with patient.contact.read, notes only with
+ * appointment.notes.read, messages only with messages.read; a restricted patient only after a
+ * reason was given. Needs calendar.read. Writes one audit row, appointment.view, per call;
+ * another org's id is not_found (and not audited).
+ */
+export async function getAppointmentDetail(id: string): Promise<DetailResult> {
+  return readAction(async (s, t, locale) => {
+    if (typeof id !== "string" || !id || id.length > 40) return { ok: false, error: t("errors.not_found"), code: "not_found" };
+    const detail = await loadAppointmentDetail(s, id, locale);
+    return detail ? { ok: true, data: detail } : { ok: false, error: t("errors.not_found"), code: "not_found" };
+  });
+}
+
+/**
+ * Open a restricted patient's appointment: records the reason (patient.restricted_access, WP5's
+ * grantRestrictedAccess) and returns the detail. Needs patient.restricted.read.
+ */
+export async function openRestrictedAppointment(id: string, reason: string): Promise<DetailResult> {
+  return readAction(async (s, t, locale) => {
+    if (!can(s.role, "patient.restricted.read")) {
+      return { ok: false, error: t("errors.forbidden"), code: "forbidden" };
+    }
+    const text = typeof reason === "string" ? reason.trim().slice(0, 500) : "";
+    if (text.length < 3) return { ok: false, error: t("errors.reasonRequired"), code: "reason_required" };
+    const [row] = await db
+      .select({ patientId: appointments.patientId })
+      .from(appointments)
+      .where(and(eq(appointments.id, id), eq(appointments.orgId, s.org.id)));
+    if (!row) return { ok: false, error: t("errors.not_found"), code: "not_found" };
+    try {
+      await grantRestrictedAccess(s, row.patientId, text, { headers: await requestHeaders() });
+    } catch (err) {
+      if (!(err instanceof ErasureError)) throw err;
+      if (err.code === "reason_required") return { ok: false, error: t("errors.reasonRequired"), code: "reason_required" };
+      // not_restricted: nothing to unlock; show the record as it is.
+    }
+    const detail = await loadAppointmentDetail(s, id, locale);
+    return detail ? { ok: true, data: detail } : { ok: false, error: t("errors.not_found"), code: "not_found" };
+  });
+}
+
+async function requestHeaders(): Promise<Headers | undefined> {
+  try {
+    return await headers();
+  } catch {
+    return undefined;
+  }
 }

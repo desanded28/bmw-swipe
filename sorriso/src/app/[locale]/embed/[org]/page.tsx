@@ -1,60 +1,172 @@
+import { eq } from "drizzle-orm";
+import { ExternalLink } from "lucide-react";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
-import { BookingFlow } from "@/components/booking/BookingFlow";
-import { toLocale } from "@/i18n/config";
+import { BookingFlow, type BookingLabels } from "@/components/booking/BookingFlow";
+import { db } from "@/db";
+import { organizations } from "@/db/schema";
+import { toLocale, type Locale } from "@/i18n/config";
 import { ClientMessages } from "@/i18n/ClientMessages";
-import { APP_NAME } from "@/lib/config";
-import { getPublicClinic } from "@/lib/directory";
+import { lhref } from "@/i18n/href";
+import { formatMoney } from "@/i18n/number";
+import { rich } from "@/i18n/rich";
+import { alternatesFor } from "@/i18n/seo";
+import { getT } from "@/i18n/server";
+import { APP_NAME, APP_URL } from "@/lib/config";
+import { getPublicClinic, type PublicClinic } from "@/lib/directory";
 import { isFramedRequest, processingContextFor, signPracticeRef } from "@/lib/privacy/context";
+import { getPrivacy } from "@/lib/privacy/settings";
 import { todayIn } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 
+type Params = Promise<{ locale: string; org: string }>;
+type SP = Promise<{ service?: string; practitioner?: string; location?: string; parent?: string; events?: string; id?: string }>;
+
 /** Only for the practice's iframe: never a search result people land on outside the practice's site. */
-export const metadata: Metadata = { robots: { index: false, follow: false } };
+export async function generateMetadata({ params }: { params: Params }): Promise<Metadata> {
+  const { locale: raw, org } = await params;
+  const locale = toLocale(raw);
+  const clinic = await getPublicClinic(org);
+  return {
+    title: clinic ? getT(locale, "booking")("page.metaTitle", { clinic: clinic.org.name }) : undefined,
+    robots: { index: false, follow: false },
+    alternates: alternatesFor(`/embed/${org}`, locale),
+  };
+}
+
+/**
+ * The host page's origin as the widget reported it (?parent=), if it may receive messages: an
+ * exact origin, https (http only for localhost outside production), and listed in the practice's
+ * allowed websites when it set any. When the browser told us who framed us (Referer, an origin
+ * under the default referrer policy), it must agree; a Referer from our own pages (the frame moving
+ * on, e.g. to another language) says nothing about the host. null: no messages are posted at all.
+ */
+function allowedParent(
+  parent: string | undefined,
+  allowed: string[],
+  referer: string | null,
+  ownHost: string | null,
+): { origin: string | null; blocked: boolean } {
+  let origin: string | null = null;
+  try {
+    const u = parent ? new URL(parent) : null;
+    const local = u?.protocol === "http:" && (u.hostname === "localhost" || u.hostname === "127.0.0.1");
+    if (u && u.origin === parent && (u.protocol === "https:" || (local && process.env.NODE_ENV !== "production"))) origin = u.origin;
+  } catch {
+    origin = null;
+  }
+  if (origin && referer) {
+    try {
+      const from = new URL(referer);
+      const own = from.host === ownHost || from.origin === new URL(APP_URL).origin;
+      if (!own && from.origin !== origin) origin = null;
+    } catch {
+      /* an unparsable Referer proves nothing either way */
+    }
+  }
+  if (!allowed.length) return { origin, blocked: false };
+  const ok = Boolean(origin && allowed.includes(origin));
+  return { origin: ok ? origin : null, blocked: !ok };
+}
+
+function serviceLabels(clinic: PublicClinic, locale: Locale): BookingLabels {
+  const tc = getT(locale, "common");
+  const price = (c: number | null) => (c == null ? tc("price.onRequest") : c === 0 ? tc("price.free") : formatMoney(c, locale));
+  return {
+    services: Object.fromEntries(
+      clinic.services.map((s) => [s.id, { price: price(s.priceCents), duration: tc("units.minutesShort", { count: s.durationMinutes }) }]),
+    ),
+  };
+}
 
 /**
  * Chrome-less booking flow loaded by /widget.js inside an iframe on the practice's own website.
+ *
  * Framed, it is the practice's own channel, so the practice is controller: the flow posts the
  * practice ref. Opened top-level (a search result, a shared link) it is a Sorriso-hosted page like
  * any other: marketplace, and the page hands out no practice ref (isFramedRequest).
- * The language comes from the URL only (/{locale}/embed/...): a cross-site iframe can't set cookies.
+ *
+ * If the practice listed the websites allowed to embed it (privacy settings, embedOrigins), a frame
+ * on any other site shows only a link that opens the booking page in a new tab.
+ *
+ * The language comes from the URL only (/{locale}/embed/...): a cross-site iframe can't set cookies,
+ * so the language switcher links to the same URL in another language.
  */
-export default async function EmbedPage({
-  params,
-  searchParams,
-}: {
-  params: Promise<{ locale: string; org: string }>;
-  searchParams: Promise<{ service?: string; practitioner?: string; location?: string }>;
-}) {
+export default async function EmbedPage({ params, searchParams }: { params: Params; searchParams: SP }) {
   const { locale: rawLocale, org } = await params;
   const locale = toLocale(rawLocale);
   const clinic = await getPublicClinic(org);
   if (!clinic) notFound();
   const sp = await searchParams;
-  const framed = isFramedRequest(await headers());
+  const t = getT(locale, "booking");
+  const h = await headers();
+  const framed = isFramedRequest(h);
+  const [row] = await db.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, clinic.org.id));
+  const parent = allowedParent(sp.parent, row ? getPrivacy(row).embedOrigins : [], framed ? h.get("referer") : null, h.get("host"));
+  const bookHref = lhref(locale, `/book/${clinic.org.slug}`);
+
+  if (framed && parent.blocked) {
+    return (
+      <main id="content" tabIndex={-1} className="grid min-h-dvh place-items-center bg-white p-6 text-center outline-none">
+        <div className="max-w-sm">
+          <h1 className="text-lg font-bold">{clinic.org.name}</h1>
+          <p className="mt-2 text-sm text-slate-600">{t("embed.blocked")}</p>
+          <a
+            href={bookHref}
+            target="_blank"
+            rel="noopener"
+            className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-700 px-5 font-semibold text-white hover:bg-brand-800"
+          >
+            {t("embed.openNewTab")} <ExternalLink size={16} aria-hidden />
+            <span className="sr-only">{getT(locale, "a11y")("opensInNewTab")}</span>
+          </a>
+        </div>
+      </main>
+    );
+  }
+
   const practiceRef = framed ? signPracticeRef(clinic.org.id) : null;
   const context = processingContextFor({ source: "widget", viaApiKey: false, embedded: framed, practiceRef, orgId: clinic.org.id });
+  const ta = getT(locale, "a11y");
+  const link = "font-semibold text-slate-700 underline underline-offset-2 hover:text-ink";
   return (
-    <div className="min-h-dvh bg-white p-4 sm:p-6">
-      <p className="mb-4 pr-10 text-lg font-bold">{clinic.org.name}</p>
-      <ClientMessages locale={locale} ns={["consents"]}>
+    <main id="content" tabIndex={-1} className="min-h-dvh bg-white p-4 outline-none sm:p-6">
+      <h1 className="mb-4 pr-10 text-lg font-bold">{clinic.org.name}</h1>
+      <ClientMessages locale={locale} ns={["consents", "privacy", "catalog"]}>
         <BookingFlow
           clinic={clinic}
           embedded
           today={todayIn(clinic.org.timezone)}
           context={context}
           practiceRef={practiceRef}
+          labels={serviceLabels(clinic, locale)}
+          embed={{ parentOrigin: framed ? parent.origin : null, events: sp.events === "1", includeId: sp.id === "1" }}
           initial={{ serviceId: sp.service, practitionerId: sp.practitioner, locationId: sp.location }}
         />
       </ClientMessages>
-      <p className="mt-6 text-center text-[11px] text-slate-400">
-        Powered by{" "}
-        <a href="/" target="_blank" className="font-semibold hover:text-slate-600">
-          {APP_NAME}
+      <footer className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-center text-xs text-slate-600">
+        <a href={lhref(locale, `/c/${clinic.org.slug}/privacy`)} target="_blank" rel="noopener" className={link}>
+          {t("embed.privacyNotice", { controller: clinic.legal.controllerName })}
+          <span className="sr-only"> {ta("opensInNewTab")}</span>
         </a>
-      </p>
-    </div>
+        <span>
+          {rich(
+            t,
+            "embed.poweredBy",
+            {
+              link: (c) => (
+                <a href={lhref(locale, "/")} target="_blank" rel="noopener" className={link}>
+                  {c}
+                  <span className="sr-only"> {ta("opensInNewTab")}</span>
+                </a>
+              ),
+            },
+            { app: APP_NAME },
+          )}
+        </span>
+      </footer>
+    </main>
   );
 }

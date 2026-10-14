@@ -1,0 +1,419 @@
+import { and, eq } from "drizzle-orm";
+import { is } from "drizzle-orm";
+import { SQLiteTable } from "drizzle-orm/sqlite-core";
+import { beforeAll, describe, expect, it } from "vitest";
+import { db } from "@/db";
+import * as schema from "@/db/schema";
+import {
+  appointments,
+  auditLog,
+  consents,
+  formSubmissions,
+  formTemplates,
+  messages,
+  patients,
+  privacyRequests,
+  recalls,
+  reminders,
+  reviews,
+  waitlist,
+  type Patient,
+} from "@/db/schema";
+import { createPractice } from "@/test/fixtures";
+import { decrypt } from "../crypto";
+import { newId } from "../ids";
+import { processDueReminders } from "../reminders";
+import { recordConsent } from "./consent";
+import {
+  ERASED_NAME,
+  ErasureError,
+  erasePatient,
+  grantRestrictedAccess,
+  hasRestrictedAccess,
+  restrictedView,
+  restrictPatient,
+  unrestrictPatient,
+} from "./erasure";
+
+const NOW = new Date("2030-03-01T09:00:00Z");
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+const STAFF = { type: "user" as const, id: "staff-1" };
+
+let p: Awaited<ReturnType<typeof createPractice>>;
+beforeAll(async () => {
+  p = await createPractice();
+});
+
+let phoneSeq = 3471230000;
+async function addPatient(over: Partial<Patient> = {}): Promise<Patient> {
+  const n = phoneSeq++;
+  const [row] = await db
+    .insert(patients)
+    .values({
+      id: newId(),
+      orgId: p.orgId,
+      firstName: "Zebedeo",
+      lastName: "Quaglierini",
+      phone: `+39${n}`,
+      email: `zebedeo.${n}@example.org`,
+      birthDate: "1971-05-17",
+      notes: "Allergia penicillina ZQ-note",
+      createdAt: new Date(NOW.getTime() - 400 * DAY),
+      ...over,
+    })
+    .returning();
+  return row;
+}
+
+async function addAppointment(patientId: string, startsAt: Date, over: Partial<typeof appointments.$inferInsert> = {}) {
+  const id = newId();
+  const [row] = await db
+    .insert(appointments)
+    .values({
+      id,
+      orgId: p.orgId,
+      locationId: p.milano,
+      practitionerId: p.drA,
+      serviceId: p.visit,
+      patientId,
+      startsAt,
+      endsAt: new Date(startsAt.getTime() + 30 * 60_000),
+      blockedUntil: new Date(startsAt.getTime() + 30 * 60_000),
+      source: "online",
+      manageToken: `h:${id}`,
+      manageTokenHash: `hash-${id}`,
+      manageTokenEnc: `token-${id}`,
+      ...over,
+    })
+    .returning();
+  return row;
+}
+
+/** Every string in every table, decrypted (encrypted columns are read through the driver). */
+async function allText(): Promise<string[]> {
+  const out: string[] = [];
+  const walk = (v: unknown) => {
+    if (typeof v === "string") out.push(v.startsWith("v1:") ? decrypt(v) : v);
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === "object" && !(v instanceof Date)) Object.values(v).forEach(walk);
+  };
+  for (const table of Object.values(schema)) {
+    if (!is(table, SQLiteTable)) continue;
+    walk(await db.select().from(table));
+  }
+  return out;
+}
+
+describe("erasePatient: anonymise (pseudonymisation)", () => {
+  it("leaves no trace of the identity, contacts or notes anywhere", async () => {
+    const patient = await addPatient();
+    const past = await addAppointment(patient.id, new Date(NOW.getTime() - 30 * DAY), {
+      status: "completed",
+      patientNote: "Dolore molare sinistro ZQ-booking",
+      internalNote: "Paziente Quaglierini ansioso",
+      bookedByName: "Zebedeo Quaglierini",
+    });
+    const future = await addAppointment(patient.id, new Date(NOW.getTime() + 10 * DAY), {
+      status: "scheduled",
+      patientNote: "Vorrei il pomeriggio ZQ-future",
+    });
+    const cancelled = await addAppointment(patient.id, new Date(NOW.getTime() - 60 * DAY), {
+      status: "cancelled",
+      cancelReason: "Influenza di Zebedeo",
+    });
+    await db.insert(reminders).values([
+      { id: newId(), appointmentId: future.id, kind: "reminder", channel: "sms", sendAt: new Date(NOW.getTime() + 9 * DAY) },
+      { id: newId(), appointmentId: future.id, kind: "reminder", channel: "email", sendAt: new Date(NOW.getTime() + 8 * DAY) },
+    ]);
+    await db.insert(messages).values([
+      {
+        id: newId(),
+        orgId: p.orgId,
+        patientId: patient.id,
+        appointmentId: past.id,
+        channel: "sms",
+        direction: "outbound",
+        to: patient.phone!,
+        body: "Ciao Zebedeo, promemoria per domani",
+        status: "sent",
+        provider: "twilio",
+        providerId: "SM123",
+      },
+      {
+        id: newId(),
+        orgId: p.orgId,
+        patientId: patient.id,
+        channel: "email",
+        direction: "outbound",
+        to: patient.email!,
+        subject: "Appuntamento per Zebedeo Quaglierini",
+        body: "Gentile Zebedeo Quaglierini",
+        html: "<p>Gentile Zebedeo Quaglierini</p>",
+        status: "sent",
+        provider: "smtp",
+      },
+      {
+        id: newId(),
+        orgId: p.orgId,
+        appointmentId: future.id,
+        channel: "sms",
+        direction: "inbound",
+        to: "+390212345678",
+        from: patient.phone,
+        body: "SI confermo, Zebedeo",
+        status: "received",
+        provider: "twilio",
+      },
+    ]);
+    await db.insert(waitlist).values({
+      id: newId(),
+      orgId: p.orgId,
+      patientId: patient.id,
+      serviceId: p.visit,
+      earliestDate: "2030-03-02",
+      latestDate: "2030-04-01",
+      note: "Zebedeo preferisce mattina",
+    });
+    await db.insert(recalls).values({ id: newId(), orgId: p.orgId, patientId: patient.id, serviceId: p.visit, dueDate: "2030-09-01", intervalMonths: 6 });
+    const templateId = newId();
+    await db.insert(formTemplates).values({ id: templateId, orgId: p.orgId, kind: "anamnesis", version: "1", schema: { version: "1", sections: [] } });
+    await db.insert(formSubmissions).values({
+      id: newId(),
+      orgId: p.orgId,
+      patientId: patient.id,
+      templateId,
+      version: "1",
+      locale: "it",
+      answers: JSON.stringify({ name: "Zebedeo Quaglierini", anticoagulants: true }),
+      signerName: "Zebedeo Quaglierini",
+      exportedAt: new Date(NOW.getTime() - DAY),
+    });
+    await db.insert(reviews).values({
+      id: newId(),
+      orgId: p.orgId,
+      practitionerId: p.drA,
+      appointmentId: past.id,
+      rating: 5,
+      comment: "Grazie, Zebedeo Q. è contento",
+      authorName: "Zebedeo Q.",
+      authorDisplay: "first_initial",
+      status: "published",
+    });
+    await db.insert(privacyRequests).values({
+      id: newId(),
+      orgId: p.orgId,
+      patientId: patient.id,
+      type: "erasure",
+      channel: "email",
+      details: "Io, Zebedeo Quaglierini, chiedo la cancellazione",
+      receivedAt: NOW,
+      dueAt: new Date(NOW.getTime() + 28 * DAY),
+    });
+    await db.transaction((tx) =>
+      recordConsent(tx, { orgId: p.orgId, patientId: patient.id, purpose: "marketing", granted: true, locale: "it", method: "web_checkbox", source: "booking", now: NOW }),
+    );
+
+    const before = await allText();
+    expect(before.some((s) => s.includes("Quaglierini"))).toBe(true);
+
+    const result = await erasePatient(p.orgId, patient.id, { mode: "anonymise", reason: "Richiesta di cancellazione", actor: STAFF, now: NOW });
+    expect(result.mode).toBe("anonymise");
+
+    const after = await allText();
+    const secrets = [
+      "Zebedeo",
+      "Quaglierini",
+      patient.phone!,
+      patient.phone!.slice(3),
+      patient.email!,
+      "Allergia penicillina ZQ-note",
+      "ZQ-booking",
+      "ZQ-future",
+      "1971-05-17",
+    ];
+    for (const secret of secrets) expect(after.filter((s) => s.includes(secret)), secret).toEqual([]);
+
+    const [erased] = await db.select().from(patients).where(eq(patients.id, patient.id));
+    expect(`${erased.firstName} ${erased.lastName}`).toBe(ERASED_NAME);
+    expect(erased).toMatchObject({ email: null, phone: null, birthDate: null, notes: null, smsOptIn: false, emailOptIn: false });
+    expect(erased.erasedAt?.getTime()).toBe(NOW.getTime());
+
+    // Messages linked to the patient keep only masked metadata.
+    const msgs = await db.select().from(messages).where(and(eq(messages.orgId, p.orgId), eq(messages.patientId, patient.id)));
+    expect(msgs.length).toBe(2);
+    for (const m of msgs) {
+      expect(m.body).toBe("");
+      expect(m.subject).toBeNull();
+      expect(m.html).toBeNull();
+      expect(m.redactedAt).not.toBeNull();
+    }
+
+    // Future visits are cancelled with their reminders; the past ones stay as anonymous history.
+    const [fut] = await db.select().from(appointments).where(eq(appointments.id, future.id));
+    expect(fut.status).toBe("cancelled");
+    expect(fut.manageTokenHash).toBeNull();
+    const rems = await db.select().from(reminders).where(eq(reminders.appointmentId, future.id));
+    expect(rems.map((r) => r.status)).toEqual(["cancelled", "cancelled"]);
+    const [pastRow] = await db.select().from(appointments).where(eq(appointments.id, past.id));
+    expect(pastRow).toMatchObject({ status: "completed", patientNote: null, internalNote: null, bookedByName: null });
+    const [cancelledRow] = await db.select().from(appointments).where(eq(appointments.id, cancelled.id));
+    expect(cancelledRow.cancelReason).toBeNull();
+
+    // Deleted: waitlist, recalls, forms.
+    expect(await db.select().from(waitlist).where(eq(waitlist.patientId, patient.id))).toEqual([]);
+    expect(await db.select().from(recalls).where(eq(recalls.patientId, patient.id))).toEqual([]);
+    expect(await db.select().from(formSubmissions).where(eq(formSubmissions.patientId, patient.id))).toEqual([]);
+
+    // One consent proof row remains, unlinked.
+    const proofs = await db.select().from(consents).where(and(eq(consents.orgId, p.orgId), eq(consents.purpose, "marketing")));
+    expect(proofs).toHaveLength(1);
+    expect(proofs[0].patientId).toBeNull();
+    expect(await db.select().from(consents).where(eq(consents.patientId, patient.id))).toEqual([]);
+
+    // Review shown under a pseudonym, comment gone.
+    const [review] = await db.select().from(reviews).where(eq(reviews.appointmentId, past.id));
+    expect(review).toMatchObject({ authorDisplay: "pseudonym", comment: null, rating: 5 });
+
+    const [row] = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.orgId, p.orgId), eq(auditLog.action, "patient.erase"), eq(auditLog.entityId, patient.id)));
+    expect(row).toBeDefined();
+    expect(row.actorId).toBe(STAFF.id);
+    expect(row.metadata).toMatchObject({ mode: "anonymise", messagesRedacted: 3, waitlistDeleted: 1, appointmentsCancelled: 1 });
+  });
+
+  it("never touches a family member who shares the phone (critique 18)", async () => {
+    const shared = `+39${phoneSeq++}`;
+    const a = await addPatient({ phone: shared });
+    const b = await addPatient({ phone: shared, firstName: "Sorella", lastName: "Quaglierini" });
+    const msgId = newId();
+    await db.insert(messages).values({
+      id: msgId,
+      orgId: p.orgId,
+      patientId: b.id,
+      channel: "sms",
+      direction: "outbound",
+      to: shared,
+      body: "Promemoria per Sorella",
+      status: "sent",
+      provider: "twilio",
+    });
+    await erasePatient(p.orgId, a.id, { mode: "anonymise", reason: "Richiesta", actor: STAFF, now: NOW });
+    const [m] = await db.select().from(messages).where(eq(messages.id, msgId));
+    expect(m.body).toBe("Promemoria per Sorella");
+    expect(m.to).toBe(shared);
+    const [sister] = await db.select().from(patients).where(eq(patients.id, b.id));
+    expect(sister.phone).toBe(shared);
+  });
+
+  it("refuses to delete medical history forms not yet in the clinical record", async () => {
+    const patient = await addPatient();
+    const templateId = newId();
+    await db.insert(formTemplates).values({ id: templateId, orgId: p.orgId, kind: "anamnesis", version: `x${templateId}`, schema: { version: "1", sections: [] } });
+    await db.insert(formSubmissions).values({ id: newId(), orgId: p.orgId, patientId: patient.id, templateId, version: "1", locale: "it", answers: "{}" });
+    await expect(erasePatient(p.orgId, patient.id, { mode: "anonymise", reason: "Richiesta", actor: STAFF, now: NOW })).rejects.toMatchObject({
+      code: "forms_not_exported",
+    });
+    // The retention job's policy: restrict instead.
+    const r = await erasePatient(p.orgId, patient.id, { mode: "anonymise", reason: "retention", actor: STAFF, now: NOW, unexportedForms: "restrict" });
+    expect(r.mode).toBe("restrict");
+    const [row] = await db.select().from(patients).where(eq(patients.id, patient.id));
+    expect(row.restrictedAt).not.toBeNull();
+    expect(row.erasedAt).toBeNull();
+  });
+
+  it("is scoped to the practice and refuses a second erasure", async () => {
+    const patient = await addPatient();
+    const other = await createPractice();
+    await expect(erasePatient(other.orgId, patient.id, { mode: "anonymise", reason: "x", actor: STAFF })).rejects.toMatchObject({ code: "not_found" });
+    await erasePatient(p.orgId, patient.id, { mode: "anonymise", reason: "x", actor: STAFF, now: NOW });
+    await expect(erasePatient(p.orgId, patient.id, { mode: "anonymise", reason: "x", actor: STAFF })).rejects.toMatchObject({ code: "already_erased" });
+    await expect(erasePatient(p.orgId, patient.id, { mode: "anonymise", reason: " ", actor: STAFF })).rejects.toBeInstanceOf(ErasureError);
+  });
+});
+
+describe("erasePatient: keep on a legal ground and restrict", () => {
+  it("needs a future keep-until date, restricts and cancels future visits", async () => {
+    const patient = await addPatient();
+    const future = await addAppointment(patient.id, new Date(NOW.getTime() + 5 * DAY));
+    await expect(erasePatient(p.orgId, patient.id, { mode: "restrict", reason: "Cartella clinica", actor: STAFF, now: NOW })).rejects.toMatchObject({
+      code: "retain_until_required",
+    });
+    await expect(
+      erasePatient(p.orgId, patient.id, { mode: "restrict", reason: "Cartella clinica", retainUntil: "2020-01-01", actor: STAFF, now: NOW }),
+    ).rejects.toMatchObject({ code: "invalid_retain_until" });
+    await erasePatient(p.orgId, patient.id, { mode: "restrict", reason: "Cartella clinica", retainUntil: "2040-03-01", actor: STAFF, now: NOW });
+    const [row] = await db.select().from(patients).where(eq(patients.id, patient.id));
+    expect(row).toMatchObject({ retainUntil: "2040-03-01", erasedAt: null, firstName: "Zebedeo" });
+    expect(row.restrictedAt?.getTime()).toBe(NOW.getTime());
+    const [appt] = await db.select().from(appointments).where(eq(appointments.id, future.id));
+    expect(appt.status).toBe("cancelled");
+    const [audited] = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.action, "patient.restrict"), eq(auditLog.entityId, patient.id)));
+    expect(audited.metadata).toMatchObject({ erasureRequest: true, retainUntil: "2040-03-01" });
+  });
+});
+
+describe("restriction (Art. 18)", () => {
+  it("a restricted patient gets no reminder", async () => {
+    const patient = await addPatient();
+    const appt = await addAppointment(patient.id, new Date(Date.now() + 2 * DAY));
+    const reminderId = newId();
+    await db.insert(reminders).values({ id: reminderId, appointmentId: appt.id, kind: "reminder", channel: "sms", sendAt: new Date(Date.now() - 60_000) });
+    await restrictPatient(p.orgId, patient.id, { reason: "Contesta l'esattezza dei dati", actor: STAFF });
+    await processDueReminders({ appointmentId: appt.id });
+    const [r] = await db.select().from(reminders).where(eq(reminders.id, reminderId));
+    expect(r.status).toBe("skipped");
+    expect(await db.select().from(messages).where(eq(messages.patientId, patient.id))).toEqual([]);
+  });
+
+  it("hides the record without permission and needs an audited reason with it", async () => {
+    const patient = await addPatient();
+    await restrictPatient(p.orgId, patient.id, { reason: "Opposizione in corso", actor: STAFF, now: NOW });
+    const [row] = await db.select().from(patients).where(eq(patients.id, patient.id));
+    expect(restrictedView(row, false)).toBe("placeholder");
+    expect(restrictedView(row, true)).toBe("needs_reason");
+
+    const viewer = { user: { id: "user-owner" }, org: { id: p.orgId } };
+    expect(await hasRestrictedAccess(viewer, patient.id)).toBe(false);
+    await expect(grantRestrictedAccess(viewer, patient.id, "")).rejects.toMatchObject({ code: "reason_required" });
+    expect(await hasRestrictedAccess(viewer, patient.id)).toBe(false);
+
+    await grantRestrictedAccess(viewer, patient.id, "Il paziente chiede copia dei dati");
+    expect(await hasRestrictedAccess(viewer, patient.id)).toBe(true);
+    // Another member's reason doesn't open it for someone else.
+    expect(await hasRestrictedAccess({ user: { id: "someone-else" }, org: { id: p.orgId } }, patient.id)).toBe(false);
+    const [audited] = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.action, "patient.restricted_access"), eq(auditLog.entityId, patient.id)));
+    expect(audited.reason).toBe("Il paziente chiede copia dei dati");
+    expect(audited.actorId).toBe("user-owner");
+  });
+
+  it("lifting it tells the patient first, or needs confirmation they were told", async () => {
+    const patient = await addPatient();
+    await restrictPatient(p.orgId, patient.id, { reason: "Verifica", actor: STAFF, now: NOW });
+    const res = await unrestrictPatient(p.orgId, patient.id, { actor: STAFF });
+    expect(res.notified).toBe(true);
+    const sent = await db.select().from(messages).where(eq(messages.patientId, patient.id));
+    expect(sent).toHaveLength(1);
+    expect(sent[0].channel).toBe("email");
+    const [row] = await db.select().from(patients).where(eq(patients.id, patient.id));
+    expect(row.restrictedAt).toBeNull();
+
+    const silent = await addPatient({ email: null, phone: null });
+    await restrictPatient(p.orgId, silent.id, { reason: "Verifica", actor: STAFF, now: NOW });
+    await expect(unrestrictPatient(p.orgId, silent.id, { actor: STAFF })).rejects.toMatchObject({ code: "notice_required" });
+    await expect(unrestrictPatient(p.orgId, silent.id, { actor: STAFF, informedOtherwise: true })).resolves.toEqual({ notified: false });
+    const [audited] = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.action, "patient.unrestrict"), eq(auditLog.entityId, silent.id)));
+    expect(audited.metadata).toMatchObject({ notified: false, informedOtherwise: true });
+  });
+});

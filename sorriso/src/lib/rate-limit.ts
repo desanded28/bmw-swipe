@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { rateLimits } from "@/db/schema";
 import { hmac } from "./crypto";
@@ -121,4 +121,14 @@ export function ipKey(h: Headers, bucket: string): string {
 
 export function rateLimitByIp(h: Headers, bucket: string, limit: number, windowMs: number, now?: Date): Promise<RateLimitResult> {
   return rateLimit(ipKey(h, bucket), limit, windowMs, now);
+}
+
+/**
+ * The current state of a bucket without counting a hit (for limits that count only failures:
+ * peek first, count with rateLimit() when the attempt fails).
+ */
+export async function peekRateLimit(key: string, limit: number, now = new Date()): Promise<RateLimitResult> {
+  const [row] = await db.select().from(rateLimits).where(eq(rateLimits.key, key));
+  if (!row || row.resetAt.getTime() <= now.getTime() || row.count < limit) return { ok: true, retryAfterSec: 0 };
+  return { ok: false, retryAfterSec: Math.max(1, Math.ceil((row.resetAt.getTime() - now.getTime()) / 1000)) };
 }

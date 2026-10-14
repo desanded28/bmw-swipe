@@ -3,21 +3,31 @@ import type { Metadata } from "next";
 import { CalendarBoard, type Block, type HoursWindow } from "@/components/dashboard/CalendarBoard";
 import { db } from "@/db";
 import { schedules, timeOff } from "@/db/schema";
-import { requireStaff } from "@/lib/auth";
-import { listAppointments, loadResources } from "@/lib/dashboard";
+import { getStaffLocale, getT } from "@/i18n/server";
+import { auditListView, listAppointments, listViewer, loadResources } from "@/lib/dashboard";
+import { can, requirePermission } from "@/lib/permissions";
 import { addDays, isDateString, startOfWeek, todayIn, weekdayOf, zonedToUtc } from "@/lib/time";
 
-export const metadata: Metadata = { title: "Calendar" };
+export async function generateMetadata(): Promise<Metadata> {
+  return { title: getT(await getStaffLocale(), "dashboard")("nav.calendar") };
+}
 
-type SP = Promise<{ date?: string; view?: string; location?: string; by?: string; p?: string; cancelled?: string }>;
+type SP = Promise<{ date?: string; view?: string; location?: string; by?: string; p?: string; cancelled?: string; display?: string }>;
 
+/**
+ * The calendar (calendar.read). Appointments arrive data-minimised (listAppointments): no notes,
+ * no contacts; the drawer loads those per appointment, audited. Showing the grid is recorded in
+ * the access log as one list view with the number of appointments shown.
+ */
 export default async function CalendarPage({ searchParams }: { searchParams: SP }) {
-  const s = await requireStaff();
+  const s = await requirePermission("calendar.read");
   const sp = await searchParams;
+  const locale = await getStaffLocale();
   const tz = s.org.timezone;
   const today = todayIn(tz);
   const date = isDateString(sp.date) ? sp.date : today;
   const view = sp.view === "week" ? "week" : "day";
+  const display = sp.display === "list" ? "list" : "grid";
   const groupBy = sp.by === "room" ? "room" : "practitioner";
   const resources = await loadResources(s.org.id, tz);
   const locationId = resources.locations.some((l) => l.id === sp.location) ? sp.location! : "all";
@@ -36,10 +46,12 @@ export default async function CalendarPage({ searchParams }: { searchParams: SP 
       to,
       locationId: locationId === "all" ? undefined : locationId,
       includeCancelled: sp.cancelled === "1",
+      viewer: listViewer(s, locale),
     }),
     practitionerIds.length ? db.select().from(schedules).where(inArray(schedules.practitionerId, practitionerIds)) : [],
     db.select().from(timeOff).where(and(eq(timeOff.orgId, s.org.id), lt(timeOff.startsAt, to), gt(timeOff.endsAt, from))),
   ]);
+  await auditListView(s, display === "list" ? "calendar_list" : "calendar", appointments.length);
 
   const hours: HoursWindow[] = days.flatMap((d) =>
     scheduleRows
@@ -73,6 +85,7 @@ export default async function CalendarPage({ searchParams }: { searchParams: SP 
     <CalendarBoard
       resources={resources}
       view={view}
+      display={display}
       date={date}
       days={days}
       today={today}
@@ -85,6 +98,7 @@ export default async function CalendarPage({ searchParams }: { searchParams: SP 
       blocks={blocks}
       gridStart={gridStart}
       gridEnd={gridEnd}
+      canWrite={can(s.role, "appointment.write")}
     />
   );
 }

@@ -1,85 +1,150 @@
 import { and, desc, eq } from "drizzle-orm";
-import { Hourglass } from "lucide-react";
+import { Hourglass, Lock } from "lucide-react";
 import type { Metadata } from "next";
 import { removeWaitlistEntry } from "@/app/dashboard/actions/waitlist";
 import { ActionButton } from "@/components/dashboard/ActionButton";
 import { Badge, Card, EmptyState, PageHeader } from "@/components/ui";
 import { db } from "@/db";
 import { locations, patients, practitioners, services, waitlist } from "@/db/schema";
-import { requireStaff } from "@/lib/auth";
-import { fmtDay } from "@/lib/datefmt";
+import { fmtDay } from "@/i18n/datefmt";
+import { getStaffLocale, getT } from "@/i18n/server";
+import { auditListView } from "@/lib/dashboard";
 import { fullName, practitionerName } from "@/lib/format";
+import { can, requirePermission } from "@/lib/permissions";
 import { formatPhone } from "@/lib/phone";
 
-export const metadata: Metadata = { title: "Waitlist" };
+export async function generateMetadata(): Promise<Metadata> {
+  return { title: getT(await getStaffLocale(), "dashboard")("waitlist.title") };
+}
 
+/**
+ * The waitlist (calendar.read). Contacts only with patient.contact.read, the patient's note only
+ * with appointment.notes.read, restricted patients as a placeholder without
+ * patient.restricted.read. Showing the list is recorded in the access log (patient.view, count).
+ */
 export default async function WaitlistPage() {
-  const s = await requireStaff();
+  const s = await requirePermission("calendar.read");
+  const locale = await getStaffLocale();
+  const t = getT(locale, "dashboard");
+  const tc = getT(locale, "calendar");
+  const seeContacts = can(s.role, "patient.contact.read");
+  const seeNotes = can(s.role, "appointment.notes.read");
+  const seeRestricted = can(s.role, "patient.restricted.read");
+  const canWrite = can(s.role, "appointment.write");
   const rows = await db
-    .select({ w: waitlist, patient: patients, service: services, practitioner: practitioners, location: locations })
+    .select({
+      w: {
+        id: waitlist.id,
+        status: waitlist.status,
+        earliestDate: waitlist.earliestDate,
+        latestDate: waitlist.latestDate,
+        partOfDay: waitlist.partOfDay,
+        offersSent: waitlist.offersSent,
+      },
+      patient: {
+        firstName: patients.firstName,
+        lastName: patients.lastName,
+        phone: patients.phone,
+        email: patients.email,
+        restrictedAt: patients.restrictedAt,
+        erasedAt: patients.erasedAt,
+      },
+      service: { name: services.name },
+      practitioner: { title: practitioners.title, name: practitioners.name },
+      location: { name: locations.name },
+    })
     .from(waitlist)
     .innerJoin(patients, eq(patients.id, waitlist.patientId))
     .innerJoin(services, eq(services.id, waitlist.serviceId))
     .leftJoin(practitioners, eq(practitioners.id, waitlist.practitionerId))
     .leftJoin(locations, eq(locations.id, waitlist.locationId))
-    .where(and(eq(waitlist.orgId, s.org.id)))
+    .where(and(eq(waitlist.orgId, s.org.id), eq(patients.orgId, s.org.id)))
     .orderBy(desc(waitlist.createdAt))
     .limit(100);
   const active = rows.filter((r) => r.w.status === "active");
   const booked = rows.filter((r) => r.w.status === "booked");
+  const masked = (p: (typeof rows)[number]["patient"]) => Boolean(p.restrictedAt || p.erasedAt) && !seeRestricted;
+  const nameOf = (p: (typeof rows)[number]["patient"]) =>
+    masked(p) ? (p.erasedAt ? tc("erasedPatient") : tc("restrictedPatient")) : fullName(p);
+
+  // Notes are fetched separately, only for viewers who may read them (decrypting nothing otherwise).
+  const notes = new Map<string, string>();
+  if (seeNotes && active.length) {
+    const noteRows = await db
+      .select({ id: waitlist.id, note: waitlist.note })
+      .from(waitlist)
+      .where(and(eq(waitlist.orgId, s.org.id), eq(waitlist.status, "active")));
+    for (const r of noteRows) if (r.note) notes.set(r.id, r.note);
+  }
+  await auditListView(s, "waitlist", rows.length, "patient.view");
 
   return (
     <div className="mx-auto max-w-5xl">
-      <PageHeader
-        title="Waitlist"
-        description="When an appointment is cancelled or moved, the slot is offered to up to 3 matching patients by SMS/WhatsApp/email. The first one to book gets it."
-      />
+      <PageHeader title={t("waitlist.title")} description={t("waitlist.description")} />
       {active.length === 0 ? (
-        <EmptyState icon={<Hourglass size={28} />} title="Nobody is waiting">
-          Patients can join from the booking page when no time suits them.
+        <EmptyState icon={<Hourglass size={28} />} title={t("waitlist.emptyTitle")}>
+          {t("waitlist.emptyBody")}
         </EmptyState>
       ) : (
-        <Card className="divide-y divide-slate-100">
-          {active.map(({ w, patient, service, practitioner, location }) => (
-            <div key={w.id} className="flex flex-wrap items-center gap-4 p-4">
-              <div className="min-w-0 flex-1">
-                <p className="font-semibold">{fullName(patient)}</p>
-                <p className="text-xs text-slate-500">{[formatPhone(patient.phone), patient.email].filter(Boolean).join(" · ")}</p>
-              </div>
-              <div className="min-w-0 flex-1 text-sm">
-                <p className="font-medium">{service.name}</p>
-                <p className="text-xs text-slate-500">
-                  {practitioner ? practitionerName(practitioner) : "Any practitioner"} · {location ? location.name : "any office"}
-                </p>
-              </div>
-              <div className="text-sm">
-                <p className="font-medium">
-                  {fmtDay(w.earliestDate, "short")} – {fmtDay(w.latestDate, "short")}
-                </p>
-                <p className="text-xs text-slate-500">{w.partOfDay === "any" ? "any time" : `${w.partOfDay}s`}</p>
-              </div>
-              <Badge tone={w.offersSent ? "blue" : "slate"}>{w.offersSent} offer{w.offersSent === 1 ? "" : "s"} sent</Badge>
-              <ActionButton action={removeWaitlistEntry.bind(null, w.id)} variant="ghost" confirm="Remove from waitlist?">
-                Remove
-              </ActionButton>
-              {w.note ? <p className="basis-full text-xs text-slate-500">“{w.note}”</p> : null}
-            </div>
-          ))}
+        <Card>
+          <ul className="divide-y divide-slate-100" aria-label={t("waitlist.waiting")}>
+            {active.map(({ w, patient, service, practitioner, location }) => {
+              const hidden = masked(patient);
+              const note = hidden ? undefined : notes.get(w.id);
+              return (
+                <li key={w.id} className="flex flex-wrap items-center gap-4 p-4">
+                  <div className="min-w-0 flex-1">
+                    <p className="flex items-center gap-1.5 font-semibold">
+                      {hidden ? <Lock size={14} className="text-amber-700" aria-hidden /> : null}
+                      {nameOf(patient)}
+                    </p>
+                    {seeContacts && !hidden ? (
+                      <p className="text-xs text-slate-600">{[formatPhone(patient.phone), patient.email].filter(Boolean).join(" · ")}</p>
+                    ) : null}
+                  </div>
+                  <div className="min-w-0 flex-1 text-sm">
+                    <p className="font-medium">{service.name}</p>
+                    <p className="text-xs text-slate-600">
+                      {t("waitlist.preference", {
+                        practitioner: practitioner ? practitionerName(practitioner) : t("waitlist.anyPractitioner"),
+                        office: location ? location.name : t("waitlist.anyOffice"),
+                      })}
+                    </p>
+                  </div>
+                  <div className="text-sm">
+                    <p className="font-medium">{t("waitlist.window", { from: fmtDay(w.earliestDate, "short", locale), to: fmtDay(w.latestDate, "short", locale) })}</p>
+                    <p className="text-xs text-slate-600">{t(`waitlist.partOfDay.${w.partOfDay}`)}</p>
+                  </div>
+                  <Badge tone={w.offersSent ? "blue" : "slate"}>{t("waitlist.offers", { count: w.offersSent })}</Badge>
+                  {canWrite ? (
+                    <ActionButton action={removeWaitlistEntry.bind(null, w.id)} variant="ghost" confirm={t("waitlist.removeConfirm")}>
+                      {t("waitlist.remove")}
+                    </ActionButton>
+                  ) : null}
+                  {note ? <p className="basis-full text-xs text-slate-600 [overflow-wrap:anywhere]">{t("waitlist.note", { note })}</p> : null}
+                </li>
+              );
+            })}
+          </ul>
         </Card>
       )}
       {booked.length ? (
-        <>
-          <h2 className="mb-2 mt-8 font-bold">Recently booked from the waitlist</h2>
-          <Card className="divide-y divide-slate-100">
-            {booked.map(({ w, patient, service }) => (
-              <div key={w.id} className="flex items-center justify-between p-4 text-sm">
-                <span className="font-semibold">{fullName(patient)}</span>
-                <span className="text-slate-500">{service.name}</span>
-                <Badge tone="green">Booked</Badge>
-              </div>
-            ))}
+        <section aria-labelledby="waitlist-booked">
+          <h2 id="waitlist-booked" className="mb-2 mt-8 font-bold">
+            {t("waitlist.booked")}
+          </h2>
+          <Card>
+            <ul className="divide-y divide-slate-100">
+              {booked.map(({ w, patient, service }) => (
+                <li key={w.id} className="flex flex-wrap items-center justify-between gap-2 p-4 text-sm">
+                  <span className="font-semibold">{nameOf(patient)}</span>
+                  <span className="text-slate-600">{service.name}</span>
+                  <Badge tone="green">{t("waitlist.bookedBadge")}</Badge>
+                </li>
+              ))}
+            </ul>
           </Card>
-        </>
+        </section>
       ) : null}
     </div>
   );

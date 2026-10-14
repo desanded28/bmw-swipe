@@ -11,8 +11,8 @@ import {
   type WaitlistEntry,
 } from "@/db/schema";
 import { evaluateSlot, loadAvailabilityContext } from "./availability";
-import { canReachByEmail, canReachByPhone, textChannelFor } from "./appointments";
-import { recipientFor } from "./contact";
+import { canReachByEmail, canReachByPhone, practiceNoticeUrl, textChannelFor } from "./appointments";
+import { isRestricted, recipientFor } from "./contact";
 // booking.ts imports offerFreedSlot from here: the cycle is safe because neither module uses the
 // other's exports while loading.
 import {
@@ -51,18 +51,20 @@ export type FreedSlot = {
 
 /**
  * Link to book a freed slot. `practiceRef` (signPracticeRef) keeps a practice-context waitlist entry
- * in the practice context: the book page is Sorriso-hosted and is marketplace without it.
+ * in the practice context: the book page is Sorriso-hosted and is marketplace without it. The start
+ * is written without milliseconds and unescaped ("2030-03-04T08:00:00Z", still an ISO datetime the
+ * booking API accepts) to keep the link short: it goes into an SMS.
  */
 export function bookSlotUrl(orgSlug: string, slot: FreedSlot, entryId?: string, practiceRef?: string | null) {
   const params = new URLSearchParams({
     service: slot.serviceId,
     practitioner: slot.practitionerId,
     location: slot.locationId,
-    start: slot.startsAt.toISOString(),
   });
   if (entryId) params.set("wl", entryId);
   if (practiceRef) params.set("ref", practiceRef);
-  return absoluteUrl(`/book/${orgSlug}?${params.toString()}`);
+  const start = slot.startsAt.toISOString().replace(/\.\d{3}Z$/, "Z");
+  return absoluteUrl(`/book/${orgSlug}?${params.toString()}&start=${start}`);
 }
 
 export type JoinWaitlistInput = {
@@ -175,7 +177,9 @@ export async function offerFreedSlot(slot: FreedSlot, now = new Date()): Promise
     .filter(({ entry }) => !entry.practitionerId || entry.practitionerId === slot.practitionerId)
     .filter(({ entry }) => !entry.locationId || entry.locationId === slot.locationId)
     .filter(({ entry }) => entry.partOfDay === "any" || entry.partOfDay === partOfDay)
-    .filter(({ patient }) => canReachByPhone(patient) || canReachByEmail(patient))
+    // Restricted (Art. 18) or erased patients get nothing.
+    .filter(({ patient }) => !isRestricted(patient))
+    .filter(({ patient }) => canReachByPhone(patient, now) || canReachByEmail(patient, now))
     .slice(0, OFFERS_PER_SLOT);
   if (!matches.length) return 0;
 
@@ -202,6 +206,9 @@ export async function offerFreedSlot(slot: FreedSlot, now = new Date()): Promise
   let sent = 0;
   for (const { entry, patient } of matches) {
     const url = bookSlotUrl(org.slug, slot, entry.id, entry.processingContext === "practice" ? signPracticeRef(org.id) : null);
+    const to = recipientFor(patient, now);
+    const address = `${location.address}, ${location.city}`;
+    // Discreet in every mode: "a slot opened on {date}", never the treatment (templates.ts).
     const data: AppointmentTemplateData = {
       locale: patient.locale,
       patientFirstName: patient.firstName,
@@ -213,25 +220,37 @@ export async function offerFreedSlot(slot: FreedSlot, now = new Date()): Promise
       start: slot.startsAt,
       timezone: location.timezone,
       locationName: location.name,
-      address: `${location.address}, ${location.city}`,
+      address,
       manageUrl: url,
       icsUrl: url,
+      recipientName: to.viaGuardian ? to.name : null,
+      viaGuardian: to.viaGuardian,
+      smsAsciiFallback: resolveSettings(org.settings).reminders.smsAsciiFallback,
+      legalName: org.legalName ?? org.name,
+      legalAddress: org.registeredAddress ?? address,
+      privacyUrl: practiceNoticeUrl(org, patient.locale),
+      preferencesUrl: absoluteUrl("/privacy"),
+      reason: "waitlist",
     };
-    // The text channel through textChannelFor (WhatsApp only where enabled and consented), else email.
-    const text = patient.preferredChannel !== "email" ? await textChannelFor(patient, org) : null;
+    // The text channel through textChannelFor (WhatsApp only where enabled, consented and templated), else email.
+    const text = patient.preferredChannel !== "email" ? await textChannelFor(patient, org, now, "waitlist") : null;
     const channel = text ?? "email";
-    if (channel === "email" && !canReachByEmail(patient)) continue;
-    const email = templates.waitlistOfferEmail(data, url);
+    if (channel === "email" && !canReachByEmail(patient, now)) continue;
+    const toAddress = channel === "email" ? to.email : to.phone;
+    if (!toAddress) continue;
+    const email = channel === "email" ? templates.waitlistOfferEmail(data, url) : null;
     const msg = await deliver({
       orgId: org.id,
       patientId: patient.id,
       channel,
-      to: channel === "email" ? recipientFor(patient).email! : recipientFor(patient).phone!,
-      subject: channel === "email" ? email.subject : undefined,
-      text: channel === "email" ? email.text : templates.waitlistOfferSms(data, url),
-      html: channel === "email" ? email.html : undefined,
+      to: toAddress,
+      subject: email?.subject,
+      text: email ? email.text : templates.waitlistOfferSms(data, url),
+      html: email?.html,
       fromName: org.name,
       replyTo: org.email,
+      locale: to.locale,
+      ...(channel === "whatsapp" ? { whatsappKind: "waitlist", whatsappVariables: templates.whatsappVariables(data, url) } : {}),
     });
     if (msg.status !== "failed") {
       sent++;

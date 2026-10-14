@@ -4,6 +4,10 @@
  * reviews and a waitlist. Deterministic (seeded PRNG) so screenshots are stable.
  *
  *   npm run db:reset   # wipe + migrate + seed
+ *
+ * Demo data must never reach real people: the seed refuses to run in production or against a
+ * non-file database unless ALLOW_DEMO_SEED=1, every phone number is in the unassigned +39 000
+ * range, emails use example domains, and the demo API key is random and printed once.
  */
 import { eq } from "drizzle-orm";
 import { db, type DB } from "../src/db";
@@ -33,6 +37,7 @@ import {
 import { getAppointmentDetails, templateData } from "../src/lib/appointments";
 import { findSlots, loadAvailabilityContext, rangeForDates } from "../src/lib/availability";
 import { newId, newToken, sha256, slugify } from "../src/lib/ids";
+import { demoSeedRefusal, fakePhone } from "../src/lib/security/seed-guard";
 import { issueManageToken } from "../src/lib/links";
 import { parseSpokenLanguages } from "./backfill-0001";
 import { templates } from "../src/lib/messaging/templates";
@@ -261,13 +266,13 @@ const ORGS: OrgSeed[] = [
     name: "Studio Dentistico Bianchi",
     description:
       "Family-run dental practice since 1987 with offices in Milano Centro and Monza. Implants, orthodontics with clear aligners, hygiene and children's dentistry under one roof.",
-    phone: "+39 02 8645 1290",
+    phone: "+39 000 101 1037",
     email: "info@studiobianchi.example",
     website: "https://studiobianchi.example",
     brandColor: "#0d9488",
     locations: [
-      { key: "mi", name: "Milano Centro", address: "Via Torino 42", city: "Milano", postalCode: "20123", phone: "+39 02 8645 1290", lat: 45.4612, lng: 9.1847, rooms: 3 },
-      { key: "mb", name: "Monza", address: "Via Italia 18", city: "Monza", postalCode: "20900", phone: "+39 039 232 4411", lat: 45.5845, lng: 9.2744, rooms: 2 },
+      { key: "mi", name: "Milano Centro", address: "Via Torino 42", city: "Milano", postalCode: "20123", phone: "+39 000 101 1037", lat: 45.4612, lng: 9.1847, rooms: 3 },
+      { key: "mb", name: "Monza", address: "Via Italia 18", city: "Monza", postalCode: "20900", phone: "+39 000 102 1074", lat: 45.5845, lng: 9.2744, rooms: 2 },
     ],
     services: ["firstVisit", "checkup", "cleaning", "whitening", "orthoConsult", "alignerCheck", "implantConsult", "rootCanal", "kids", "emergency"],
     practitioners: [
@@ -321,12 +326,12 @@ const ORGS: OrgSeed[] = [
     slug: "roma-smile",
     name: "Roma Smile Clinic",
     description: "Modern clinic in Prati specialised in aesthetic dentistry and children's care. Evening appointments available.",
-    phone: "+39 06 3972 1180",
+    phone: "+39 000 106 1222",
     email: "hello@romasmile.example",
     brandColor: "#6366f1",
     settings: { requireApproval: true },
     locations: [
-      { key: "rm", name: "Roma Prati", address: "Via Cola di Rienzo 120", city: "Roma", postalCode: "00192", phone: "+39 06 3972 1180", lat: 41.9067, lng: 12.4635, rooms: 3 },
+      { key: "rm", name: "Roma Prati", address: "Via Cola di Rienzo 120", city: "Roma", postalCode: "00192", phone: "+39 000 106 1222", lat: 41.9067, lng: 12.4635, rooms: 3 },
     ],
     services: ["firstVisit", "cleaning", "whitening", "kids", "crownConsult", "emergency"],
     practitioners: [
@@ -364,11 +369,11 @@ const ORGS: OrgSeed[] = [
     slug: "centro-torino",
     name: "Centro Odontoiatrico Torino",
     description: "Oral surgery and orthodontics centre in Crocetta with in-house 3D imaging.",
-    phone: "+39 011 581 2230",
+    phone: "+39 000 100 1000",
     email: "segreteria@centrotorino.example",
     brandColor: "#0ea5e9",
     locations: [
-      { key: "to", name: "Torino Crocetta", address: "Corso Re Umberto 75", city: "Torino", postalCode: "10128", phone: "+39 011 581 2230", lat: 45.0581, lng: 7.6741, rooms: 2 },
+      { key: "to", name: "Torino Crocetta", address: "Corso Re Umberto 75", city: "Torino", postalCode: "10128", phone: "+39 000 100 1000", lat: 45.0581, lng: 7.6741, rooms: 2 },
     ],
     services: ["firstVisit", "extraction", "implantConsult", "orthoConsult", "alignerCheck", "emergency"],
     practitioners: [
@@ -397,11 +402,11 @@ const ORGS: OrgSeed[] = [
     slug: "studio-ricci",
     name: "Studio Dentistico Ricci",
     description: "Small, personal practice near Piazza Maggiore. One dentist, unhurried visits.",
-    phone: "+39 051 223 9087",
+    phone: "+39 000 103 1111",
     email: "studio@ricci.example",
     brandColor: "#f59e0b",
     locations: [
-      { key: "bo", name: "Bologna Centro", address: "Via d'Azeglio 31", city: "Bologna", postalCode: "40123", phone: "+39 051 223 9087", lat: 44.4903, lng: 11.3412, rooms: 1 },
+      { key: "bo", name: "Bologna Centro", address: "Via d'Azeglio 31", city: "Bologna", postalCode: "40123", phone: "+39 000 103 1111", lat: 44.4903, lng: 11.3412, rooms: 1 },
     ],
     services: ["firstVisit", "checkup", "cleaning", "rootCanal", "emergency"],
     practitioners: [
@@ -421,12 +426,12 @@ const ORGS: OrgSeed[] = [
     slug: "dental-firenze",
     name: "Dental Firenze",
     description: "Two offices in Florence and Prato. Implants, crowns and full-arch restorations.",
-    phone: "+39 055 247 6610",
+    phone: "+39 000 104 1148",
     email: "info@dentalfirenze.example",
     brandColor: "#e11d48",
     locations: [
-      { key: "fi", name: "Firenze Centro", address: "Via de' Cerretani 9", city: "Firenze", postalCode: "50123", phone: "+39 055 247 6610", lat: 43.7731, lng: 11.2526, rooms: 2 },
-      { key: "po", name: "Prato", address: "Viale Vittorio Veneto 44", city: "Prato", postalCode: "59100", phone: "+39 0574 60 1123", lat: 43.8803, lng: 11.0983, rooms: 1 },
+      { key: "fi", name: "Firenze Centro", address: "Via de' Cerretani 9", city: "Firenze", postalCode: "50123", phone: "+39 000 104 1148", lat: 43.7731, lng: 11.2526, rooms: 2 },
+      { key: "po", name: "Prato", address: "Viale Vittorio Veneto 44", city: "Prato", postalCode: "59100", phone: "+39 000 105 1185", lat: 43.8803, lng: 11.0983, rooms: 1 },
     ],
     services: ["firstVisit", "implantConsult", "crownConsult", "cleaning", "emergency"],
     practitioners: [
@@ -455,11 +460,11 @@ const ORGS: OrgSeed[] = [
     slug: "sorrisi-napoli",
     name: "Sorrisi Napoli",
     description: "Practice in Chiaia focused on prevention, hygiene and family dentistry.",
-    phone: "+39 081 764 3321",
+    phone: "+39 000 107 1259",
     email: "ciao@sorrisinapoli.example",
     brandColor: "#16a34a",
     locations: [
-      { key: "na", name: "Napoli Chiaia", address: "Via dei Mille 16", city: "Napoli", postalCode: "80121", phone: "+39 081 764 3321", lat: 40.8366, lng: 14.2392, rooms: 2 },
+      { key: "na", name: "Napoli Chiaia", address: "Via dei Mille 16", city: "Napoli", postalCode: "80121", phone: "+39 000 107 1259", lat: 40.8366, lng: 14.2392, rooms: 2 },
     ],
     services: ["firstVisit", "checkup", "cleaning", "kids", "emergency", "whitening"],
     practitioners: [
@@ -491,20 +496,23 @@ const toMin = (hhmm: string) => {
   return h * 60 + m;
 };
 
-let phoneCounter = 3331000000;
+/** The practice number patients reply to, in the unassigned +39 000 range like every seeded number. */
+const PRACTICE_INBOUND = fakePhone(212345);
+
+let phoneCounter = 1000;
 function makePatient(orgId: string): typeof patients.$inferInsert {
   const firstName = pick(FIRST);
   const lastName = pick(LAST);
   const english = chance(0.12);
   const channel = chance(0.25) ? "whatsapp" : chance(0.1) ? "email" : "sms";
-  phoneCounter += Math.floor(rand() * 9000) + 17;
+  phoneCounter += Math.floor(rand() * 900) + 17;
   return {
     id: newId(),
     orgId,
     firstName,
     lastName,
     email: `${slugify(firstName)}.${slugify(lastName)}${Math.floor(rand() * 90 + 10)}@example.com`,
-    phone: `+39${phoneCounter}`,
+    phone: fakePhone(phoneCounter),
     birthDate: `${1950 + Math.floor(rand() * 60)}-0${1 + Math.floor(rand() * 9)}-1${Math.floor(rand() * 9)}`,
     locale: english ? "en" : "it",
     preferredChannel: channel,
@@ -514,6 +522,11 @@ function makePatient(orgId: string): typeof patients.$inferInsert {
 }
 
 async function main() {
+  const refusal = demoSeedRefusal(process.env);
+  if (refusal) {
+    console.error(`Refusing to seed demo data: ${refusal}. Set ALLOW_DEMO_SEED=1 if this really is a demo database.`);
+    process.exit(1);
+  }
   const now = new Date();
   console.log(`Seeding demo data around ${today}…`);
 
@@ -842,7 +855,7 @@ async function main() {
               patientId: a.patientId,
               channel,
               direction: "inbound",
-              to: "+390212345678",
+              to: PRACTICE_INBOUND,
               from: details.patient.phone,
               body: pick(details.patient.locale === "en" ? ["Yes", "YES", "yes thanks 👍"] : ["SI", "Si grazie", "sì", "Confermo, grazie!"]),
               status: "received",
@@ -882,7 +895,7 @@ async function main() {
           patientId: a.patientId,
           channel: "sms",
           direction: "inbound",
-          to: "+390212345678",
+          to: PRACTICE_INBOUND,
           from: p.phone,
           body: texts[i],
           status: "received",
@@ -927,10 +940,18 @@ async function main() {
         },
       ]);
 
-      // Demo API key (printed below)
-      const secret = "sk_demo_studio_bianchi_local_only";
-      await db.insert(apiKeys).values({ id: newId(), orgId, name: "Demo integration", prefix: secret.slice(0, 10), keyHash: sha256(secret) });
-      console.log(`  demo API key for ${o.name}: ${secret}`);
+      // Demo API key: random, stored as a hash, printed once here and never again.
+      const secret = `sk_${newToken()}`;
+      await db.insert(apiKeys).values({
+        id: newId(),
+        orgId,
+        name: "Demo integration",
+        prefix: secret.slice(0, 10),
+        keyHash: sha256(secret),
+        expiresAt: new Date(now.getTime() + 365 * 86_400_000),
+        createdByUserId: owner.id,
+      });
+      console.log(`  demo API key for ${o.name} (shown once): ${secret}`);
     }
 
     // Verified reviews from completed visits

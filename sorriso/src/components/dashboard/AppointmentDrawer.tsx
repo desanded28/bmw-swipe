@@ -1,83 +1,621 @@
 "use client";
 
 import {
+  Ban,
   BellRing,
   CalendarX,
   Check,
   CircleAlert,
   Clock,
+  Copy,
   ExternalLink,
+  Hourglass,
   LoaderCircle,
+  Lock,
   Mail,
   MapPin,
   MessageCircle,
+  MoveRight,
   Phone,
-  RefreshCw,
   Stethoscope,
+  UserRound,
   UserX,
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import {
   approve,
   cancelByStaff,
   clearAttention,
   confirmByPhone,
+  getAppointmentDetail,
   moveAppointment,
+  openRestrictedAppointment,
   recordOutcome,
   remindNow,
   saveInternalNote,
 } from "@/app/dashboard/actions/appointments";
 import { issuePatientLink } from "@/app/dashboard/actions/links";
-import { appointmentMessages } from "@/app/dashboard/actions/messages";
-import type { Message } from "@/db/schema";
-import { fmtDay, zonedDate, zonedTime } from "@/lib/datefmt";
+import { CHANNELS, type Channel } from "@/db/enums";
+import { fmtDay, zonedDate, zonedTime } from "@/i18n/datefmt";
+import { useLocale, useT } from "@/i18n/provider";
 import { formatPhone } from "@/lib/phone";
 import { Badge, Button, Field, Input, Select, Textarea, cx } from "../ui";
 import { useNow } from "../useNow";
+import { Pii } from "./PrivacyScreen";
+import { AppointmentCarePanel } from "./slots/AppointmentCarePanel";
 import { useToast } from "./Toast";
-import type { ApptDTO, Resources } from "./types";
+import { toCareAppointment, type ApptDetailDTO, type ApptListDTO, type Resources } from "./types";
 import { useRunAction } from "./useRunAction";
 
 export const localDate = zonedDate;
 export const localTime = zonedTime;
-export function longDate(iso: string, tz: string) {
-  return fmtDay(zonedDate(iso, tz), "medium");
+
+// ---------------------------------------------------------------- status
+
+type StatusFields = Pick<ApptListDTO, "status" | "confirmation" | "confirmedVia" | "needsAttention">;
+type StatusKind = "cancelled" | "requested" | "completed" | "no_show" | "attention" | "confirmed" | "declined" | "pending";
+
+function statusKind(a: StatusFields): StatusKind {
+  if (a.status === "cancelled" || a.status === "requested" || a.status === "completed" || a.status === "no_show") return a.status;
+  if (a.needsAttention) return "attention";
+  if (a.confirmation === "confirmed") return "confirmed";
+  if (a.confirmation === "declined") return "declined";
+  return "pending";
 }
 
-export function StatusBadge({ a }: { a: Pick<ApptDTO, "status" | "confirmation" | "confirmedVia" | "needsAttention"> }) {
-  if (a.status === "cancelled") return <Badge tone="red">Cancelled</Badge>;
-  if (a.status === "requested") return <Badge tone="amber">Request</Badge>;
-  if (a.status === "completed") return <Badge tone="slate">Completed</Badge>;
-  if (a.status === "no_show") return <Badge tone="red">No-show</Badge>;
-  if (a.needsAttention)
-    return (
-      <Badge tone="red">
-        <CircleAlert size={12} /> Needs attention
-      </Badge>
-    );
-  if (a.confirmation === "confirmed")
-    return (
-      <Badge tone="green">
-        <Check size={12} /> Confirmed{a.confirmedVia && a.confirmedVia !== "booking" ? ` · ${a.confirmedVia}` : ""}
-      </Badge>
-    );
+/** The localised status of an appointment ("Confirmed (SMS)", "Awaiting confirmation"...). */
+export function useStatusLabel() {
+  const t = useT("calendar");
+  const tc = useT("common");
+  return (a: StatusFields): string => {
+    const kind = statusKind(a);
+    switch (kind) {
+      case "cancelled":
+      case "requested":
+      case "completed":
+      case "no_show":
+        return tc(`appointmentStatus.${kind}`);
+      case "attention":
+        return t("status.needsAttention");
+      case "declined":
+      case "pending":
+        return tc(`confirmationStatus.${kind}`);
+      case "confirmed": {
+        const status = tc("confirmationStatus.confirmed");
+        const via = a.confirmedVia;
+        if (!via || via === "booking") return status;
+        const channel = (CHANNELS as readonly string[]).includes(via) ? tc(`channels.${via as Channel}`) : null;
+        const label = channel ?? (via === "web" || via === "staff" ? t(`via.${via}`) : null);
+        return label ? t("status.confirmedVia", { status, via: label }) : status;
+      }
+    }
+  };
+}
+
+/** The status icon (shape differs per status, so it never relies on colour alone). */
+export function StatusIcon({ a, size = 12, className }: { a: StatusFields; size?: number; className?: string }) {
+  const kind = statusKind(a);
+  const cls = (tone: string) => cx("shrink-0", tone, className);
+  if (kind === "attention") return <CircleAlert size={size} className={cls("text-red-600")} aria-hidden />;
+  if (kind === "requested") return <Hourglass size={size} className={cls("text-amber-700")} aria-hidden />;
+  if (kind === "no_show") return <UserX size={size} className={cls("text-red-600")} aria-hidden />;
+  if (kind === "cancelled" || kind === "declined") return <Ban size={size} className={cls("text-slate-500")} aria-hidden />;
+  if (kind === "confirmed" || kind === "completed") return <Check size={size} className={cls("text-emerald-700")} aria-hidden />;
+  return <Clock size={size} className={cls("text-slate-500")} aria-hidden />;
+}
+
+const TONES: Record<StatusKind, "red" | "amber" | "slate" | "green" | "blue"> = {
+  cancelled: "red",
+  requested: "amber",
+  completed: "slate",
+  no_show: "red",
+  attention: "red",
+  confirmed: "green",
+  declined: "slate",
+  pending: "blue",
+};
+
+export function StatusBadge({ a }: { a: StatusFields }) {
+  const label = useStatusLabel();
   return (
-    <Badge tone="blue">
-      <Clock size={12} /> Awaiting confirmation
+    <Badge tone={TONES[statusKind(a)]}>
+      <StatusIcon a={a} />
+      {label(a)}
     </Badge>
   );
 }
 
-export function AppointmentDrawer({ appt, resources, onClose }: { appt: ApptDTO; resources: Resources; onClose: () => void }) {
+// ---------------------------------------------------------------- modal dialog
+
+/**
+ * Open a native <dialog> as a modal (showModal: focus trap, inert page, Escape) while the
+ * component is mounted, and give focus back to whatever opened it when it goes away. When that
+ * element was re-rendered away meanwhile, `fallbackSelector` finds its replacement.
+ */
+export function useModalDialog(onClose: () => void, fallbackSelector?: string) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const close = useRef(onClose);
+  useEffect(() => {
+    close.current = onClose;
+  }, [onClose]);
+  useEffect(() => {
+    const dialog = ref.current;
+    if (!dialog) return;
+    const opener = document.activeElement instanceof HTMLElement && !dialog.contains(document.activeElement) ? document.activeElement : null;
+    if (!dialog.open) dialog.showModal();
+    dialog.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+    return () => {
+      if (dialog.open) dialog.close();
+      requestAnimationFrame(() => {
+        const target = opener?.isConnected ? opener : fallbackSelector ? document.querySelector<HTMLElement>(fallbackSelector) : null;
+        target?.focus();
+      });
+    };
+  }, [fallbackSelector]);
+  return {
+    ref,
+    props: {
+      // Escape: the browser fires "cancel"; the parent unmounts us instead of the dialog closing itself.
+      onCancel: (e: React.SyntheticEvent) => {
+        e.preventDefault();
+        close.current();
+      },
+      // A click on the backdrop targets the <dialog> itself (its content fills the box).
+      onClick: (e: React.MouseEvent<HTMLDialogElement>) => {
+        if (e.target === e.currentTarget) close.current();
+      },
+    },
+  };
+}
+
+/** Class names of a drawer docked to the right edge (a native <dialog>). */
+export const DRAWER_DIALOG =
+  "fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-dvh w-full max-w-[460px] overflow-hidden bg-white p-0 text-ink shadow-pop backdrop:bg-slate-900/30 open:animate-slide-in";
+
+// ---------------------------------------------------------------- the drawer
+
+type Panel = "move" | "cancel" | null;
+
+/**
+ * The appointment drawer. It opens with what the list already has (time, treatment, status) and
+ * loads the rest with getAppointmentDetail(): contacts, notes and messages, each only when the
+ * viewer's role allows it, and audited on the server. A restricted patient's record asks for a
+ * reason first.
+ */
+export function AppointmentDrawer({
+  appt,
+  resources,
+  onClose,
+  initialPanel = null,
+}: {
+  appt: ApptListDTO;
+  resources: Resources;
+  onClose: () => void;
+  /** "move" opens the drawer on the reschedule form (Shift+Enter on a calendar event). */
+  initialPanel?: Panel;
+}) {
+  const t = useT("calendar");
+  const tc = useT("common");
+  const locale = useLocale();
+  const statusLabel = useStatusLabel();
+  const titleId = useId();
+  const { ref, props: dialogProps } = useModalDialog(onClose, `[data-appt-id="${appt.id}"]`);
   const tz = appt.location.timezone;
   const { run, pending } = useRunAction();
   const toast = useToast();
-  const [panel, setPanel] = useState<"move" | "cancel" | null>(null);
-  const [note, setNote] = useState(appt.internalNote ?? "");
-  const [thread, setThread] = useState<Message[] | null>(null);
-  const [move, setMove] = useState({
+  const [detail, setDetail] = useState<ApptDetailDTO | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [panel, setPanel] = useState<Panel>(initialPanel);
+  const [savedNote, setSavedNote] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
+  const [reasonError, setReasonError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+
+  // One request (and so one audit row) per opening or explicit reload: React's development
+  // double-run of effects must not read the record twice. Late answers for an older key are dropped.
+  const requested = useRef<string | null>(null);
+  useEffect(() => {
+    const key = `${appt.id}:${reload}`;
+    if (requested.current === key) return;
+    requested.current = key;
+    getAppointmentDetail(appt.id).then(
+      (res) => {
+        if (requested.current !== key) return;
+        if (res.ok) {
+          setDetail(res.data);
+          setSavedNote(res.data.internalNote ?? "");
+          setLoadError(null);
+        } else setLoadError(res.error);
+      },
+      () => requested.current === key && setLoadError(t("errors.loadFailed")),
+    );
+  }, [appt.id, reload, t]);
+
+  const now = useNow();
+  const upcoming = now !== null && Date.parse(appt.start) > now;
+  const started = now !== null && Date.parse(appt.start) <= now;
+  const live = appt.status === "scheduled" || appt.status === "requested";
+  const canWrite = detail?.access.write ?? true;
+  const restricted = detail?.access.restricted ?? (appt.patient.masked ? "placeholder" : "open");
+  const noteValue = note ?? savedNote ?? "";
+  const channelName = tc(`channels.${appt.patient.preferredChannel}`);
+  const care = toCareAppointment(appt);
+  const sourceKey = `source.${appt.source}` as const;
+
+  async function submitReason(e: FormEvent) {
+    e.preventDefault();
+    setReasonError(null);
+    const res = await openRestrictedAppointment(appt.id, reason);
+    if (res.ok) {
+      setDetail(res.data);
+      setSavedNote(res.data.internalNote ?? "");
+    } else setReasonError(res.error);
+  }
+
+  async function patientLink(mode: "open" | "copy") {
+    const res = await issuePatientLink(appt.id);
+    if (!res.ok) return toast.show({ tone: "error", text: res.error });
+    const url = (res.data as { url: string }).url;
+    if (mode === "open") window.open(url, "_blank", "noopener,noreferrer");
+    else {
+      try {
+        await navigator.clipboard.writeText(url);
+        toast.show({ tone: "success", text: t("drawer.linkCopied") });
+      } catch {
+        toast.show({ tone: "error", text: t("drawer.linkNotCopied") });
+      }
+    }
+  }
+
+  return (
+    <dialog ref={ref} aria-labelledby={titleId} className={DRAWER_DIALOG} {...dialogProps}>
+      <div className="flex h-full flex-col">
+        <div className="flex items-start justify-between gap-3 border-b border-slate-100 p-5">
+          <div className="group/pii min-w-0">
+            <h2 id={titleId} className="truncate text-lg font-bold">
+              <Pii>{appt.patient.name}</Pii>
+            </h2>
+            <p className="text-sm text-slate-600">
+              {t("drawer.timeRange", { start: localTime(appt.start, tz), end: localTime(appt.end, tz) })}
+              {" · "}
+              {appt.service.name}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            {live && canWrite ? (
+              <Button size="sm" variant={panel === "move" ? "subtle" : "secondary"} aria-expanded={panel === "move"} onClick={() => setPanel(panel === "move" ? null : "move")}>
+                <MoveRight size={15} aria-hidden /> {t("drawer.move")}
+              </Button>
+            ) : null}
+            <button type="button" onClick={onClose} className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-ink" aria-label={t("drawer.close")}>
+              <X size={20} aria-hidden />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 space-y-5 overflow-y-auto p-5">
+          <div className="flex flex-wrap gap-1.5">
+            <StatusBadge a={appt} />
+            {appt.isNewPatient ? <Badge tone="violet">{t("drawer.newPatient")}</Badge> : null}
+            {appt.patient.noShowCount > 0 ? (
+              <Badge tone="red">
+                <UserX size={12} aria-hidden /> {t("drawer.noShows", { count: appt.patient.noShowCount })}
+              </Badge>
+            ) : null}
+            <Badge>{t.has(sourceKey) ? t(sourceKey) : appt.source}</Badge>
+            {appt.processingContext === "marketplace" ? <Badge tone="brand">{t("drawer.marketplace")}</Badge> : null}
+          </div>
+
+          {restricted !== "open" ? (
+            <div className="rounded-xl bg-amber-50 p-4 text-sm text-amber-950 ring-1 ring-amber-200">
+              <p className="flex items-center gap-2 font-semibold">
+                <Lock size={15} aria-hidden /> {t("drawer.restricted.title")}
+              </p>
+              <p className="mt-1">{t("drawer.restricted.body")}</p>
+              {restricted === "needs_reason" ? (
+                <form onSubmit={submitReason} className="mt-3 space-y-2">
+                  <Field label={t("drawer.restricted.reasonTitle")} hint={t("drawer.restricted.reasonHint")} error={reasonError}>
+                    <Textarea rows={2} required minLength={3} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
+                  </Field>
+                  <Button size="sm" type="submit">
+                    {t("drawer.restricted.open")}
+                  </Button>
+                </form>
+              ) : null}
+            </div>
+          ) : null}
+
+          {restricted === "open" ? (
+            <section aria-label={t("drawer.contacts")} className="space-y-2">
+              {!detail && !loadError ? (
+                <p className="flex items-center gap-2 text-sm text-slate-500" role="status">
+                  <LoaderCircle size={15} className="animate-spin" aria-hidden /> {t("drawer.loading")}
+                </p>
+              ) : null}
+              {loadError ? (
+                <p className="flex flex-wrap items-center gap-2 text-sm text-red-700" role="alert">
+                  {loadError}
+                  <button type="button" className="font-semibold underline" onClick={() => setReload((n) => n + 1)}>
+                    {t("drawer.retry")}
+                  </button>
+                </p>
+              ) : null}
+              {detail?.contacts ? <Contacts c={detail.contacts} /> : null}
+              {detail && !detail.access.contacts ? <p className="text-sm text-slate-500">{t("drawer.contactsHidden")}</p> : null}
+              {detail ? (
+                <Link
+                  href={`/dashboard/patients/${appt.patient.id}`}
+                  className="inline-flex items-center gap-1.5 text-sm font-semibold text-brand-700 hover:underline"
+                >
+                  <UserRound size={14} aria-hidden /> {t("drawer.patientRecord")}
+                </Link>
+              ) : null}
+            </section>
+          ) : null}
+
+          <dl className="grid grid-cols-2 gap-4 rounded-xl bg-slate-50 p-4 text-sm">
+            <div>
+              <dt className="text-xs font-semibold text-slate-600">{t("drawer.when")}</dt>
+              <dd className="font-semibold">{fmtDay(zonedDate(appt.start, tz), "medium", locale)}</dd>
+              <dd>{t("drawer.timeRange", { start: localTime(appt.start, tz), end: localTime(appt.end, tz) })}</dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold text-slate-600">{t("drawer.treatment")}</dt>
+              <dd className="flex items-center gap-1.5 font-semibold">
+                <Stethoscope size={14} aria-hidden /> {appt.service.name}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold text-slate-600">{t("drawer.with")}</dt>
+              <dd className="flex items-center gap-1.5 font-semibold">
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: appt.practitioner.color }} aria-hidden />
+                {appt.practitioner.name}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold text-slate-600">{t("drawer.where")}</dt>
+              <dd className="flex items-center gap-1.5 font-semibold">
+                <MapPin size={14} aria-hidden /> {appt.location.name}
+              </dd>
+              {appt.room ? <dd className="text-slate-600">{appt.room.name}</dd> : null}
+            </div>
+          </dl>
+
+          {detail?.patientNote ? (
+            <div className="rounded-xl bg-amber-50 p-3 text-sm text-amber-950 ring-1 ring-amber-200">
+              <p className="text-xs font-bold uppercase tracking-wide text-amber-800">{t("drawer.patientNote")}</p>
+              <p className="whitespace-pre-line [overflow-wrap:anywhere]">{detail.patientNote}</p>
+            </div>
+          ) : null}
+          {detail?.cancelReason ? (
+            <p className="text-sm text-slate-600">
+              <span className="font-semibold">{t("drawer.cancelReason")}</span> {detail.cancelReason}
+            </p>
+          ) : null}
+
+          {restricted === "open" ? <AppointmentCarePanel appt={care} canManage={detail?.access.manageCare ?? false} /> : null}
+
+          {canWrite ? (
+            <section aria-label={t("drawer.actions")} className="flex flex-wrap gap-2">
+              {appt.status === "requested" ? (
+                <Button size="sm" disabled={pending} onClick={() => run(() => approve(appt.id))}>
+                  <Check size={15} aria-hidden /> {t("drawer.approve")}
+                </Button>
+              ) : null}
+              {appt.status === "scheduled" && appt.confirmation === "pending" && upcoming ? (
+                <Button size="sm" disabled={pending} onClick={() => run(() => confirmByPhone(appt.id))}>
+                  <Check size={15} aria-hidden /> {t("drawer.confirmByPhone")}
+                </Button>
+              ) : null}
+              {appt.needsAttention ? (
+                <Button size="sm" variant="secondary" disabled={pending} onClick={() => run(() => clearAttention(appt.id))}>
+                  {t("drawer.markHandled")}
+                </Button>
+              ) : null}
+              {live ? (
+                <Button size="sm" variant="danger" aria-expanded={panel === "cancel"} onClick={() => setPanel(panel === "cancel" ? null : "cancel")}>
+                  <CalendarX size={15} aria-hidden /> {appt.status === "requested" ? t("drawer.decline") : t("drawer.cancel")}
+                </Button>
+              ) : null}
+              {appt.status === "scheduled" && started ? (
+                <>
+                  <Button size="sm" disabled={pending} onClick={() => run(() => recordOutcome(appt.id, "completed"))}>
+                    <Check size={15} aria-hidden /> {t("drawer.completed")}
+                  </Button>
+                  <Button size="sm" variant="danger" disabled={pending} onClick={() => run(() => recordOutcome(appt.id, "no_show"))}>
+                    <UserX size={15} aria-hidden /> {t("drawer.noShow")}
+                  </Button>
+                </>
+              ) : null}
+              {appt.status === "completed" || appt.status === "no_show" ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={pending}
+                  onClick={() => run(() => recordOutcome(appt.id, appt.status === "completed" ? "no_show" : "completed"))}
+                >
+                  {appt.status === "completed" ? t("drawer.changeToNoShow") : t("drawer.changeToCompleted")}
+                </Button>
+              ) : null}
+              {appt.status === "scheduled" && upcoming && restricted === "open" ? (
+                <div role="group" aria-label={t("drawer.sendReminder")} className="flex flex-wrap items-center gap-1.5">
+                  <span className="flex items-center gap-1 text-xs font-semibold text-slate-600">
+                    <BellRing size={14} aria-hidden /> {t("drawer.sendReminder")}
+                  </span>
+                  {CHANNELS.map((c) => (
+                    <Button
+                      key={c}
+                      size="sm"
+                      variant="secondary"
+                      disabled={pending}
+                      aria-label={t("drawer.reminderVia", { channel: tc(`channels.${c}`) })}
+                      onClick={() => run(() => remindNow(appt.id, c), (r) => r.ok && setReload((n) => n + 1))}
+                    >
+                      {tc(`channels.${c}`)}
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
+          {panel === "move" && live && canWrite ? (
+            <MovePanel appt={appt} resources={resources} channelName={channelName} onDone={() => setPanel(null)} />
+          ) : null}
+
+          {panel === "cancel" && live && canWrite ? (
+            <CancelPanel appt={appt} onDone={onClose} />
+          ) : null}
+
+          {detail?.access.notes ? (
+            <div>
+              <Field label={t("drawer.internalNote")} hint={t("drawer.internalNoteHint")}>
+                <Textarea rows={2} value={noteValue} readOnly={!detail.access.writeNotes} onChange={(e) => setNote(e.target.value)} maxLength={2000} />
+              </Field>
+              {detail.access.writeNotes && noteValue !== (savedNote ?? "") ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="mt-2"
+                  disabled={pending}
+                  onClick={() =>
+                    run(
+                      () => saveInternalNote(appt.id, noteValue),
+                      (r) => {
+                        if (r.ok) {
+                          setSavedNote(noteValue.trim());
+                          setNote(noteValue.trim());
+                        }
+                      },
+                    )
+                  }
+                >
+                  {t("drawer.saveNote")}
+                </Button>
+              ) : null}
+            </div>
+          ) : detail && restricted === "open" ? (
+            <p className="text-sm text-slate-500">{t("drawer.notesHidden")}</p>
+          ) : null}
+
+          {detail?.messages ? (
+            <section aria-labelledby={`${titleId}-messages`}>
+              <h3 id={`${titleId}-messages`} className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-600">
+                {t("drawer.messages")}
+              </h3>
+              {detail.messages.length === 0 ? (
+                <p className="text-sm text-slate-500">{t("drawer.noMessages")}</p>
+              ) : (
+                <ol className="space-y-2">
+                  {detail.messages.map((m) => {
+                    const when = `${fmtDay(zonedDate(m.createdAt, tz), "short", locale)} ${zonedTime(m.createdAt, tz)}`;
+                    const channel = tc(`channels.${m.channel}`);
+                    const statusKey = `drawer.messageStatus.${m.status}` as const;
+                    const meta =
+                      m.direction === "inbound"
+                        ? m.intent
+                          ? t("drawer.replyIntentMeta", { channel, intent: t(`drawer.intents.${m.intent}`), when })
+                          : t("drawer.replyMeta", { channel, when })
+                        : t("drawer.messageMeta", {
+                            channel,
+                            status: t.has(statusKey) ? t(statusKey) : m.status,
+                            when,
+                          });
+                    return (
+                      <li key={m.id} className={cx("flex", m.direction === "inbound" ? "justify-start" : "justify-end")}>
+                        <div
+                          className={cx(
+                            "max-w-[88%] rounded-2xl px-3 py-2 text-[13px] [overflow-wrap:anywhere]",
+                            m.direction === "inbound" ? "rounded-bl-sm bg-slate-100" : "rounded-br-sm bg-brand-50 text-brand-950 ring-1 ring-brand-100",
+                          )}
+                        >
+                          <p className="mb-0.5 text-[11px] font-semibold text-slate-600">{meta}</p>
+                          {m.subject ? <p className="font-semibold">{m.subject}</p> : <p className="whitespace-pre-line">{m.body}</p>}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ol>
+              )}
+            </section>
+          ) : detail && restricted === "open" ? (
+            <p className="text-sm text-slate-500">{t("drawer.messagesHidden")}</p>
+          ) : null}
+
+          {canWrite && restricted === "open" && appt.status !== "cancelled" ? (
+            <div className="flex flex-wrap gap-x-4 gap-y-2">
+              <button type="button" className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-ink" onClick={() => patientLink("open")}>
+                <ExternalLink size={13} aria-hidden /> {t("drawer.patientPage")}
+              </button>
+              <button type="button" className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-ink" onClick={() => patientLink("copy")}>
+                <Copy size={13} aria-hidden /> {t("drawer.copyLink")}
+              </button>
+            </div>
+          ) : null}
+          <p className="sr-only" aria-live="polite">
+            {statusLabel(appt)}
+          </p>
+        </div>
+      </div>
+    </dialog>
+  );
+}
+
+function Contacts({ c }: { c: NonNullable<ApptDetailDTO["contacts"]> }) {
+  const t = useT("calendar");
+  const relationKey = `drawer.guardianRelation.${c.guardian?.relation ?? ""}` as const;
+  const chip = "inline-flex max-w-full items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1.5 text-sm font-semibold hover:bg-slate-200";
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2">
+        {c.phone ? (
+          <a href={`tel:${c.phone}`} className={chip} aria-label={t("drawer.call", { phone: formatPhone(c.phone) })}>
+            <Phone size={14} aria-hidden /> {formatPhone(c.phone)}
+          </a>
+        ) : null}
+        {c.whatsappUrl ? (
+          <a
+            href={c.whatsappUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+            title={t("drawer.whatsappHint")}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-sm font-semibold text-emerald-900 hover:bg-emerald-100"
+          >
+            <MessageCircle size={14} aria-hidden /> {t("drawer.whatsapp")}
+          </a>
+        ) : null}
+        {c.email ? (
+          <a href={`mailto:${c.email}`} className={cx(chip, "truncate")} aria-label={t("drawer.emailTo", { email: c.email })}>
+            <Mail size={14} aria-hidden /> {c.email}
+          </a>
+        ) : null}
+      </div>
+      {c.guardian ? (
+        <div className="rounded-lg bg-slate-50 p-3 text-sm ring-1 ring-slate-200">
+          <p className="text-xs font-semibold text-slate-600">
+            {t.has(relationKey) ? t(relationKey) : t("drawer.guardian")}
+          </p>
+          {c.guardian.name ? <p className="font-semibold">{c.guardian.name}</p> : null}
+          <p className="flex flex-wrap gap-x-3">
+            {c.guardian.phone ? <a href={`tel:${c.guardian.phone}`} className="font-semibold text-brand-700 hover:underline">{formatPhone(c.guardian.phone)}</a> : null}
+            {c.guardian.email ? <a href={`mailto:${c.guardian.email}`} className="font-semibold text-brand-700 hover:underline">{c.guardian.email}</a> : null}
+          </p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MovePanel({ appt, resources, channelName, onDone }: { appt: ApptListDTO; resources: Resources; channelName: string; onDone: () => void }) {
+  const t = useT("calendar");
+  const tz = appt.location.timezone;
+  const { run, pending } = useRunAction();
+  const first = useRef<HTMLInputElement>(null);
+  const [conflict, setConflict] = useState<string | null>(null);
+  const [move, setMove] = useState(() => ({
     date: localDate(appt.start, tz),
     time: localTime(appt.start, tz),
     practitionerId: appt.practitioner.id,
@@ -85,34 +623,14 @@ export function AppointmentDrawer({ appt, resources, onClose }: { appt: ApptDTO;
     roomId: appt.room?.id ?? "",
     duration: String(Math.round((Date.parse(appt.end) - Date.parse(appt.start)) / 60000)),
     notify: true,
-  });
-  const [conflict, setConflict] = useState<string | null>(null);
-  const [cancel, setCancel] = useState({ reason: "", notify: true });
+  }));
 
   useEffect(() => {
-    let alive = true;
-    appointmentMessages(appt.id).then((m) => alive && setThread(m));
-    return () => {
-      alive = false;
-    };
-  }, [appt.id, appt.confirmation, appt.status]);
+    first.current?.focus();
+  }, []);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const now = useNow();
-  const upcoming = now !== null && Date.parse(appt.start) > now;
-  const started = now !== null && Date.parse(appt.start) <= now;
-  const live = appt.status === "scheduled" || appt.status === "requested";
-
-  function submitMove(force = false) {
+  function submit(force: boolean) {
     setConflict(null);
-    startMove(force);
-  }
-  const startMove = (force: boolean) =>
     run(
       () =>
         moveAppointment({
@@ -127,325 +645,112 @@ export function AppointmentDrawer({ appt, resources, onClose }: { appt: ApptDTO;
           force,
         }),
       (r) => {
-        if (r.ok) setPanel(null);
-        else if (r.code && r.code !== "not_found") setConflict(r.error);
+        if (r.ok) onDone();
+        else if (r.code && SLOT_CONFLICTS.has(r.code)) setConflict(r.error);
       },
     );
+  }
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/30" onClick={onClose}>
-      <div
-        className="animate-slide-in flex h-full w-full max-w-[460px] flex-col bg-white shadow-pop"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-label="Appointment details"
-      >
-        <div className="flex items-start justify-between gap-3 border-b border-slate-100 p-5">
-          <div className="min-w-0">
-            <Link href={`/dashboard/patients/${appt.patient.id}`} className="text-lg font-bold hover:underline">
-              {appt.patient.name}
-            </Link>
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              <StatusBadge a={appt} />
-              {appt.isNewPatient ? <Badge tone="violet">New patient</Badge> : null}
-              {appt.patient.noShowCount > 0 ? (
-                <Badge tone="red">
-                  <UserX size={12} /> {appt.patient.noShowCount} no-show{appt.patient.noShowCount > 1 ? "s" : ""}
-                </Badge>
-              ) : null}
-              <Badge>{appt.source === "staff" ? "Front desk" : appt.source}</Badge>
-            </div>
-          </div>
-          <button type="button" onClick={onClose} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-ink" aria-label="Close">
-            <X size={20} />
-          </button>
-        </div>
-
-        <div className="flex-1 space-y-5 overflow-y-auto p-5">
-          <div className="flex flex-wrap gap-2">
-            {appt.patient.phone ? (
-              <>
-                <a href={`tel:${appt.patient.phone}`} className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1.5 text-sm font-semibold hover:bg-slate-200">
-                  <Phone size={14} /> {formatPhone(appt.patient.phone)}
-                </a>
-                <a
-                  href={`https://wa.me/${appt.patient.phone.replace("+", "")}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"
-                >
-                  <MessageCircle size={14} /> WhatsApp
-                </a>
-              </>
-            ) : null}
-            {appt.patient.email ? (
-              <a href={`mailto:${appt.patient.email}`} className="inline-flex max-w-full items-center gap-1.5 truncate rounded-lg bg-slate-100 px-2.5 py-1.5 text-sm font-semibold hover:bg-slate-200">
-                <Mail size={14} /> {appt.patient.email}
-              </a>
-            ) : null}
-          </div>
-
-          <div className="grid grid-cols-2 gap-4 rounded-xl bg-slate-50 p-4 text-sm">
-            <div>
-              <p className="text-xs font-semibold text-slate-500">When</p>
-              <p className="font-semibold">{longDate(appt.start, tz)}</p>
-              <p>
-                {localTime(appt.start, tz)} – {localTime(appt.end, tz)}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-slate-500">Treatment</p>
-              <p className="flex items-center gap-1.5 font-semibold">
-                <Stethoscope size={14} /> {appt.service.name}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-slate-500">With</p>
-              <p className="flex items-center gap-1.5 font-semibold">
-                <span className="h-2.5 w-2.5 rounded-full" style={{ background: appt.practitioner.color }} />
-                {appt.practitioner.name}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-slate-500">Where</p>
-              <p className="flex items-center gap-1.5 font-semibold">
-                <MapPin size={14} /> {appt.location.name}
-              </p>
-              {appt.room ? <p className="text-slate-500">{appt.room.name}</p> : null}
-            </div>
-          </div>
-
-          {appt.patientNote ? (
-            <div className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900 ring-1 ring-amber-200">
-              <p className="text-xs font-bold uppercase tracking-wide text-amber-700">Patient&apos;s note</p>
-              {appt.patientNote}
-            </div>
-          ) : null}
-          {appt.cancelReason ? <p className="text-sm text-slate-500">Cancellation reason: {appt.cancelReason}</p> : null}
-
-          {/* actions */}
-          <div className="flex flex-wrap gap-2">
-            {appt.status === "requested" ? (
-              <Button size="sm" disabled={pending} onClick={() => run(() => approve(appt.id))}>
-                <Check size={15} /> Approve request
-              </Button>
-            ) : null}
-            {appt.status === "scheduled" && appt.confirmation === "pending" && upcoming ? (
-              <Button size="sm" disabled={pending} onClick={() => run(() => confirmByPhone(appt.id))}>
-                <Check size={15} /> Confirmed by phone
-              </Button>
-            ) : null}
-            {appt.needsAttention ? (
-              <Button size="sm" variant="secondary" disabled={pending} onClick={() => run(() => clearAttention(appt.id))}>
-                Mark handled
-              </Button>
-            ) : null}
-            {appt.status === "scheduled" && upcoming ? (
-              <ReminderMenu disabled={pending} onSend={(c) => run(() => remindNow(appt.id, c))} />
-            ) : null}
-            {live ? (
-              <Button size="sm" variant={panel === "move" ? "subtle" : "secondary"} onClick={() => setPanel(panel === "move" ? null : "move")}>
-                <RefreshCw size={15} /> Reschedule
-              </Button>
-            ) : null}
-            {live ? (
-              <Button size="sm" variant="danger" onClick={() => setPanel(panel === "cancel" ? null : "cancel")}>
-                <CalendarX size={15} /> {appt.status === "requested" ? "Decline" : "Cancel"}
-              </Button>
-            ) : null}
-            {appt.status === "scheduled" && started ? (
-              <>
-                <Button size="sm" disabled={pending} onClick={() => run(() => recordOutcome(appt.id, "completed"))}>
-                  <Check size={15} /> Completed
-                </Button>
-                <Button size="sm" variant="danger" disabled={pending} onClick={() => run(() => recordOutcome(appt.id, "no_show"))}>
-                  <UserX size={15} /> No-show
-                </Button>
-              </>
-            ) : null}
-            {appt.status === "completed" || appt.status === "no_show" ? (
-              <Button size="sm" variant="secondary" disabled={pending} onClick={() => run(() => recordOutcome(appt.id, appt.status === "completed" ? "no_show" : "completed"))}>
-                Change to {appt.status === "completed" ? "no-show" : "completed"}
-              </Button>
-            ) : null}
-          </div>
-
-          {panel === "move" ? (
-            <div className="animate-fade-up space-y-3 rounded-xl p-4 ring-1 ring-slate-200">
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Date">
-                  <Input type="date" value={move.date} onChange={(e) => setMove({ ...move, date: e.target.value })} />
-                </Field>
-                <Field label="Time">
-                  <Input type="time" step={300} value={move.time} onChange={(e) => setMove({ ...move, time: e.target.value })} />
-                </Field>
-                <Field label="Practitioner">
-                  <Select value={move.practitionerId} onChange={(e) => setMove({ ...move, practitionerId: e.target.value })}>
-                    {resources.practitioners.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-                <Field label="Office">
-                  <Select value={move.locationId} onChange={(e) => setMove({ ...move, locationId: e.target.value, roomId: "" })}>
-                    {resources.locations.map((l) => (
-                      <option key={l.id} value={l.id}>
-                        {l.name}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-                <Field label="Chair">
-                  <Select value={move.roomId} onChange={(e) => setMove({ ...move, roomId: e.target.value })}>
-                    <option value="">Auto-assign</option>
-                    {resources.rooms
-                      .filter((r) => r.locationId === move.locationId)
-                      .map((r) => (
-                        <option key={r.id} value={r.id}>
-                          {r.name}
-                        </option>
-                      ))}
-                  </Select>
-                </Field>
-                <Field label="Duration (min)">
-                  <Input type="number" min={5} max={480} step={5} value={move.duration} onChange={(e) => setMove({ ...move, duration: e.target.value })} />
-                </Field>
-              </div>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" className="h-4 w-4 accent-brand-700" checked={move.notify} onChange={(e) => setMove({ ...move, notify: e.target.checked })} />
-                Notify the patient ({appt.patient.preferredChannel})
-              </label>
-              {conflict ? (
-                <div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
-                  {conflict}
-                  <button type="button" className="ml-2 font-semibold underline" onClick={() => submitMove(true)}>
-                    Book anyway
-                  </button>
-                </div>
-              ) : null}
-              <Button size="sm" disabled={pending} onClick={() => submitMove(false)}>
-                {pending ? <LoaderCircle size={15} className="animate-spin" /> : null} Save new time
-              </Button>
-            </div>
-          ) : null}
-
-          {panel === "cancel" ? (
-            <div className="animate-fade-up space-y-3 rounded-xl p-4 ring-1 ring-red-200">
-              <Textarea placeholder="Reason (internal, optional)" rows={2} value={cancel.reason} onChange={(e) => setCancel({ ...cancel, reason: e.target.value })} />
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" className="h-4 w-4 accent-brand-700" checked={cancel.notify} onChange={(e) => setCancel({ ...cancel, notify: e.target.checked })} />
-                Tell the patient and offer a new booking link
-              </label>
-              <Button
-                size="sm"
-                variant="danger"
-                disabled={pending}
-                onClick={() =>
-                  run(
-                    () => cancelByStaff(appt.id, cancel.reason, cancel.notify),
-                    (r) => r.ok && onClose(),
-                  )
-                }
-              >
-                Cancel appointment
-              </Button>
-            </div>
-          ) : null}
-
-          <div>
-            <p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-400">Internal note</p>
-            <Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Only visible to the team" />
-            {note !== (appt.internalNote ?? "") ? (
-              <Button size="sm" variant="secondary" className="mt-2" disabled={pending} onClick={() => run(() => saveInternalNote(appt.id, note))}>
-                Save note
-              </Button>
-            ) : null}
-          </div>
-
-          <div>
-            <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Messages</p>
-            {thread === null ? (
-              <LoaderCircle size={16} className="animate-spin text-slate-400" />
-            ) : thread.length === 0 ? (
-              <p className="text-sm text-slate-500">No messages yet.</p>
-            ) : (
-              <div className="space-y-2">
-                {thread.map((m) => (
-                  <div key={m.id} className={cx("flex", m.direction === "inbound" ? "justify-start" : "justify-end")}>
-                    <div
-                      className={cx(
-                        "max-w-[88%] rounded-2xl px-3 py-2 text-[13px] [overflow-wrap:anywhere]",
-                        m.direction === "inbound" ? "rounded-bl-sm bg-slate-100" : "rounded-br-sm bg-brand-50 text-brand-950 ring-1 ring-brand-100",
-                      )}
-                    >
-                      <p className="mb-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">
-                        {m.channel} · {m.direction === "inbound" ? `reply${m.intent ? ` → ${m.intent}` : ""}` : m.status} ·{" "}
-                        {fmtDay(zonedDate(new Date(m.createdAt), tz), "short")} {zonedTime(new Date(m.createdAt), tz)}
-                      </p>
-                      {m.subject ? <p className="font-semibold">{m.subject}</p> : <p className="whitespace-pre-line">{m.body}</p>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <button
-            type="button"
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-ink"
-            onClick={async () => {
-              const res = await issuePatientLink(appt.id);
-              if (res.ok) window.open((res.data as { url: string }).url, "_blank", "noopener,noreferrer");
-              else toast.show({ tone: "error", text: res.error });
-            }}
-          >
-            <ExternalLink size={13} /> Patient&apos;s self-service page
-          </button>
-          <button
-            type="button"
-            className="ml-4 text-xs font-semibold text-slate-500 hover:text-ink"
-            onClick={async () => {
-              const res = await issuePatientLink(appt.id);
-              if (res.ok) {
-                await navigator.clipboard?.writeText((res.data as { url: string }).url);
-                toast.show({ tone: "success", text: "Link copied." });
-              } else toast.show({ tone: "error", text: res.error });
-            }}
-          >
-            Copy link
-          </button>
-        </div>
+    <form
+      className="animate-fade-up space-y-3 rounded-xl p-4 ring-1 ring-slate-200"
+      aria-label={t("drawer.movePanel.title")}
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit(false);
+      }}
+    >
+      <p className="text-sm font-bold">{t("drawer.movePanel.title")}</p>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label={t("drawer.movePanel.date")}>
+          <Input ref={first} data-autofocus type="date" required value={move.date} onChange={(e) => setMove({ ...move, date: e.target.value })} />
+        </Field>
+        <Field label={t("drawer.movePanel.time")}>
+          <Input type="time" step={300} required value={move.time} onChange={(e) => setMove({ ...move, time: e.target.value })} />
+        </Field>
+        <Field label={t("drawer.movePanel.practitioner")}>
+          <Select value={move.practitionerId} onChange={(e) => setMove({ ...move, practitionerId: e.target.value })}>
+            {resources.practitioners.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label={t("drawer.movePanel.office")}>
+          <Select value={move.locationId} onChange={(e) => setMove({ ...move, locationId: e.target.value, roomId: "" })}>
+            {resources.locations.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label={t("drawer.movePanel.chair")}>
+          <Select value={move.roomId} onChange={(e) => setMove({ ...move, roomId: e.target.value })}>
+            <option value="">{t("drawer.movePanel.autoChair")}</option>
+            {resources.rooms
+              .filter((r) => r.locationId === move.locationId)
+              .map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+          </Select>
+        </Field>
+        <Field label={t("drawer.movePanel.duration")}>
+          <Input type="number" min={5} max={480} step={5} value={move.duration} onChange={(e) => setMove({ ...move, duration: e.target.value })} />
+        </Field>
       </div>
-    </div>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" className="h-4 w-4 accent-brand-700" checked={move.notify} onChange={(e) => setMove({ ...move, notify: e.target.checked })} />
+        {t("drawer.movePanel.notify", { channel: channelName })}
+      </label>
+      {conflict ? (
+        <div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-950" role="alert">
+          {conflict}{" "}
+          <button type="button" className="font-semibold underline" onClick={() => submit(true)}>
+            {t("drawer.movePanel.moveAnyway")}
+          </button>
+        </div>
+      ) : null}
+      <Button size="sm" type="submit" disabled={pending}>
+        {pending ? <LoaderCircle size={15} className="animate-spin" aria-hidden /> : null} {t("drawer.movePanel.save")}
+      </Button>
+    </form>
   );
 }
 
-function ReminderMenu({ onSend, disabled }: { onSend: (c: "sms" | "whatsapp" | "email") => void; disabled?: boolean }) {
-  const [open, setOpen] = useState(false);
+/** Slot rejections staff may override ("book anyway"): the server allows them with force. */
+export const SLOT_CONFLICTS = new Set(["practitioner_busy", "time_off", "no_room", "not_offered", "outside_hours"]);
+
+function CancelPanel({ appt, onDone }: { appt: ApptListDTO; onDone: () => void }) {
+  const t = useT("calendar");
+  const { run, pending } = useRunAction();
+  const [cancel, setCancel] = useState({ reason: "", notify: true });
+  const request = appt.status === "requested";
   return (
-    <div className="relative">
-      <Button size="sm" variant="secondary" disabled={disabled} onClick={() => setOpen(!open)}>
-        <BellRing size={15} /> Send reminder
+    <form
+      className="animate-fade-up space-y-3 rounded-xl p-4 ring-1 ring-red-200"
+      aria-label={request ? t("drawer.cancelPanel.declineTitle") : t("drawer.cancelPanel.title")}
+      onSubmit={(e) => {
+        e.preventDefault();
+        run(
+          () => cancelByStaff(appt.id, cancel.reason, cancel.notify),
+          (r) => r.ok && onDone(),
+        );
+      }}
+    >
+      <Field label={t("drawer.cancelPanel.reason")} hint={t("drawer.cancelPanel.reasonHint")}>
+        <Textarea rows={2} maxLength={500} value={cancel.reason} onChange={(e) => setCancel({ ...cancel, reason: e.target.value })} />
+      </Field>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" className="h-4 w-4 accent-brand-700" checked={cancel.notify} onChange={(e) => setCancel({ ...cancel, notify: e.target.checked })} />
+        {t("drawer.cancelPanel.notify")}
+      </label>
+      <Button size="sm" variant="danger" type="submit" disabled={pending}>
+        {request ? t("drawer.cancelPanel.confirmDecline") : t("drawer.cancelPanel.confirm")}
       </Button>
-      {open ? (
-        <div className="absolute left-0 top-9 z-10 w-40 overflow-hidden rounded-xl bg-white py-1 shadow-pop ring-1 ring-slate-200">
-          {(["sms", "whatsapp", "email"] as const).map((c) => (
-            <button
-              key={c}
-              type="button"
-              className="block w-full px-3 py-2 text-left text-sm font-medium hover:bg-slate-50"
-              onClick={() => {
-                setOpen(false);
-                onSend(c);
-              }}
-            >
-              {c === "sms" ? "SMS" : c === "whatsapp" ? "WhatsApp" : "Email"}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
+    </form>
   );
 }

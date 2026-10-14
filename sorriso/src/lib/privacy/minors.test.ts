@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BookingRelationInput } from "./consent";
-import { validateBookingRelation } from "./minors";
+import { ageBand, noticeKindFor, relationFormIssue, validateBookingRelation } from "./minors";
 
 // 9:00 in Rome on 4 March 2030.
 const AT = new Date("2030-03-04T08:00:00Z");
@@ -68,5 +68,32 @@ describe("validateBookingRelation", () => {
       field: "bookedFor",
     });
     expect(validateBookingRelation({ bookedFor: "other_adult" }, "1980-01-01", AT, "practice", AT)).toEqual({ ok: true });
+  });
+});
+
+describe("form helpers", () => {
+  it("bands ages at 14 and 18, in Italy", () => {
+    expect(ageBand("2016-03-05", AT)).toBe("child");
+    expect(ageBand("2016-03-04", AT)).toBe("teen");
+    expect(ageBand("2012-03-05", AT)).toBe("teen");
+    expect(ageBand("2012-03-04", AT)).toBe("adult");
+    expect(ageBand("", AT)).toBeNull();
+    expect(ageBand("not a date", AT)).toBeNull();
+  });
+
+  it("gives young people from 14 to 17 booking themselves the notice written for them", () => {
+    expect(noticeKindFor("self", "2014-01-01", AT)).toBe("minor");
+    expect(noticeKindFor("self", "1990-01-01", AT)).toBe("practice_patient");
+    expect(noticeKindFor("self", null, AT)).toBe("practice_patient");
+    // A parent booking for a child reads the full notice.
+    expect(noticeKindFor("minor", "2014-01-01", AT)).toBe("practice_patient");
+  });
+
+  it("previews the server's answer in the form", () => {
+    expect(relationFormIssue({ bookedFor: "self" }, "2020-01-01", AT)).toMatchObject({ code: "guardian_required" });
+    expect(relationFormIssue(minor(), "", AT)).toMatchObject({ code: "birthdate_required" });
+    expect(relationFormIssue(minor(), "1990-01-01", AT)).toMatchObject({ code: "not_a_minor" });
+    expect(relationFormIssue(minor(), "2020-01-01", AT)).toEqual({ ok: true });
+    expect(relationFormIssue({ bookedFor: "other_adult" }, "", AT)).toEqual({ ok: true });
   });
 });

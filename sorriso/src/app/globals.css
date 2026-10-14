@@ -13,6 +13,11 @@
   --color-brand-800: #0f534c;
   --color-brand-900: #114540;
   --color-ink: #0b1324;
+  /*
+   * Boundary of form controls: 3.6:1 against white and 3.4:1 against the page background
+   * (WCAG 1.4.11 non-text contrast needs 3:1). slate-200 rings were 1.2:1. See docs/accessibility.md.
+   */
+  --color-line-strong: #7c8799;
   --shadow-card: 0 1px 2px rgb(15 23 42 / 0.04), 0 4px 16px rgb(15 23 42 / 0.05);
   --shadow-pop: 0 12px 40px rgb(15 23 42 / 0.18);
   --animate-fade-up: fade-up 0.35s ease-out both;
@@ -40,15 +45,46 @@
   }
 }
 
-html {
-  -webkit-text-size-adjust: 100%;
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    /* The sticky site header is 4rem tall: anchors and focused fields must not end up under it (WCAG 2.4.11). */
+    scroll-padding-top: 5rem;
+  }
+
+  body {
+    background: #f7f9fb;
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /*
+   * Visible keyboard focus everywhere (WCAG 2.4.7 / 2.4.13): brand-600 is 4.8:1 against white and
+   * 3.9:1 against the dark ink sections. In the base layer, so components that draw their own focus
+   * ring (form fields: ring-2) can replace the outline with a utility.
+   */
+  :focus-visible {
+    outline: 2px solid var(--color-brand-600);
+    outline-offset: 2px;
+  }
+
+  /* Headings and <main> receive focus programmatically (tabIndex -1) to announce a new step: no ring. */
+  [tabindex="-1"]:focus:not(:focus-visible) {
+    outline: none;
+  }
 }
 
-body {
-  background: #f7f9fb;
-  color: var(--color-ink);
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
+/* Respect the system setting: no entrance animations, spinners slowed to a stop, no smooth scrolling. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* Hatched background for time off / closures in the calendar */
@@ -64,9 +100,4 @@ body {
 
 .scrollbar-thin {
   scrollbar-width: thin;
-}
-
-:focus-visible {
-  outline: 2px solid var(--color-brand-500);
-  outline-offset: 2px;
 }

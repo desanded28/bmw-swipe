@@ -1,2 +1,140 @@
-/** English source for the booking namespace. Owned by WP1 (public site). */
-export default {} as const;
+/**
+ * English source for the booking namespace: the booking flow, the slot picker, the waitlist form,
+ * the confirmation, the embed and the "need help?" box. Owned by WP1 (public site). Loaded on every
+ * public page by the [locale] layout (other packages render the booking flow on their pages too).
+ *
+ * Dates and money arrive formatted ({date}, {price}); {word} is the reply word that confirms an
+ * appointment in the patient's chosen message language (SI, YES, JA…), never translated here.
+ */
+import { p } from "../../plural";
+
+export default {
+  page: {
+    metaTitle: "Book an appointment at {clinic}",
+    metaDescription: "Choose a treatment and a time, and leave your details: {clinic} receives your booking straight away.",
+    kicker: "Book online",
+    waitlistOffer: "A time from the waitlist is waiting for you. Confirm your details below to book it before someone else does.",
+  },
+  steps: {
+    label: "Booking steps",
+    service: "Treatment",
+    time: "Date and time",
+    details: "Your details",
+  },
+  service: {
+    heading: "What do you need?",
+  },
+  time: {
+    heading: "Choose a date and time",
+    changeService: "Change treatment",
+    practitioner: "Practitioner",
+    firstAvailable: "First available",
+    practitionerOption: "{name} ({specialty})",
+    office: "Office",
+    anyOffice: "Any office",
+    officeOption: "{name}, {address}",
+  },
+  slots: {
+    previous: "Previous days",
+    next: "Next days",
+    today: "Today",
+    range: "{from} – {to}",
+    loading: "Loading available times…",
+    loaded: p({
+      one: "{count} time available from {from} to {to}.",
+      other: "{count} times available from {from} to {to}.",
+    }),
+    none: "No free times from {from} to {to}.",
+    retry: "Try again",
+    /** A time button, read in full: "Wednesday 15 October at 10:30, Dr. Anna Rossi". */
+    slotLabel: "{date} at {time}, {who}",
+    slotLabelPlain: "{date} at {time}",
+    whoAt: "{name}, {office}",
+    more: p({ one: "+{count} more", other: "+{count} more" }),
+    moreLabel: p({
+      one: "Show {count} more time on {date}",
+      other: "Show {count} more times on {date}",
+    }),
+    noneDay: "No free times",
+    emptyNext: "No free times on these days. Next availability: <next>{date}</next>",
+    emptyHint: "No free times on these days. Try another practitioner or office, or join the waitlist below.",
+  },
+  waitlist: {
+    prompt: "<b>Nothing suitable?</b> Join the waitlist: we'll message you as soon as an earlier time frees up.",
+    join: "Join the waitlist",
+    heading: "Waitlist: tell us when you could come",
+    from: "From",
+    until: "Until",
+    partOfDay: "Time of day",
+    any: "Any time",
+    mornings: "Mornings",
+    afternoons: "Afternoons",
+    submit: "Notify me",
+    done: "You're on the waitlist. If a matching time frees up we'll message you straight away: the first to book gets it.",
+  },
+  details: {
+    heading: "Your details",
+    changeTime: "Change time",
+    firstName: "First name",
+    lastName: "Last name",
+    mobile: "Mobile number",
+    countryCode: "Country code",
+    dialOption: "+{code}",
+    phoneHint: "For your reminders. Reply {word} to confirm.",
+    phonePreview: "We'll text {number}",
+    email: "Email",
+    birthDate: "Date of birth",
+    newPatient: "First visit at this practice?",
+    newPatientYes: "Yes, I'm a new patient",
+    newPatientNo: "No, I've been here before",
+    channel: "Remind me by",
+    note: "Anything the practice should know?",
+    noteHint: "Visible only to the practice. Don't include information you don't want to share.",
+    language: "Language for messages",
+    languageHint: "Reminders and confirmations will be in this language.",
+    confirm: "Confirm booking",
+    request: "Request appointment",
+    sending: "Sending…",
+    approvalNote: "This practice confirms online requests personally, usually within a few hours.",
+  },
+  done: {
+    bookedTitle: "You're booked!",
+    requestedTitle: "Request sent!",
+    requestedBody: "{clinic} will confirm your request shortly. We'll message you as soon as they do.",
+    confirmedBody: "We've sent you a confirmation and will remind you shortly before the visit.",
+    pendingBody: "We've sent you a confirmation. We'll remind you before the visit: just reply {word} to confirm.",
+    withAt: "{practitioner} · {office}, {address}, {city}",
+    appleOutlook: "Apple / Outlook",
+    google: "Google Calendar",
+    /** The calendar entry's title: the practice only, never the treatment (calendars show on lock screens). */
+    eventTitle: "Appointment at {clinic}",
+    manage: "Manage appointment",
+  },
+  summary: {
+    title: "Your appointment",
+    service: "Treatment",
+    serviceMeta: "{duration} · {price}",
+    chooseService: "Choose a treatment",
+    with: "With",
+    when: "When",
+    pickTime: "Pick a time",
+    where: "Where",
+    address: "{address}, {city}",
+    noAccount: "No account needed, no booking fee",
+    reminders: "Reminder by SMS or email",
+    remindersWhatsapp: "Reminder by SMS, WhatsApp or email",
+    reschedule: "Reschedule or cancel online",
+  },
+  help: {
+    title: "Need help?",
+    call: "Call {clinic} on <tel>{phone}</tel>.",
+    email: "Write to {clinic} at <mail>{email}</mail>.",
+    contact: "Contact {clinic} directly.",
+  },
+  embed: {
+    blocked: "This booking form can't be shown on this website.",
+    openNewTab: "Open the booking page in a new tab",
+    poweredBy: "Online booking by <link>{app}</link>",
+    privacyNotice: "Privacy notice of {controller}",
+  },
+} as const;

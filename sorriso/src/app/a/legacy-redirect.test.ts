@@ -91,3 +91,45 @@ describe("legacy /a/<token> links", () => {
     expectRedirect(await open(unknown, { cookie: "NEXT_LOCALE=pt", acceptLanguage: "de" }), `/pt/a/${unknown}`);
   });
 });
+
+describe("legacy link table", () => {
+  /** [path after /a/<token>, rest segments as Next passes them, expected path after /<locale>/a/<token>] */
+  const TABLE: [string, string[], string][] = [
+    ["", [], ""],
+    ["?do=reschedule", [], "?do=reschedule"],
+    ["?do=confirm&utm=x", [], "?do=confirm&utm=x"],
+    ["/review", ["review"], "/review"],
+    ["/review?rating=4", ["review"], "/review?rating=4"],
+    ["/privacy", ["privacy"], "/privacy"],
+    ["/forms/anamnesis", ["forms", "anamnesis"], "/forms/anamnesis"],
+    ["/rebook", ["rebook"], "/rebook"],
+  ];
+
+  it.each(TABLE)("/a/<token>%s keeps its path and query in the patient's language", async (suffix, rest, expected) => {
+    const token = await appointmentWithToken("pl");
+    const req = request(`/a/${token}${suffix}`, { acceptLanguage: "de" });
+    const res = rest.length
+      ? await restGET(req, { params: Promise.resolve({ token, rest }) })
+      : await tokenGET(req, { params: Promise.resolve({ token }) });
+    expectRedirect(res, `/pl/a/${token}${expected}`);
+  });
+
+  it.each(TABLE)("an unknown token with /a/<token>%s goes to the negotiated language, path kept", async (suffix, rest, expected) => {
+    await createPractice();
+    const token = issueManageToken().token;
+    const req = request(`/a/${token}${suffix}`, { acceptLanguage: "ro-RO,ro;q=0.9" });
+    const res = rest.length
+      ? await restGET(req, { params: Promise.resolve({ token, rest }) })
+      : await tokenGET(req, { params: Promise.resolve({ token }) });
+    expectRedirect(res, `/ro/a/${token}${expected}`);
+  });
+
+  it("never echoes an injected path segment as a new host", async () => {
+    const token = await appointmentWithToken("it");
+    const res = await restGET(request(`/a/${token}/x`, {}), { params: Promise.resolve({ token, rest: ["//evil.example"] }) });
+    const location = res.headers.get("location")!;
+    expect(new URL(location).origin).toBe(ORIGIN);
+    expect(location).toContain(`/it/a/${token}/`);
+  });
+});
+

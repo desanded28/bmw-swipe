@@ -1,20 +1,19 @@
 import { z } from "zod";
-import { apiError, authenticateApiKey, handleApiError, json, preflight } from "@/lib/api";
+import { apiError, json, partnerRoute } from "@/lib/api";
 import { getOrgAppointmentDetails } from "@/lib/appointments";
 import { cancelAppointment, confirmAttendance, rescheduleAppointment, setOutcome } from "@/lib/booking";
 import { partnerAppointment } from "@/lib/serializers";
 
-export const OPTIONS = preflight;
-
 type Ctx = { params: Promise<{ id: string }> };
 
-export async function GET(req: Request, { params }: Ctx) {
-  const org = (await authenticateApiKey(req))?.org ?? null;
-  if (!org) return apiError(401, "unauthorized", "Missing or invalid API key.");
-  const { id } = await params;
-  const d = await getOrgAppointmentDetails(org.id, id);
-  if (!d) return apiError(404, "not_found", "Appointment not found.");
-  return json({ appointment: partnerAppointment(d) });
+/** GET /api/v1/partner/appointments/:id — scope appointments:read. */
+export function GET(req: Request, { params }: Ctx) {
+  return partnerRoute(req, "appointments:read", "appointments.get", async ({ org, key }) => {
+    const { id } = await params;
+    const d = await getOrgAppointmentDetails(org.id, id);
+    if (!d) return apiError(404, "not_found", "Appointment not found.");
+    return json({ appointment: partnerAppointment(d, key.scopes) });
+  });
 }
 
 const patchSchema = z.object({
@@ -29,16 +28,14 @@ const patchSchema = z.object({
 });
 
 /**
- * PATCH /api/v1/partner/appointments/:id
+ * PATCH /api/v1/partner/appointments/:id — scope appointments:write.
  *   { "start": "…" }                       reschedule
  *   { "status": "cancelled", "reason": … }  cancel (frees the slot for the waitlist)
  *   { "status": "completed" | "no_show" }   record the outcome
  *   { "confirmation": "confirmed" }         patient confirmed by phone
  */
-export async function PATCH(req: Request, { params }: Ctx) {
-  try {
-    const org = (await authenticateApiKey(req))?.org ?? null;
-    if (!org) return apiError(401, "unauthorized", "Missing or invalid API key.");
+export function PATCH(req: Request, { params }: Ctx) {
+  return partnerRoute(req, "appointments:write", "appointments.update", async ({ org, key }) => {
     const { id } = await params;
     const d = await getOrgAppointmentDetails(org.id, id);
     if (!d) return apiError(404, "not_found", "Appointment not found.");
@@ -61,8 +58,6 @@ export async function PATCH(req: Request, { params }: Ctx) {
     }
     if (input.confirmation === "confirmed") await confirmAttendance(id, "staff");
 
-    return json({ appointment: partnerAppointment((await getOrgAppointmentDetails(org.id, id))!) });
-  } catch (err) {
-    return handleApiError(err);
-  }
+    return json({ appointment: partnerAppointment((await getOrgAppointmentDetails(org.id, id))!, key.scopes) });
+  });
 }

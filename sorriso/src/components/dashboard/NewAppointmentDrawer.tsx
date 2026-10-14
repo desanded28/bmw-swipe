@@ -1,11 +1,13 @@
 "use client";
 
-import { LoaderCircle, Search, UserPlus, UserX, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Lock, LoaderCircle, Search, UserPlus, UserX, X } from "lucide-react";
+import { useEffect, useId, useState } from "react";
 import { createStaffAppointment } from "@/app/dashboard/actions/appointments";
 import { searchPatients } from "@/app/dashboard/actions/patients";
+import { useT } from "@/i18n/provider";
 import { formatPhone } from "@/lib/phone";
-import { Badge, Button, Field, Input, Select, Textarea, cx } from "../ui";
+import { Badge, Button, Field, Input, Select, Textarea } from "../ui";
+import { DRAWER_DIALOG, SLOT_CONFLICTS, useModalDialog } from "./AppointmentDrawer";
 import type { Resources } from "./types";
 import { useRunAction } from "./useRunAction";
 
@@ -19,6 +21,14 @@ export type NewAppointmentDefaults = {
   roomId?: string;
 };
 
+/** A restricted record in the search results (WP5 masks its name and flags it). */
+const isRestrictedHit = (h: PatientHit) => "restricted" in h && Boolean((h as { restricted?: boolean }).restricted);
+
+/**
+ * Book from the dashboard: a native modal <dialog> docked on the right. Every control has a
+ * visible label; the search announces its result count; a slot conflict offers "book anyway",
+ * and booking a restricted patient asks for the reason the server records (Art. 18).
+ */
 export function NewAppointmentDrawer({
   resources,
   defaults,
@@ -28,6 +38,9 @@ export function NewAppointmentDrawer({
   defaults: NewAppointmentDefaults;
   onClose: () => void;
 }) {
+  const t = useT("calendar");
+  const titleId = useId();
+  const { ref, props: dialogProps } = useModalDialog(onClose);
   const { run, pending } = useRunAction();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<{ q: string; hits: PatientHit[] }>({ q: "", hits: [] });
@@ -54,24 +67,20 @@ export function NewAppointmentDrawer({
     };
   });
   const [conflict, setConflict] = useState<string | null>(null);
+  const [needsReason, setNeedsReason] = useState(false);
+  const [reason, setReason] = useState("");
 
   useEffect(() => {
     if (term.length < 2) return;
     let alive = true;
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       searchPatients(term).then((found) => alive && setResults({ q: term, hits: found }));
     }, 200);
     return () => {
       alive = false;
-      clearTimeout(t);
+      clearTimeout(timer);
     };
   }, [term]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const practitioner = resources.practitioners.find((p) => p.id === form.practitionerId);
   const offered = new Set(practitioner?.serviceIds ?? []);
@@ -94,83 +103,133 @@ export function NewAppointmentDrawer({
           internalNote: form.note,
           notifyPatient: form.notify,
           force,
+          restrictedAccessReason: needsReason ? reason : undefined,
         }),
       (r) => {
         if (r.ok) onClose();
-        else if (r.code && !["not_found", "invalid"].includes(r.code)) setConflict(r.error);
+        else if (r.code === "restricted") setNeedsReason(true);
+        else if (r.code && SLOT_CONFLICTS.has(r.code)) setConflict(r.error);
       },
     );
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/30" onClick={onClose}>
-      <div className="animate-slide-in flex h-full w-full max-w-[460px] flex-col bg-white shadow-pop" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="New appointment">
+    <dialog ref={ref} aria-labelledby={titleId} className={DRAWER_DIALOG} {...dialogProps}>
+      <form
+        className="flex h-full flex-col"
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit(false);
+        }}
+      >
         <div className="flex items-center justify-between border-b border-slate-100 p-5">
-          <h2 className="text-lg font-bold">New appointment</h2>
-          <button type="button" onClick={onClose} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-ink" aria-label="Close">
-            <X size={20} />
+          <h2 id={titleId} className="text-lg font-bold">
+            {t("newAppointment.title")}
+          </h2>
+          <button type="button" onClick={onClose} className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-ink" aria-label={t("drawer.close")}>
+            <X size={20} aria-hidden />
           </button>
         </div>
         <div className="flex-1 space-y-5 overflow-y-auto p-5">
-          <div>
-            <p className="mb-1.5 text-[13px] font-semibold text-slate-700">Patient</p>
+          <fieldset>
+            <legend className="mb-1.5 text-[13px] font-semibold text-slate-700">{t("newAppointment.patient")}</legend>
             {patient ? (
-              <div className="flex items-center justify-between rounded-xl bg-brand-50 p-3 ring-1 ring-brand-200">
-                <div>
-                  <p className="font-semibold">
+              <div className="flex items-center justify-between gap-3 rounded-xl bg-brand-50 p-3 ring-1 ring-brand-200">
+                <div className="min-w-0">
+                  <p className="flex items-center gap-2 font-semibold">
                     {patient.firstName} {patient.lastName}
+                    {isRestrictedHit(patient) ? (
+                      <Badge tone="amber">
+                        <Lock size={11} aria-hidden /> {t("newAppointment.restrictedHit")}
+                      </Badge>
+                    ) : null}
                   </p>
-                  <p className="text-xs text-slate-600">{[formatPhone(patient.phone), patient.email].filter(Boolean).join(" · ")}</p>
+                  <p className="truncate text-xs text-slate-600">{[formatPhone(patient.phone), patient.email].filter(Boolean).join(" · ")}</p>
                 </div>
-                <button type="button" className="text-sm font-semibold text-brand-700" onClick={() => setPatient(null)}>
-                  Change
+                <button
+                  type="button"
+                  className="shrink-0 text-sm font-semibold text-brand-700 hover:underline"
+                  onClick={() => {
+                    setPatient(null);
+                    setNeedsReason(false);
+                  }}
+                >
+                  {t("newAppointment.change")}
                 </button>
               </div>
             ) : newPatient ? (
               <div className="grid grid-cols-2 gap-3 rounded-xl p-3 ring-1 ring-slate-200">
-                <Input placeholder="First name" value={np.firstName} onChange={(e) => setNp({ ...np, firstName: e.target.value })} />
-                <Input placeholder="Last name" value={np.lastName} onChange={(e) => setNp({ ...np, lastName: e.target.value })} />
-                <Input placeholder="Mobile" type="tel" value={np.phone} onChange={(e) => setNp({ ...np, phone: e.target.value })} />
-                <Input placeholder="Email" type="email" value={np.email} onChange={(e) => setNp({ ...np, email: e.target.value })} />
-                <button type="button" className="col-span-2 text-left text-sm font-semibold text-slate-500 hover:text-ink" onClick={() => setNewPatient(false)}>
-                  ← Search existing patients
+                <Field label={t("newAppointment.firstName")}>
+                  <Input autoComplete="off" required value={np.firstName} onChange={(e) => setNp({ ...np, firstName: e.target.value })} />
+                </Field>
+                <Field label={t("newAppointment.lastName")}>
+                  <Input autoComplete="off" required value={np.lastName} onChange={(e) => setNp({ ...np, lastName: e.target.value })} />
+                </Field>
+                <Field label={t("newAppointment.mobile")}>
+                  <Input type="tel" autoComplete="off" value={np.phone} onChange={(e) => setNp({ ...np, phone: e.target.value })} />
+                </Field>
+                <Field label={t("newAppointment.email")}>
+                  <Input type="email" autoComplete="off" value={np.email} onChange={(e) => setNp({ ...np, email: e.target.value })} />
+                </Field>
+                <button type="button" className="col-span-2 text-left text-sm font-semibold text-slate-600 hover:text-ink" onClick={() => setNewPatient(false)}>
+                  {t("newAppointment.backToSearch")}
                 </button>
               </div>
             ) : (
               <div>
                 <div className="relative">
-                  <Search size={16} className="absolute left-3 top-3 text-slate-400" />
-                  <Input autoFocus className="pl-9" placeholder="Search by name, phone or email" value={query} onChange={(e) => setQuery(e.target.value)} />
-                  {searching ? <LoaderCircle size={16} className="absolute right-3 top-3 animate-spin text-slate-400" /> : null}
+                  <Search size={16} className="pointer-events-none absolute left-3 top-3 text-slate-500" aria-hidden />
+                  <Input
+                    data-autofocus
+                    type="search"
+                    autoComplete="off"
+                    className="pl-9"
+                    aria-label={t("newAppointment.search")}
+                    placeholder={t("newAppointment.searchPlaceholder")}
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                  />
+                  {searching ? <LoaderCircle size={16} className="absolute right-3 top-3 animate-spin text-slate-500" aria-hidden /> : null}
                 </div>
+                <p className="sr-only" role="status">
+                  {term.length >= 2 && !searching ? (hits.length ? t("newAppointment.results", { count: hits.length }) : t("newAppointment.noResults")) : ""}
+                </p>
                 {hits.length ? (
-                  <div className="mt-2 divide-y divide-slate-100 overflow-hidden rounded-xl ring-1 ring-slate-200">
+                  <ul className="mt-2 divide-y divide-slate-100 overflow-hidden rounded-xl ring-1 ring-slate-200">
                     {hits.map((h) => (
-                      <button key={h.id} type="button" onClick={() => setPatient(h)} className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-slate-50">
-                        <span>
-                          <span className="block text-sm font-semibold">
-                            {h.firstName} {h.lastName}
+                      <li key={h.id}>
+                        <button type="button" onClick={() => setPatient(h)} className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-slate-50">
+                          <span className="min-w-0">
+                            <span className="block text-sm font-semibold">
+                              {h.firstName} {h.lastName}
+                            </span>
+                            <span className="block truncate text-xs text-slate-600">{[formatPhone(h.phone), h.email].filter(Boolean).join(" · ")}</span>
                           </span>
-                          <span className="text-xs text-slate-500">{[formatPhone(h.phone), h.email].filter(Boolean).join(" · ")}</span>
-                        </span>
-                        {h.noShowCount ? (
-                          <Badge tone="red">
-                            <UserX size={11} /> {h.noShowCount}
-                          </Badge>
-                        ) : null}
-                      </button>
+                          {isRestrictedHit(h) ? (
+                            <Badge tone="amber">
+                              <Lock size={11} aria-hidden /> {t("newAppointment.restrictedHit")}
+                            </Badge>
+                          ) : h.noShowCount ? (
+                            <Badge tone="red">
+                              <UserX size={11} aria-hidden /> {t("newAppointment.noShows", { count: h.noShowCount })}
+                            </Badge>
+                          ) : null}
+                        </button>
+                      </li>
                     ))}
-                  </div>
+                  </ul>
+                ) : term.length >= 2 && !searching ? (
+                  <p className="mt-2 text-sm text-slate-600">{t("newAppointment.noResults")}</p>
                 ) : null}
-                <button type="button" className="mt-2 inline-flex items-center gap-1.5 text-sm font-semibold text-brand-700" onClick={() => setNewPatient(true)}>
-                  <UserPlus size={15} /> New patient
+                <button type="button" className="mt-2 inline-flex items-center gap-1.5 text-sm font-semibold text-brand-700 hover:underline" onClick={() => setNewPatient(true)}>
+                  <UserPlus size={15} aria-hidden /> {t("newAppointment.newPatient")}
                 </button>
               </div>
             )}
-          </div>
+          </fieldset>
 
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Practitioner" className="col-span-2">
+            <Field label={t("newAppointment.practitioner")} className="col-span-2">
               <Select value={form.practitionerId} onChange={(e) => setForm({ ...form, practitionerId: e.target.value })}>
                 {resources.practitioners.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -179,7 +238,7 @@ export function NewAppointmentDrawer({
                 ))}
               </Select>
             </Field>
-            <Field label="Treatment" className="col-span-2">
+            <Field label={t("newAppointment.treatment")} className="col-span-2">
               <Select
                 value={form.serviceId}
                 onChange={(e) =>
@@ -190,20 +249,23 @@ export function NewAppointmentDrawer({
                   })
                 }
               >
-                {sortedServices.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name} ({s.durationMinutes} min){offered.has(s.id) ? "" : " — not usually offered"}
-                  </option>
-                ))}
+                {sortedServices.map((s) => {
+                  const vars = { name: s.name, duration: t("newAppointment.minutes", { count: s.durationMinutes }) };
+                  return (
+                    <option key={s.id} value={s.id}>
+                      {offered.has(s.id) ? t("newAppointment.treatmentOption", vars) : t("newAppointment.treatmentNotOffered", vars)}
+                    </option>
+                  );
+                })}
               </Select>
             </Field>
-            <Field label="Date">
-              <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+            <Field label={t("newAppointment.date")}>
+              <Input type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
             </Field>
-            <Field label="Time">
-              <Input type="time" step={300} value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} />
+            <Field label={t("newAppointment.time")}>
+              <Input type="time" step={300} required value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} />
             </Field>
-            <Field label="Office">
+            <Field label={t("newAppointment.office")}>
               <Select value={form.locationId} onChange={(e) => setForm({ ...form, locationId: e.target.value, roomId: "" })}>
                 {resources.locations.map((l) => (
                   <option key={l.id} value={l.id}>
@@ -212,9 +274,9 @@ export function NewAppointmentDrawer({
                 ))}
               </Select>
             </Field>
-            <Field label="Chair">
+            <Field label={t("newAppointment.chair")}>
               <Select value={form.roomId} onChange={(e) => setForm({ ...form, roomId: e.target.value })}>
-                <option value="">Auto-assign</option>
+                <option value="">{t("newAppointment.autoChair")}</option>
                 {resources.rooms
                   .filter((r) => r.locationId === form.locationId)
                   .map((r) => (
@@ -224,32 +286,40 @@ export function NewAppointmentDrawer({
                   ))}
               </Select>
             </Field>
-            <Field label="Duration (min)">
+            <Field label={t("newAppointment.duration")}>
               <Input type="number" min={5} max={480} step={5} value={form.duration} onChange={(e) => setForm({ ...form, duration: e.target.value })} />
             </Field>
           </div>
-          <Field label="Internal note">
-            <Textarea rows={2} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
+          <Field label={t("newAppointment.internalNote")} hint={t("newAppointment.internalNoteHint")}>
+            <Textarea rows={2} maxLength={2000} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
           </Field>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" className="h-4 w-4 accent-brand-700" checked={form.notify} onChange={(e) => setForm({ ...form, notify: e.target.checked })} />
-            Send the patient a confirmation (reminders are always scheduled)
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-0.5 h-4 w-4 accent-brand-700" checked={form.notify} onChange={(e) => setForm({ ...form, notify: e.target.checked })} />
+            {t("newAppointment.notify")}
           </label>
+          {needsReason ? (
+            <div className="space-y-2 rounded-lg bg-amber-50 p-3 ring-1 ring-amber-200" role="alert">
+              <Field label={t("newAppointment.restrictedReason")} hint={t("newAppointment.restrictedReasonHint")}>
+                <Textarea rows={2} required minLength={3} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
+              </Field>
+            </div>
+          ) : null}
           {conflict ? (
-            <div className={cx("rounded-lg bg-amber-50 p-3 text-sm text-amber-900")}>
-              {conflict}
-              <button type="button" className="ml-2 font-semibold underline" onClick={() => submit(true)}>
-                Book anyway
+            <div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-950" role="alert">
+              {conflict}{" "}
+              <button type="button" className="font-semibold underline" onClick={() => submit(true)}>
+                {t("newAppointment.bookAnyway")}
               </button>
             </div>
           ) : null}
         </div>
         <div className="border-t border-slate-100 p-5">
-          <Button className="w-full" disabled={pending || (!patient && !newPatient)} onClick={() => submit(false)}>
-            {pending ? <LoaderCircle size={16} className="animate-spin" /> : null} Book appointment
+          <Button type="submit" className="w-full" disabled={pending || (!patient && !newPatient)}>
+            {pending ? <LoaderCircle size={16} className="animate-spin" aria-hidden /> : null}
+            {needsReason ? t("newAppointment.bookWithReason") : t("newAppointment.book")}
           </Button>
         </div>
-      </div>
-    </div>
+      </form>
+    </dialog>
   );
 }

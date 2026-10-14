@@ -1,28 +1,56 @@
 "use client";
 
-import { LoaderCircle } from "lucide-react";
-import { useState } from "react";
+import { BellPlus, CheckCircle2, LoaderCircle } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { ProcessingContext } from "@/db/enums";
-import { DIAL_CODE, LOCALES } from "@/i18n/config";
-import { useLocale } from "@/i18n/provider";
+import { rich } from "@/i18n/rich";
+import { useLocale, useT } from "@/i18n/provider";
 import type { PublicClinic } from "@/lib/directory";
+import { normalizePhone } from "@/lib/phone";
 import { noticeVersionFor } from "@/lib/privacy/booking-rules";
 import { Button, Field, Input, Select } from "../ui";
 import {
   INITIAL_PRIVACY,
   INITIAL_RELATION,
-  PRACTICE_DIAL_CODE,
-  fieldErrors,
   privacyPayload,
   relationPayload,
   type BookingPrivacyState,
   type RelationState,
 } from "./contracts";
+import { DIAL_CODES, apiErrorText, apiFieldErrors, focusFirstInvalid, type DetailsForm } from "./DetailsStep";
 import { PatientRelationSection } from "./PatientRelationSection";
 import { PrivacySection } from "./PrivacySection";
 
-const DIAL_CODES = [...new Set(LOCALES.map((l) => DIAL_CODE[l]))];
+/** The waitlist form, lifted into BookingFlow with the booking form so nothing typed is lost. */
+export type WaitlistState = {
+  open: boolean;
+  done: boolean;
+  earliestDate: string;
+  latestDate: string;
+  partOfDay: "any" | "morning" | "afternoon";
+  /** Its own choices: a consent ticked for the booking is not reused for the waitlist. */
+  privacy: BookingPrivacyState;
+  relation: RelationState;
+  relationAsked: boolean;
+};
 
+export function initialWaitlist(today: string): WaitlistState {
+  return {
+    open: false,
+    done: false,
+    earliestDate: today,
+    latestDate: "",
+    partOfDay: "any",
+    privacy: INITIAL_PRIVACY,
+    relation: INITIAL_RELATION,
+    relationAsked: false,
+  };
+}
+
+/**
+ * "Nothing suitable? Join the waitlist." Name and contacts are the booking form's own (typed once,
+ * used by whichever form is sent), the dates and privacy choices the waitlist's.
+ */
 export function WaitlistOffer({
   clinic,
   serviceId,
@@ -31,6 +59,10 @@ export function WaitlistOffer({
   today,
   context,
   practiceRef,
+  contact,
+  onContactChange,
+  value,
+  onChange,
 }: {
   clinic: PublicClinic;
   serviceId: string;
@@ -41,166 +73,226 @@ export function WaitlistOffer({
   context: ProcessingContext;
   /** The verified practice ref of the page, posted back so the API keeps the practice context. */
   practiceRef?: string | null;
+  contact: DetailsForm;
+  onContactChange: (patch: Partial<DetailsForm>) => void;
+  value: WaitlistState;
+  onChange: (patch: Partial<WaitlistState>) => void;
 }) {
+  const t = useT("booking");
+  const te = useT("errors");
+  const tc = useT("common");
   const locale = useLocale();
-  const [open, setOpen] = useState(false);
-  const [state, setState] = useState<"idle" | "sending" | "done">("idle");
-  const [error, setError] = useState<string | null>(null);
+  const uid = useId();
+  const formRef = useRef<HTMLFormElement>(null);
+  const alertRef = useRef<HTMLDivElement>(null);
+  const [sending, setSending] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [form, setForm] = useState({
-    earliestDate: today,
-    latestDate: "",
-    partOfDay: "any",
-    firstName: "",
-    lastName: "",
-    phone: "",
-    phoneCountry: PRACTICE_DIAL_CODE,
-    email: "",
-  });
-  const [privacy, setPrivacy] = useState<BookingPrivacyState>(INITIAL_PRIVACY);
-  const [relation, setRelation] = useState<RelationState>(INITIAL_RELATION);
-  /** Posted only once the relation section asked (PatientRelationSectionProps). */
-  const [relationAsked, setRelationAsked] = useState(false);
+  const [alert, setAlert] = useState<{ text: string; n: number } | null>(null);
+  /** What to focus after the next render: the form heading on open, the opener on close, an invalid field. */
+  const [focus, setFocus] = useState<{ what: "heading" | "opener" | "invalid"; n: number } | null>(null);
+  const ids = { heading: `${uid}-heading`, opener: `${uid}-opener` };
 
-  if (!open)
+  useEffect(() => {
+    if (!focus) return;
+    if (focus.what === "invalid") focusFirstInvalid(formRef.current, alertRef.current);
+    else document.getElementById(focus.what === "heading" ? ids.heading : ids.opener)?.focus();
+  }, [focus, ids.heading, ids.opener]);
+
+  const request = (what: "heading" | "opener" | "invalid") => setFocus((f) => ({ what, n: (f?.n ?? 0) + 1 }));
+  const fail = (text: string) => {
+    setAlert((a) => ({ text, n: (a?.n ?? 0) + 1 }));
+    request("invalid");
+  };
+
+  if (value.done)
     return (
-      <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-slate-300 p-4">
-        <p className="text-sm text-slate-600">
-          <span className="font-semibold text-slate-800">Nothing suitable?</span> Join the waitlist — we&apos;ll text you
-          the moment an earlier slot frees up.
-        </p>
-        <Button type="button" variant="secondary" size="sm" onClick={() => setOpen(true)}>
-          Join waitlist
-        </Button>
-      </div>
+      <p role="status" className="mt-5 flex gap-2 rounded-xl bg-brand-50 p-4 text-sm font-medium text-brand-800 ring-1 ring-brand-200">
+        <CheckCircle2 size={18} className="shrink-0" aria-hidden /> {t("waitlist.done")}
+      </p>
     );
 
-  if (state === "done")
+  if (!value.open)
     return (
-      <div className="mt-5 rounded-xl bg-brand-50 p-4 text-sm font-medium text-brand-800">
-        You&apos;re on the waitlist. If a matching slot opens up we&apos;ll message you straight away — first to book gets it.
+      <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-slate-400 p-4">
+        <p className="text-sm text-slate-600">
+          {rich(t("waitlist.prompt"), { b: (c) => <strong className="font-semibold text-slate-800">{c}</strong> })}
+        </p>
+        <Button
+          id={ids.opener}
+          type="button"
+          variant="secondary"
+          size="sm"
+          aria-expanded={false}
+          onClick={() => {
+            onChange({ open: true });
+            request("heading");
+          }}
+        >
+          <BellPlus size={15} aria-hidden /> {t("waitlist.join")}
+        </Button>
       </div>
     );
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
-    if (context === "marketplace" && !privacy.platformConsent) {
-      setErrors({ platformConsent: "Please consent to continue" });
-      return;
-    }
-    setErrors({});
-    setState("sending");
-    const res = await fetch(`/api/v1/clinics/${clinic.org.slug}/waitlist`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        serviceId,
-        practitionerId: practitionerId || null,
-        locationId: locationId || null,
-        earliestDate: form.earliestDate,
-        latestDate: form.latestDate || form.earliestDate,
-        partOfDay: form.partOfDay,
-        patient: {
-          firstName: form.firstName,
-          lastName: form.lastName,
-          phone: form.phone || null,
-          phoneCountry: form.phoneCountry,
-          email: form.email || null,
-          locale,
-        },
-        privacy: privacyPayload(privacy, {
-          clinic,
-          context,
-          preferredChannel: "sms",
-          noticeVersion: noticeVersionFor(context),
-          locale,
+    if (sending) return;
+    const errs: Record<string, string> = {};
+    if (!contact.firstName.trim()) errs.firstName = te("fields.required");
+    if (!contact.lastName.trim()) errs.lastName = te("fields.required");
+    if (!contact.phone.trim() && !contact.email.trim()) errs.phone = te("fields.contactRequired");
+    else if (contact.phone.trim() && !normalizePhone(contact.phone, contact.phoneCountry)) errs.phone = te("fields.invalidPhone");
+    if (contact.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact.email.trim())) errs.email = te("fields.invalidEmail");
+    if (!value.earliestDate) errs.earliestDate = te("fields.invalidDate");
+    if (value.latestDate && value.latestDate < value.earliestDate) errs.latestDate = te("fields.dateOrder");
+    if (context === "marketplace" && !value.privacy.platformConsent) errs.platformConsent = te("fields.consentRequired");
+    setErrors(errs);
+    const count = Object.keys(errs).length;
+    if (count) return fail(te("checkFields", { count }));
+
+    setAlert(null);
+    setSending(true);
+    try {
+      const res = await fetch(`/api/v1/clinics/${clinic.org.slug}/waitlist`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          serviceId,
+          practitionerId: practitionerId || null,
+          locationId: locationId || null,
+          earliestDate: value.earliestDate,
+          latestDate: value.latestDate || value.earliestDate,
+          partOfDay: value.partOfDay,
+          patient: {
+            firstName: contact.firstName,
+            lastName: contact.lastName,
+            phone: contact.phone.trim() || null,
+            phoneCountry: contact.phoneCountry,
+            email: contact.email.trim() || null,
+            locale: contact.locale,
+          },
+          privacy: privacyPayload(value.privacy, {
+            clinic,
+            context,
+            preferredChannel: "sms",
+            noticeVersion: noticeVersionFor(context),
+            locale,
+          }),
+          relation: value.relationAsked ? relationPayload(value.relation) : undefined,
+          practiceRef: practiceRef ?? null,
+          website: contact.website,
         }),
-        relation: relationAsked ? relationPayload(relation) : undefined,
-        practiceRef: practiceRef ?? null,
-      }),
-    }).catch(() => null);
-    if (!res?.ok) {
-      const json = await res?.json().catch(() => null);
-      setErrors(fieldErrors(json?.error));
-      setError(json?.error?.issues?.[0]?.message ?? json?.error?.message ?? "Could not join the waitlist.");
-      setState("idle");
-      return;
+      });
+      if (!res.ok) {
+        const json = (await res.json().catch(() => null)) as { error?: Parameters<typeof apiFieldErrors>[1] } | null;
+        const fields = apiFieldErrors(te, json?.error);
+        const n = Object.keys(fields).length;
+        setErrors(fields);
+        return fail(n ? te("checkFields", { count: n }) : apiErrorText(te, json?.error?.code));
+      }
+      onChange({ done: true });
+    } catch {
+      fail(te("network"));
+    } finally {
+      setSending(false);
     }
-    setState("done");
   }
 
   return (
-    <form onSubmit={submit} className="mt-5 space-y-3 rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200">
-      <p className="text-sm font-semibold">Waitlist — tell us when you could come</p>
+    <form ref={formRef} onSubmit={submit} noValidate className="mt-5 space-y-3 rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200">
+      <h3 id={ids.heading} tabIndex={-1} className="text-sm font-semibold">
+        {t("waitlist.heading")}
+      </h3>
       {/* The waitlist form asks no birth date yet: WP4 adds it with the minor variant. */}
       <PatientRelationSection
-        value={relation}
-        onChange={(v) => {
-          setRelation(v);
-          setRelationAsked(true);
-        }}
+        value={value.relation}
+        onChange={(relation) => onChange({ relation, relationAsked: true })}
         birthDate=""
         errors={errors}
       />
       <div className="grid gap-3 sm:grid-cols-3">
-        <Field label="From">
-          <Input type="date" min={today} value={form.earliestDate} onChange={(e) => setForm({ ...form, earliestDate: e.target.value })} required />
+        <Field label={t("waitlist.from")} error={errors.earliestDate}>
+          <Input type="date" min={today} value={value.earliestDate} onChange={(e) => onChange({ earliestDate: e.target.value })} required />
         </Field>
-        <Field label="Until">
-          <Input type="date" min={form.earliestDate} value={form.latestDate} onChange={(e) => setForm({ ...form, latestDate: e.target.value })} required />
+        <Field label={t("waitlist.until")} hint={tc("words.optional")} error={errors.latestDate}>
+          <Input
+            type="date"
+            min={value.earliestDate || today}
+            value={value.latestDate}
+            onChange={(e) => onChange({ latestDate: e.target.value })}
+          />
         </Field>
-        <Field label="Time of day">
-          <Select value={form.partOfDay} onChange={(e) => setForm({ ...form, partOfDay: e.target.value })}>
-            <option value="any">Any time</option>
-            <option value="morning">Mornings</option>
-            <option value="afternoon">Afternoons</option>
+        <Field label={t("waitlist.partOfDay")}>
+          <Select value={value.partOfDay} onChange={(e) => onChange({ partOfDay: e.target.value as WaitlistState["partOfDay"] })}>
+            <option value="any">{t("waitlist.any")}</option>
+            <option value="morning">{t("waitlist.mornings")}</option>
+            <option value="afternoon">{t("waitlist.afternoons")}</option>
           </Select>
         </Field>
-        <Field label="First name">
-          <Input value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} required />
+        <Field label={t("details.firstName")} error={errors.firstName}>
+          <Input value={contact.firstName} onChange={(e) => onContactChange({ firstName: e.target.value })} autoComplete="given-name" required />
         </Field>
-        <Field label="Last name">
-          <Input value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} required />
+        <Field label={t("details.lastName")} error={errors.lastName}>
+          <Input value={contact.lastName} onChange={(e) => onContactChange({ lastName: e.target.value })} autoComplete="family-name" required />
         </Field>
-        <Field label="Mobile">
-          <span className="flex gap-2">
-            <Select
-              aria-label="Country code"
-              value={form.phoneCountry}
-              onChange={(e) => setForm({ ...form, phoneCountry: e.target.value })}
-              className="w-24 shrink-0"
-            >
-              {DIAL_CODES.map((code) => (
-                <option key={code} value={code}>
-                  +{code}
-                </option>
-              ))}
-            </Select>
-            <Input type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="333…" />
-          </span>
+        <Field label={t("details.mobile")} error={errors.phone ?? errors.phoneCountry}>
+          {(control) => (
+            <span className="flex gap-2">
+              <Select
+                aria-label={t("details.countryCode")}
+                value={contact.phoneCountry}
+                onChange={(e) => onContactChange({ phoneCountry: e.target.value })}
+                className="w-24 shrink-0"
+              >
+                {DIAL_CODES.map((code) => (
+                  <option key={code} value={code}>
+                    {t("details.dialOption", { code })}
+                  </option>
+                ))}
+              </Select>
+              <Input
+                {...control}
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel-national"
+                value={contact.phone}
+                onChange={(e) => onContactChange({ phone: e.target.value })}
+              />
+            </span>
+          )}
         </Field>
       </div>
-      <Field label="Email (optional)">
-        <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+      <Field label={t("details.email")} hint={tc("words.optional")} error={errors.email}>
+        <Input type="email" autoComplete="email" value={contact.email} onChange={(e) => onContactChange({ email: e.target.value })} />
       </Field>
       <PrivacySection
         clinic={clinic}
         context={context}
         variant="waitlist"
         preferredChannel="sms"
-        relation={relation}
-        value={privacy}
-        onChange={setPrivacy}
+        relation={value.relation}
+        value={value.privacy}
+        onChange={(privacy) => onChange({ privacy })}
         errors={errors}
       />
-      {error ? <p className="text-sm font-medium text-red-600">{error}</p> : null}
+      {alert ? (
+        <div key={alert.n} ref={alertRef} role="alert" tabIndex={-1} className="rounded-lg bg-red-50 p-3 text-sm font-medium text-red-700">
+          {alert.text}
+        </div>
+      ) : null}
       <div className="flex gap-2">
-        <Button type="submit" size="sm" disabled={state === "sending"}>
-          {state === "sending" ? <LoaderCircle size={15} className="animate-spin" /> : null} Notify me
+        <Button type="submit" size="sm" aria-disabled={sending} className="aria-disabled:opacity-60">
+          {sending ? <LoaderCircle size={15} className="animate-spin" aria-hidden /> : null} {t("waitlist.submit")}
         </Button>
-        <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
-          Cancel
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            onChange({ open: false });
+            request("opener");
+          }}
+        >
+          {tc("actions.cancel")}
         </Button>
       </div>
     </form>

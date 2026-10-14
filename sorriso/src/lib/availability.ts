@@ -32,6 +32,9 @@ import { addDays, addMinutes, weekdayOf, zonedParts, zonedToUtc } from "./time";
  *   3. no time-off applies (practitioner, location-wide, or org-wide closure),
  *   4. a chair/room at the location is free for the whole duration (if the service needs one),
  *   5. booking policy allows it (minimum notice, maximum advance) — online only.
+ *
+ * Nothing about the patient enters here: no-show risk (src/lib/risk.ts) never hides, reorders or
+ * blocks a slot, so every patient sees the same availability.
  */
 
 export type Slot = {
@@ -302,14 +305,26 @@ export function evaluateSlot(ctx: AvailabilityContext, input: EvaluateInput): Ev
   return room ? { ok: true, roomId: room.id } : { ok: false, reason: "no_room" };
 }
 
-/** Generate every bookable slot between fromDate and fromDate + days (exclusive). */
+/**
+ * Generate every bookable slot between fromDate and fromDate + days (exclusive).
+ * `durationMinutes` (default: the service's) and `ignoreAppointmentId` serve moving an existing
+ * appointment: its own length, and its current slot not counted as busy.
+ */
 export function findSlots(
   ctx: AvailabilityContext,
-  opts: { fromDate: string; days: number; now?: Date; enforcePolicy?: boolean; stepMinutes?: number },
+  opts: {
+    fromDate: string;
+    days: number;
+    now?: Date;
+    enforcePolicy?: boolean;
+    stepMinutes?: number;
+    durationMinutes?: number;
+    ignoreAppointmentId?: string;
+  },
 ): Slot[] {
   const now = opts.now ?? new Date();
   const step = Math.max(5, opts.stepMinutes ?? ctx.settings.booking.slotStepMinutes);
-  const duration = ctx.service.durationMinutes;
+  const duration = opts.durationMinutes ?? ctx.service.durationMinutes;
   const out: Slot[] = [];
 
   for (let i = 0; i < opts.days; i++) {
@@ -325,6 +340,8 @@ export function findSlots(
           practitionerId: sch.practitionerId,
           locationId: sch.locationId,
           start,
+          durationMinutes: duration,
+          ignoreAppointmentId: opts.ignoreAppointmentId,
           enforcePolicy: opts.enforcePolicy ?? true,
           requireWorkingHours: false, // we're iterating inside working hours already
           now,

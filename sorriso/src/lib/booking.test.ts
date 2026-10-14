@@ -1,11 +1,21 @@
 import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
-import { appointments, messages, reminders, waitlist } from "@/db/schema";
+import { appointments, auditLog, messages, patients, reminders, waitlist } from "@/db/schema";
 import { createPractice, MONDAY, NOW, TZ } from "@/test/fixtures";
-import { BookingError, cancelAppointment, createAppointment, rescheduleAppointment, setOutcome } from "./booking";
+import {
+  BookingError,
+  cancelAppointment,
+  createAppointment,
+  dismissDuplicate,
+  listDuplicatePairs,
+  mergePatients,
+  rescheduleAppointment,
+  setOutcome,
+} from "./booking";
 import { handleInboundMessage, parseIntent } from "./inbound";
 import { newId } from "./ids";
+import { isAllowed, recordConsent } from "./privacy/consent";
 import { processDueReminders } from "./reminders";
 import { zonedToUtc } from "./time";
 
@@ -235,5 +245,114 @@ describe("two-way SMS", () => {
     expect(res.appointmentId).toBe(later.appointment.id);
     const [a] = await db.select().from(appointments).where(eq(appointments.id, soon.appointment.id));
     expect(a.confirmation).toBe("pending");
+  });
+});
+
+describe("same-name protection and duplicates (WP8)", () => {
+  it("a staff upsert with the same name and phone but a different birth date creates a new patient with possibleDuplicateOfId set", async () => {
+    const q = await createPractice();
+    const base = { firstName: "Giulia", lastName: "Neri", phone: "+393471234500", locale: "it" as const };
+    const book = (patient: Record<string, unknown>, hh: number) =>
+      createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt: at(hh), patient: { ...base, ...patient }, source: "staff", online: false, now: NOW });
+    const first = await book({ birthDate: "1980-05-01" }, 9);
+    // Same person: same birth date, or none given — the record is reused.
+    expect((await book({ birthDate: "1980-05-01" }, 10)).patient.id).toBe(first.patient.id);
+    expect((await book({}, 11)).patient.id).toBe(first.patient.id);
+    // Same name and phone, another birth date: someone else until staff say otherwise.
+    const other = await book({ birthDate: "2012-09-30" }, 12);
+    expect(other.patient.id).not.toBe(first.patient.id);
+    expect(other.patient.possibleDuplicateOfId).toBe(first.patient.id);
+    expect(first.patient.possibleDuplicateOfId).toBeNull();
+  });
+
+  it("a public booking that doesn't match every detail gets its own record, flagged", async () => {
+    const q = await createPractice();
+    const who = { firstName: "Sara", lastName: "Blu", phone: "+393471234501", email: "sara@example.com", locale: "it" as const };
+    const a = await createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt: at(9), patient: who, source: "online", online: true, now: NOW });
+    const b = await createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt: at(10), patient: { ...who, email: "other@example.com" }, source: "online", online: true, now: NOW });
+    expect(b.patient.id).not.toBe(a.patient.id);
+    expect(b.patient.possibleDuplicateOfId).toBe(a.patient.id);
+    const pairs = await listDuplicatePairs(q.orgId, { contacts: false });
+    expect(pairs.map((x) => [x.patient.id, x.other.id])).toEqual([[b.patient.id, a.patient.id]]);
+    expect(pairs[0].patient.email).toBeNull();
+  });
+
+  it("restricted patients: staff need a reason (audited), public bookings never reuse the record", async () => {
+    const q = await createPractice();
+    const who = { firstName: "Rosa", lastName: "Ristretta", phone: "+393471234502", locale: "it" as const };
+    const first = await createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt: at(9), patient: who, source: "staff", online: false, now: NOW });
+    await db.update(patients).set({ restrictedAt: NOW, restrictionReason: "Art. 18" }).where(eq(patients.id, first.patient.id));
+    const staffBooking = (extra: Record<string, unknown>) =>
+      createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt: at(10), patient: { id: first.patient.id }, source: "staff", online: false, now: NOW, ...extra });
+    await expect(staffBooking({})).rejects.toMatchObject({ code: "restricted", reason: "restriction_reason_required" });
+    const ok = await staffBooking({ restrictedAccessReason: "Urgent pain, patient called", actor: { type: "user", id: null } });
+    expect(ok.patient.id).toBe(first.patient.id);
+    const logged = await db.select().from(auditLog).where(and(eq(auditLog.action, "patient.restricted_access"), eq(auditLog.entityId, first.patient.id)));
+    expect(logged).toHaveLength(1);
+    expect(logged[0].reason).toBe("Urgent pain, patient called");
+
+    const online = await createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt: at(11), patient: who, source: "online", online: true, now: NOW });
+    expect(online.patient.id).not.toBe(first.patient.id);
+    expect(online.patient.restrictedAt).toBeNull();
+    expect(online.patient.possibleDuplicateOfId).toBe(first.patient.id);
+  });
+
+  it("merging moves the person's records to the kept one; the merged record stays as a tombstone the consent ledger follows", async () => {
+    const q = await createPractice();
+    const keep = await createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt: at(9), patient: { firstName: "Elia", lastName: "Uno", phone: "+393471234503", locale: "it" }, source: "staff", online: false, now: NOW });
+    const dupe = await createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt: at(10), patient: { firstName: "Elia", lastName: "Uno", phone: "+393471234503", email: "elia@example.com", birthDate: "1990-01-01", locale: "it" }, source: "staff", online: false, now: NOW });
+    expect(dupe.patient.possibleDuplicateOfId).toBeNull(); // the first record had no birth date: same person, reused
+    // Force a flagged pair: a second record with a different birth date.
+    const flagged = await createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt: at(11), patient: { firstName: "Elia", lastName: "Uno", phone: "+393471234503", birthDate: "1991-02-02", locale: "it" }, source: "staff", online: false, now: NOW });
+    expect(flagged.patient.possibleDuplicateOfId).toBe(keep.patient.id);
+    await db.transaction((tx) =>
+      recordConsent(tx, { orgId: q.orgId, patientId: flagged.patient.id, purpose: "feedback_request", granted: true, locale: "it", method: "staff_recorded", source: "staff" }),
+    );
+    const other = await createPractice();
+    expect(await mergePatients({ orgId: other.orgId, keepId: keep.patient.id, mergeId: flagged.patient.id, actor: { type: "user", id: null } })).toEqual({ ok: false, code: "not_found" });
+
+    const res = await mergePatients({ orgId: q.orgId, keepId: keep.patient.id, mergeId: flagged.patient.id, actor: { type: "user", id: null } });
+    expect(res).toMatchObject({ ok: true, moved: { appointments: 1 } });
+    const [moved] = await db.select().from(appointments).where(eq(appointments.id, flagged.appointment.id));
+    expect(moved.patientId).toBe(keep.patient.id);
+    const [tomb] = await db.select().from(patients).where(eq(patients.id, flagged.patient.id));
+    expect(tomb.mergedIntoId).toBe(keep.patient.id);
+    expect(tomb.possibleDuplicateOfId).toBeNull();
+    // The ledger row stays on the tombstone and still counts for the kept record.
+    expect(await isAllowed(keep.patient.id, "feedback_request")).toBe(true);
+    const audit = await db.select().from(auditLog).where(and(eq(auditLog.action, "patient.merge"), eq(auditLog.entityId, keep.patient.id)));
+    expect(audit).toHaveLength(1);
+    // A booking by the merged id lands on the kept record.
+    const later = await createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt: at(12), patient: { id: flagged.patient.id }, source: "staff", online: false, now: NOW });
+    expect(later.patient.id).toBe(keep.patient.id);
+    expect(await listDuplicatePairs(q.orgId, { contacts: true })).toEqual([]);
+  });
+
+  it("dismissing a flagged pair clears the flag", async () => {
+    const q = await createPractice();
+    const a = await createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt: at(9), patient: { firstName: "Teo", lastName: "Due", phone: "+393471234504", birthDate: "1970-01-01", locale: "it" }, source: "staff", online: false, now: NOW });
+    const b = await createAppointment({ orgId: q.orgId, serviceId: q.visit, practitionerId: q.drA, locationId: q.milano, startsAt: at(10), patient: { firstName: "Teo", lastName: "Due", phone: "+393471234504", birthDate: "2001-01-01", locale: "it" }, source: "staff", online: false, now: NOW });
+    expect(b.patient.possibleDuplicateOfId).toBe(a.patient.id);
+    expect(await dismissDuplicate({ orgId: q.orgId, patientId: b.patient.id, actor: { type: "user", id: null } })).toBe(true);
+    expect(await listDuplicatePairs(q.orgId, { contacts: true })).toEqual([]);
+  });
+
+  it("a child reachable only through the guardian's phone is texted when staff move the visit", async () => {
+    const q = await createPractice();
+    const d = await createAppointment({
+      orgId: q.orgId,
+      serviceId: q.visit,
+      practitionerId: q.drA,
+      locationId: q.milano,
+      startsAt: at(9),
+      patient: { firstName: "Piccolo", lastName: "Tutore", birthDate: "2022-06-01", guardianName: "Papà", guardianRelation: "parent", guardianPhone: "+393471234505", locale: "it" },
+      source: "staff",
+      online: false,
+      now: NOW,
+    });
+    expect(d.patient.preferredChannel).toBe("sms");
+    await rescheduleAppointment(d.appointment.id, { startsAt: at(10), by: "staff", now: NOW });
+    const sent = await db.select().from(messages).where(eq(messages.appointmentId, d.appointment.id));
+    expect(sent.map((m) => [m.channel, m.to])).toEqual([["sms", "+393471234505"]]);
   });
 });

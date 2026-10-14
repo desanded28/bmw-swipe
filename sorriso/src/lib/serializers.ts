@@ -1,3 +1,4 @@
+import type { ApiScope } from "@/db/enums";
 import type { AppointmentDetails } from "./appointments";
 import { appointmentLinks, canPatientCancel, canPatientReschedule } from "./appointments";
 import { fullName, practitionerName } from "./format";
@@ -30,8 +31,15 @@ export function publicAppointment(d: AppointmentDetails) {
   };
 }
 
-/** Partner API view: full details for the practice's own integrations. */
-export function partnerAppointment(d: AppointmentDetails) {
+/**
+ * Partner API view for the practice's own integrations, cut to the key's scopes (data
+ * minimisation): appointment notes, free text that may hold health data, only with notes:read;
+ * birth date and no-show count only with patients:read. The patient's restricted/erased flags are
+ * always there, so integrations can honour Art. 18 and 17 (Art. 19).
+ */
+export function partnerAppointment(d: AppointmentDetails, scopes: readonly ApiScope[]) {
+  const notes = scopes.includes("notes:read");
+  const patientDetails = scopes.includes("patients:read");
   return {
     id: d.appointment.id,
     status: d.appointment.status,
@@ -50,11 +58,11 @@ export function partnerAppointment(d: AppointmentDetails) {
       name: fullName(d.patient),
       email: d.patient.email,
       phone: d.patient.phone,
-      birthDate: d.patient.birthDate,
-      noShowCount: d.patient.noShowCount,
+      ...(patientDetails ? { birthDate: d.patient.birthDate, noShowCount: d.patient.noShowCount } : {}),
+      restricted: Boolean(d.patient.restrictedAt),
+      erased: Boolean(d.patient.erasedAt),
     },
-    patientNote: d.appointment.patientNote,
-    internalNote: d.appointment.internalNote,
+    ...(notes ? { patientNote: d.appointment.patientNote, internalNote: d.appointment.internalNote } : {}),
     createdAt: d.appointment.createdAt.toISOString(),
     updatedAt: d.appointment.updatedAt.toISOString(),
   };

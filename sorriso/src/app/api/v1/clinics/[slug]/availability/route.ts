@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { organizations } from "@/db/schema";
-import { apiError, handleApiError, json, preflight } from "@/lib/api";
+import { apiError, handleApiError, json, limitByIp, preflight } from "@/lib/api";
 import { collapseAnyPractitioner, getAvailability, type Slot } from "@/lib/availability";
 import { addDays, isDateString, todayIn, zonedParts, minutesToHHMM } from "@/lib/time";
 
@@ -17,6 +17,9 @@ export const OPTIONS = preflight;
  */
 export async function GET(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   try {
+    // The booking form asks for each week it shows: generous, but bounded per network.
+    const limited = await limitByIp(req, "availability", 120, 60_000);
+    if (limited) return limited;
     const { slug } = await params;
     const url = new URL(req.url);
     const serviceId = url.searchParams.get("serviceId");

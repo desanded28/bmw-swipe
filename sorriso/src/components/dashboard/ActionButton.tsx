@@ -5,7 +5,10 @@ import type { ActionResult } from "@/app/dashboard/actions/_shared";
 import { Button } from "../ui";
 import { useRunAction } from "./useRunAction";
 
-/** A button bound to a server action (with arguments pre-bound on the server). */
+/**
+ * A button bound to a server action (with arguments pre-bound on the server). `confirm` is the
+ * caller's already-translated question, asked before running it.
+ */
 export function ActionButton({
   action,
   children,
@@ -31,7 +34,7 @@ export function ActionButton({
         run(action);
       }}
     >
-      {pending ? <LoaderCircle size={14} className="animate-spin" /> : null}
+      {pending ? <LoaderCircle size={14} className="animate-spin" aria-hidden /> : null}
       {children}
     </Button>
   );

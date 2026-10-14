@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { locations, organizations, practitioners, services } from "@/db/schema";
-import { apiError, authenticateApiKey, handleApiError, json, preflight, rateLimit } from "@/lib/api";
+import { apiError, apiKeyError, checkApiKey, handleApiError, json, limitByIp, preflight } from "@/lib/api";
 import { bookingRuleMessage } from "@/lib/booking";
 import { processingContextFor } from "@/lib/privacy/context";
 import { canAcceptOnlineBookings } from "@/lib/privacy/gates";
@@ -21,9 +21,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
     const [org] = await db.select().from(organizations).where(eq(organizations.slug, slug));
     if (!org) return apiError(404, "not_found", "Clinic not found.");
 
-    const partner = (await authenticateApiKey(req))?.org ?? null;
+    const key = await checkApiKey(req);
+    if (!key.ok && key.code !== "none") return apiKeyError(key);
+    const partner = key.ok ? key.auth.org : null;
     if (partner && partner.id !== org.id) return apiError(403, "forbidden", "This API key belongs to another practice.");
-    if (!rateLimit(req, "waitlist", 5, 10 * 60_000)) return apiError(429, "rate_limited", "Too many requests.");
+    if (!partner) {
+      const limited = await limitByIp(req, "waitlist", 5, 10 * 60_000);
+      if (limited) return limited;
+    }
     if (!(await canAcceptOnlineBookings(org))) return apiError(403, "not_accepting", bookingRuleMessage("not_accepting"));
 
     const input = waitlistInputSchema.parse(await req.json());

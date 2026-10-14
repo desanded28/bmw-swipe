@@ -2,48 +2,51 @@ import { and, asc, eq, gte, lt, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { APPOINTMENT_STATUSES, appointments } from "@/db/schema";
-import { apiError, authenticateApiKey, handleApiError, json, preflight } from "@/lib/api";
+import { json, partnerRoute } from "@/lib/api";
 import { getAppointmentDetails } from "@/lib/appointments";
 import { createAppointment } from "@/lib/booking";
 import { partnerAppointment } from "@/lib/serializers";
 import { patientInputSchema } from "@/lib/validation";
 
-export const OPTIONS = preflight;
+/**
+ * Partner API: the practice's own software, authenticated with its API key. No CORS (never
+ * callable from a browser page), every call audited (api.request); see partnerRoute().
+ */
 
 /**
  * GET /api/v1/partner/appointments?from=ISO&to=ISO&status=&locationId=&practitionerId=&updatedSince=ISO
- * Lists the practice's appointments (max 500). Use updatedSince for incremental sync.
+ * Lists the practice's appointments (max 500). Use updatedSince for incremental sync. Scope appointments:read.
  */
-export async function GET(req: Request) {
-  const org = (await authenticateApiKey(req))?.org ?? null;
-  if (!org) return apiError(401, "unauthorized", "Missing or invalid API key.");
-  const p = new URL(req.url).searchParams;
-  const conditions: SQL[] = [eq(appointments.orgId, org.id)];
-  const date = (k: string) => {
-    const v = p.get(k);
-    const d = v ? new Date(v) : null;
-    return d && !Number.isNaN(d.getTime()) ? d : null;
-  };
-  const from = date("from");
-  const to = date("to");
-  const updatedSince = date("updatedSince");
-  if (from) conditions.push(gte(appointments.startsAt, from));
-  if (to) conditions.push(lt(appointments.startsAt, to));
-  if (updatedSince) conditions.push(gte(appointments.updatedAt, updatedSince));
-  const status = p.get("status");
-  if (status && (APPOINTMENT_STATUSES as readonly string[]).includes(status))
-    conditions.push(eq(appointments.status, status as (typeof APPOINTMENT_STATUSES)[number]));
-  if (p.get("locationId")) conditions.push(eq(appointments.locationId, p.get("locationId")!));
-  if (p.get("practitionerId")) conditions.push(eq(appointments.practitionerId, p.get("practitionerId")!));
+export function GET(req: Request) {
+  return partnerRoute(req, "appointments:read", "appointments.list", async ({ org, key }) => {
+    const p = new URL(req.url).searchParams;
+    const conditions: SQL[] = [eq(appointments.orgId, org.id)];
+    const date = (k: string) => {
+      const v = p.get(k);
+      const d = v ? new Date(v) : null;
+      return d && !Number.isNaN(d.getTime()) ? d : null;
+    };
+    const from = date("from");
+    const to = date("to");
+    const updatedSince = date("updatedSince");
+    if (from) conditions.push(gte(appointments.startsAt, from));
+    if (to) conditions.push(lt(appointments.startsAt, to));
+    if (updatedSince) conditions.push(gte(appointments.updatedAt, updatedSince));
+    const status = p.get("status");
+    if (status && (APPOINTMENT_STATUSES as readonly string[]).includes(status))
+      conditions.push(eq(appointments.status, status as (typeof APPOINTMENT_STATUSES)[number]));
+    if (p.get("locationId")) conditions.push(eq(appointments.locationId, p.get("locationId")!));
+    if (p.get("practitionerId")) conditions.push(eq(appointments.practitionerId, p.get("practitionerId")!));
 
-  const rows = await db
-    .select({ id: appointments.id })
-    .from(appointments)
-    .where(and(...conditions))
-    .orderBy(asc(appointments.startsAt))
-    .limit(500);
-  const details = await Promise.all(rows.map((r) => getAppointmentDetails({ id: r.id })));
-  return json({ appointments: details.filter(Boolean).map((d) => partnerAppointment(d!)) });
+    const rows = await db
+      .select({ id: appointments.id })
+      .from(appointments)
+      .where(and(...conditions))
+      .orderBy(asc(appointments.startsAt))
+      .limit(500);
+    const details = await Promise.all(rows.map((r) => getAppointmentDetails({ id: r.id })));
+    return json({ appointments: details.filter((d) => d && d.org.id === org.id).map((d) => partnerAppointment(d!, key.scopes)) });
+  });
 }
 
 const partnerBookingSchema = z.object({
@@ -60,11 +63,9 @@ const partnerBookingSchema = z.object({
   notifyPatient: z.boolean().optional(),
 });
 
-/** POST /api/v1/partner/appointments — create an appointment with front-desk powers. */
-export async function POST(req: Request) {
-  try {
-    const org = (await authenticateApiKey(req))?.org ?? null;
-    if (!org) return apiError(401, "unauthorized", "Missing or invalid API key.");
+/** POST /api/v1/partner/appointments — create an appointment with front-desk powers. Scope appointments:write. */
+export function POST(req: Request) {
+  return partnerRoute(req, "appointments:write", "appointments.create", async ({ org, key }) => {
     const input = partnerBookingSchema.parse(await req.json());
     const details = await createAppointment({
       orgId: org.id,
@@ -84,8 +85,6 @@ export async function POST(req: Request) {
       force: input.force,
       notifyPatient: input.notifyPatient ?? true,
     });
-    return json({ appointment: partnerAppointment(details) }, { status: 201 });
-  } catch (err) {
-    return handleApiError(err);
-  }
+    return json({ appointment: partnerAppointment(details, key.scopes) }, { status: 201 });
+  });
 }

@@ -1,7 +1,8 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { organizations } from "@/db/schema";
-import { apiError, authenticateApiKey, handleApiError, json, preflight, rateLimit } from "@/lib/api";
+import { apiError, apiKeyError, checkApiKey, handleApiError, json, limitByIp, preflight } from "@/lib/api";
+import { audit } from "@/lib/audit";
 import { bookingRuleMessage, createAppointment } from "@/lib/booking";
 import { processingContextFor } from "@/lib/privacy/context";
 import { canAcceptOnlineBookings } from "@/lib/privacy/gates";
@@ -19,6 +20,8 @@ export const OPTIONS = preflight;
  * here, never by the client: 'practice' with an API key or a valid practice ref (`practiceRef`, from
  * a practice-published link or the embed), 'marketplace' otherwise. A failed privacy or relation
  * rule answers 422 with the rule's code (e.g. guardian_required) and the form field it is about.
+ * An Authorization header that isn't a valid key for this practice is refused (401/403), never
+ * silently treated as a public call. Public calls are rate-limited per network (10 per 10 minutes).
  */
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   try {
@@ -26,10 +29,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
     const [org] = await db.select().from(organizations).where(eq(organizations.slug, slug));
     if (!org) return apiError(404, "not_found", "Clinic not found.");
 
-    const partner = (await authenticateApiKey(req))?.org ?? null;
+    const key = await checkApiKey(req);
+    if (!key.ok && key.code !== "none") return apiKeyError(key);
+    const partner = key.ok ? key.auth.org : null;
     if (partner && partner.id !== org.id) return apiError(403, "forbidden", "This API key belongs to another practice.");
-    if (!partner && !rateLimit(req, "book", 10, 10 * 60_000))
-      return apiError(429, "rate_limited", "Too many booking attempts. Please try again in a few minutes.");
+    if (key.ok && !key.auth.key.scopes.includes("appointments:write")) {
+      return apiError(403, "insufficient_scope", "This API key lacks the appointments:write scope.", { scope: "appointments:write" });
+    }
+    if (!partner) {
+      const limited = await limitByIp(req, "book", 10, 10 * 60_000);
+      if (limited) return limited;
+    }
     if (!(await canAcceptOnlineBookings(org))) return apiError(403, "not_accepting", bookingRuleMessage("not_accepting"));
 
     const input = bookingInputSchema.parse(await req.json());
@@ -83,6 +93,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
       relation: input.relation,
       fundId: input.fundId,
     });
+    if (key.ok) {
+      await audit({
+        orgId: org.id,
+        actor: { type: "api_key", id: key.auth.key.id },
+        action: "api.request",
+        entity: { type: "api_key", id: key.auth.key.id },
+        metadata: { method: "POST", route: "clinics.appointments", status: 201, appointmentId: details.appointment.id },
+        headers: req.headers,
+      });
+    }
     return json({ appointment: publicAppointment(details) }, { status: 201 });
   } catch (err) {
     return handleApiError(err);

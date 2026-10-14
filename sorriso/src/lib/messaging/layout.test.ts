@@ -52,6 +52,23 @@ describe("renderEmailLayout", () => {
   it("has no remote images", () => {
     expect(renderEmailLayout({ ...input, greeting: "Hi" }).html).not.toMatch(/<img/i);
   });
+
+  it("declares the recipient's language and renders footer links and the note", () => {
+    const { html, text } = renderEmailLayout({
+      ...input,
+      note: "Details <online>",
+      footerLinks: [
+        { label: "Datenschutz", url: "https://sorriso.test/de/c/x/privacy" },
+        { label: "Bad", url: "javascript:alert(1)" },
+      ],
+    });
+    expect(html.startsWith('<!doctype html><html lang="de"><head><meta charset="utf-8">')).toBe(true);
+    expect(html).toContain("Details &lt;online&gt;");
+    expect(html).toContain('<a href="https://sorriso.test/de/c/x/privacy" style="color:#64748b;text-decoration:underline">Datenschutz</a>');
+    expect(html).toContain('<a href="#"');
+    expect(html).not.toContain("javascript:");
+    expect(text).toContain("Datenschutz: https://sorriso.test/de/c/x/privacy");
+  });
 });
 
 const base: AppointmentTemplateData = {
@@ -70,7 +87,10 @@ const base: AppointmentTemplateData = {
   icsUrl: "https://sorriso.test/api/ics/appointment/tok123",
 };
 
-/** Every template, rendered with fixed data: the output must not change when the layout moves. */
+/**
+ * Every template, rendered with fixed data. The snapshot pins the output: a change to a patient
+ * text or to the layout shows up in review (regenerated for WP3's discreet, translated templates).
+ */
 function renderAll(d: AppointmentTemplateData) {
   return {
     bookingConfirmation: templates.bookingConfirmation(d),
@@ -99,7 +119,7 @@ function renderAll(d: AppointmentTemplateData) {
 }
 
 describe("appointment templates", () => {
-  it.each(["it", "en", "de"] as const)("render unchanged in %s", (locale) => {
+  it.each(["it", "en", "de"] as const)("render as reviewed in %s", (locale) => {
     expect(renderAll({ ...base, locale })).toMatchSnapshot();
   });
 

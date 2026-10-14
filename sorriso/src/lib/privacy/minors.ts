@@ -1,4 +1,4 @@
-import type { ProcessingContext } from "@/db/enums";
+import type { BookedFor, ProcessingContext } from "@/db/enums";
 import { DEFAULT_TIMEZONE } from "../config";
 import { isDateString, zonedParts } from "../time";
 import type { RuleResult } from "./booking-rules";
@@ -91,4 +91,33 @@ export function validateBookingRelation(
   if (!g.relation) return { ok: false, code: "guardian_relation_required", field: "guardian.relation" };
   if (!g.phone?.trim() && !g.email?.trim()) return { ok: false, code: "guardian_contact_required", field: "guardian.phone" };
   return { ok: true };
+}
+
+// ---------------------------------------------------------------- for the booking form
+
+/** child: under 14 (a guardian books and decides); teen: 14 to 17 (may book alone); adult; null: unknown. */
+export type AgeBand = "child" | "teen" | "adult";
+
+export function ageBand(birthDate: string | null | undefined, on: Date | string = new Date()): AgeBand | null {
+  const age = ageOn(birthDate?.trim() || null, on);
+  if (age === null) return null;
+  return age < GUARDIAN_ROUTING_AGE ? "child" : age < GUARDIAN_MATCH_AGE ? "teen" : "adult";
+}
+
+/**
+ * The notice that suits the reader: young people from 14 to 17 booking for themselves get the
+ * version written for them (with a link to the full one); everyone else, including a parent
+ * booking for a child, reads the practice's full notice.
+ */
+export function noticeKindFor(bookedFor: BookedFor, birthDate: string | null | undefined, on: Date | string = new Date()): "minor" | "practice_patient" {
+  return bookedFor === "self" && ageBand(birthDate, on) === "teen" ? "minor" : "practice_patient";
+}
+
+/**
+ * What the server would answer about the relation, as far as the form can tell before it is sent
+ * (the appointment date is not known yet, so ages are taken today; the marketplace refusal of
+ * other_adult is left to the server, which knows the context). null when nothing is wrong.
+ */
+export function relationFormIssue(r: BookingRelationInput, birthDate: string | null | undefined, now: Date = new Date()): RuleResult<BookingRelationCode> {
+  return validateBookingRelation(r, birthDate, now, "practice", now);
 }

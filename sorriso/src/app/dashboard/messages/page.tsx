@@ -5,110 +5,176 @@ import Link from "next/link";
 import { ReplySimulator } from "@/components/dashboard/ReplySimulator";
 import { Badge, Card, EmptyState, PageHeader, cx } from "@/components/ui";
 import { db } from "@/db";
-import { appointments, messages, patients } from "@/db/schema";
-import { requireStaff } from "@/lib/auth";
-import { fmtDay, zonedDate, zonedTime } from "@/lib/datefmt";
+import { appointments, messages, patients, type Locale } from "@/db/schema";
+import { fmtDay, fmtWhen, zonedDate, zonedTime } from "@/i18n/datefmt";
+import { getStaffLocale, getT } from "@/i18n/server";
+import { auditStaff } from "@/lib/audit";
+import { isDemoMode } from "@/lib/demo";
 import { fullName } from "@/lib/format";
+import { SAMPLE_REPLIES } from "@/lib/inbound";
+import { can, requirePermission } from "@/lib/permissions";
 import { formatPhone } from "@/lib/phone";
 
-export const metadata: Metadata = { title: "Messages" };
+export async function generateMetadata(): Promise<Metadata> {
+  return { title: getT(await getStaffLocale(), "reminders")("messages.title") };
+}
 
-const FILTERS = [
-  ["all", "All"],
-  ["inbound", "Patient replies"],
-  ["attention", "Not understood"],
-  ["sms", "SMS"],
-  ["whatsapp", "WhatsApp"],
-  ["email", "Email"],
-] as const;
+const FILTERS = ["all", "inbound", "attention", "sms", "whatsapp", "email"] as const;
+type Filter = (typeof FILTERS)[number];
 
 export default async function MessagesPage({ searchParams }: { searchParams: Promise<{ f?: string; open?: string }> }) {
-  const s = await requireStaff();
+  const s = await requirePermission("messages.read");
+  const locale = await getStaffLocale();
+  const t = getT(locale, "reminders");
+  const tc = getT(locale, "common");
   const sp = await searchParams;
-  const f = FILTERS.some(([k]) => k === sp.f) ? sp.f! : "all";
+  const f: Filter = FILTERS.find((k) => k === sp.f) ?? "all";
   const tz = s.org.timezone;
   const conditions: SQL[] = [eq(messages.orgId, s.org.id)];
   if (f === "inbound") conditions.push(eq(messages.direction, "inbound"));
   if (f === "attention") conditions.push(eq(messages.direction, "inbound"), eq(messages.intent, "unknown"));
   if (f === "sms" || f === "whatsapp" || f === "email") conditions.push(eq(messages.channel, f));
+  const simulator = isDemoMode() && can(s.role, "messages.simulate");
 
   const [rows, upcoming] = await Promise.all([
     db
       .select({ m: messages, patient: patients })
       .from(messages)
-      .leftJoin(patients, eq(patients.id, messages.patientId))
+      .leftJoin(patients, and(eq(patients.id, messages.patientId), eq(patients.orgId, s.org.id)))
       .where(and(...conditions))
       .orderBy(desc(messages.createdAt))
       .limit(150),
-    db
-      .selectDistinct({ phone: patients.phone, firstName: patients.firstName, lastName: patients.lastName, start: appointments.startsAt })
-      .from(appointments)
-      .innerJoin(patients, eq(patients.id, appointments.patientId))
-      .where(and(eq(appointments.orgId, s.org.id), gt(appointments.startsAt, new Date()), inArray(appointments.status, ["scheduled", "requested"])))
-      .orderBy(asc(appointments.startsAt))
-      .limit(40),
+    simulator
+      ? db
+          .selectDistinct({
+            phone: patients.phone,
+            firstName: patients.firstName,
+            lastName: patients.lastName,
+            locale: patients.locale,
+            start: appointments.startsAt,
+          })
+          .from(appointments)
+          .innerJoin(patients, eq(patients.id, appointments.patientId))
+          .where(
+            and(eq(appointments.orgId, s.org.id), gt(appointments.startsAt, new Date()), inArray(appointments.status, ["scheduled", "requested"])),
+          )
+          .orderBy(asc(appointments.startsAt))
+          .limit(40)
+      : Promise.resolve([]),
   ]);
+  // Reading the log shows patients' messages: one audit row per page view (ids and counts only).
+  await auditStaff(s, "patient.search", undefined, { metadata: { view: "messages", filter: f, count: rows.length } });
+  const opened = sp.open ? rows.find(({ m }) => m.id === sp.open) : undefined;
+  if (opened) await auditStaff(s, "patient.view", { type: "message", id: opened.m.id }, { metadata: { view: "message" } });
+
   const simPatients = upcoming
-    .filter((p) => p.phone)
+    .flatMap((p) => (p.phone ? [{ ...p, phone: p.phone }] : []))
     .filter((p, i, arr) => arr.findIndex((x) => x.phone === p.phone) === i)
-    .map((p) => ({ phone: p.phone!, label: `${p.firstName} ${p.lastName} — next visit ${fmtDay(zonedDate(p.start, tz), "weekday")} ${zonedTime(p.start, tz)}` }));
+    .map((p) => ({
+      phone: p.phone,
+      locale: p.locale as Locale,
+      label: t("simulator.patientOption", { name: `${p.firstName} ${p.lastName}`, when: fmtWhen(p.start, tz, locale, "weekday") }),
+    }));
+  const filterLabel = (k: Filter) =>
+    k === "sms" || k === "whatsapp" || k === "email" ? tc(`channels.${k}`) : t(`messages.${k}`);
+  const href = (q: Record<string, string>) => `/dashboard/messages?${new URLSearchParams(q).toString()}`;
 
   return (
     <div className="mx-auto max-w-6xl">
-      <PageHeader title="Messages" description="Every reminder, confirmation and patient reply, across email, SMS and WhatsApp." />
+      <PageHeader title={t("messages.title")} description={t("messages.description")} />
       <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
-        <div>
-          <div className="mb-3 flex flex-wrap gap-2">
-            {FILTERS.map(([k, label]) => (
-              <Link key={k} href={`/dashboard/messages?f=${k}`} className={cx("rounded-full px-3 py-1.5 text-sm font-semibold ring-1", f === k ? "bg-ink text-white ring-ink" : "bg-white text-slate-600 ring-slate-200")}>
-                {label}
+        <div className="min-w-0">
+          <nav aria-label={t("messages.filters")} className="mb-3 flex flex-wrap gap-2">
+            {FILTERS.map((k) => (
+              <Link
+                key={k}
+                href={href({ f: k })}
+                aria-current={f === k ? "page" : undefined}
+                className={cx(
+                  "rounded-full px-3 py-1.5 text-sm font-semibold ring-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600",
+                  f === k ? "bg-ink text-white ring-ink" : "bg-white text-slate-600 ring-slate-200 hover:bg-slate-50",
+                )}
+              >
+                {filterLabel(k)}
               </Link>
             ))}
-          </div>
+          </nav>
           {rows.length === 0 ? (
-            <EmptyState title="No messages yet" />
+            <EmptyState title={t("messages.empty")} />
           ) : (
-            <Card className="divide-y divide-slate-100">
-              {rows.map(({ m, patient }) => {
-                const inbound = m.direction === "inbound";
-                const expanded = sp.open === m.id;
-                return (
-                  <div key={m.id} className={cx("p-4", inbound && m.intent === "unknown" && "bg-amber-50/60")}>
-                    <div className="flex flex-wrap items-center gap-2 text-xs">
-                      {inbound ? <ArrowDownLeft size={15} className="text-brand-700" /> : <ArrowUpRight size={15} className="text-slate-400" />}
-                      <span className="font-semibold text-slate-800">{patient ? fullName(patient) : formatPhone(inbound ? m.from : m.to)}</span>
-                      <Badge tone={m.channel === "email" ? "blue" : m.channel === "whatsapp" ? "green" : "slate"}>{m.channel}</Badge>
-                      {inbound ? (
-                        <Badge tone={m.intent === "unknown" ? "amber" : m.intent === "cancel" ? "red" : "brand"}>reply → {m.intent}</Badge>
-                      ) : (
-                        <Badge tone={m.status === "failed" ? "red" : m.status === "captured" ? "amber" : "slate"}>{m.status}</Badge>
-                      )}
-                      <span className="ml-auto text-slate-400">
-                        {fmtDay(zonedDate(m.createdAt, tz), "weekday")} {zonedTime(m.createdAt, tz)}
-                      </span>
-                    </div>
-                    {m.subject ? (
-                      <div className="mt-1.5">
-                        <Link href={`/dashboard/messages?f=${f}${expanded ? "" : `&open=${m.id}`}`} className="text-sm font-semibold hover:underline">
-                          {m.subject}
-                        </Link>
-                        {expanded && m.html ? <iframe title={m.subject} srcDoc={m.html} sandbox="" className="mt-2 h-[460px] w-full rounded-lg border border-slate-200" /> : null}
+            <Card>
+              <ul className="divide-y divide-slate-100">
+                {rows.map(({ m, patient }) => {
+                  const inbound = m.direction === "inbound";
+                  const expanded = sp.open === m.id;
+                  const who = patient ? fullName(patient) : formatPhone(inbound ? m.from : m.to) || t("messages.unknownSender");
+                  return (
+                    <li key={m.id} className={cx("p-4", inbound && m.intent === "unknown" && "bg-amber-50/60")}>
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        {inbound ? (
+                          <ArrowDownLeft size={15} className="text-brand-700" aria-label={t("messages.received")} role="img" />
+                        ) : (
+                          <ArrowUpRight size={15} className="text-slate-500" aria-label={t("messages.sentLabel")} role="img" />
+                        )}
+                        <span className="font-semibold text-slate-800">{who}</span>
+                        <Badge tone={m.channel === "email" ? "blue" : m.channel === "whatsapp" ? "green" : "slate"}>{tc(`channels.${m.channel}`)}</Badge>
+                        {inbound ? (
+                          <Badge tone={m.intent === "unknown" ? "amber" : m.intent === "cancel" ? "red" : "brand"}>
+                            {t("messages.reply", { intent: t(`messages.intent.${m.intent ?? "unknown"}`) })}
+                          </Badge>
+                        ) : (
+                          <Badge tone={m.status === "failed" ? "red" : m.status === "captured" ? "amber" : "slate"}>{t(`messages.status.${m.status}`)}</Badge>
+                        )}
+                        <time className="ml-auto text-slate-500" dateTime={m.createdAt.toISOString()}>
+                          {fmtDay(zonedDate(m.createdAt, tz), "weekday", locale)} {zonedTime(m.createdAt, tz)}
+                        </time>
                       </div>
-                    ) : (
-                      <p className={cx("mt-1.5 text-sm [overflow-wrap:anywhere]", inbound ? "font-medium text-slate-900" : "text-slate-600")}>{m.body}</p>
-                    )}
-                    {m.error ? <p className="mt-1 text-xs text-red-600">{m.error}</p> : null}
-                  </div>
-                );
-              })}
+                      {m.redactedAt ? (
+                        <p className="mt-1.5 text-sm italic text-slate-500">{t("messages.redacted")}</p>
+                      ) : m.subject ? (
+                        <div className="mt-1.5">
+                          <p className="text-sm font-semibold [overflow-wrap:anywhere]">{m.subject}</p>
+                          {m.html ? (
+                            <Link
+                              href={href(expanded ? { f } : { f, open: m.id })}
+                              aria-expanded={expanded}
+                              className="mt-1 inline-block text-xs font-semibold text-brand-700 hover:underline focus-visible:outline-2 focus-visible:outline-brand-600"
+                              scroll={false}
+                            >
+                              {expanded ? t("messages.hideEmail") : t("messages.showEmail")}
+                            </Link>
+                          ) : null}
+                          {expanded && m.html ? (
+                            <iframe
+                              title={t("messages.emailFrame", { subject: m.subject })}
+                              srcDoc={m.html}
+                              sandbox=""
+                              className="mt-2 h-[460px] w-full rounded-lg border border-slate-200"
+                            />
+                          ) : null}
+                        </div>
+                      ) : (
+                        <p className={cx("mt-1.5 text-sm [overflow-wrap:anywhere]", inbound ? "font-medium text-slate-900" : "text-slate-600")}>{m.body}</p>
+                      )}
+                      {m.error ? <p className="mt-1 text-xs text-red-700">{m.error}</p> : null}
+                    </li>
+                  );
+                })}
+              </ul>
             </Card>
           )}
         </div>
         <div className="space-y-4">
           <Card className="p-5">
-            <h2 className="font-bold">Try the two-way flow</h2>
-            <p className="mb-4 mt-1 text-sm text-slate-500">Pretend a patient answered their reminder. The calendar updates exactly as it will with real Twilio replies.</p>
-            {simPatients.length ? <ReplySimulator patients={simPatients} /> : <p className="text-sm text-slate-500">No upcoming appointments with a mobile number.</p>}
+            <h2 className="font-bold">{t("simulator.title")}</h2>
+            <p className="mb-4 mt-1 text-sm text-slate-500">{t("simulator.description")}</p>
+            {!simulator ? (
+              <p className="text-sm text-slate-500">{t("simulator.demoOnly")}</p>
+            ) : simPatients.length ? (
+              <ReplySimulator patients={simPatients} samples={SAMPLE_REPLIES} />
+            ) : (
+              <p className="text-sm text-slate-500">{t("simulator.noPatients")}</p>
+            )}
           </Card>
         </div>
       </div>

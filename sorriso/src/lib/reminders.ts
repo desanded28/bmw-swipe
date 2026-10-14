@@ -1,24 +1,81 @@
-import { and, asc, eq, inArray, lte } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, like, lt, lte, or, type SQL } from "drizzle-orm";
 import { db, type Tx } from "@/db";
-import { reminders, reviews, type Appointment, type Channel, type OrgSettings, type Patient, type Reminder } from "@/db/schema";
+import {
+  appointments,
+  messages,
+  organizations,
+  reminders,
+  reviews,
+  type Appointment,
+  type Channel,
+  type OrgSettings,
+  type Patient,
+  type Reminder,
+  type ReminderRule,
+  type RiskLevel,
+} from "@/db/schema";
 import {
   appointmentLinks,
+  appointmentWhatsApp,
   canReachByEmail,
   getAppointmentDetails,
   templateData,
   textChannelFor,
   type AppointmentDetails,
 } from "./appointments";
-import { practitionerName } from "./format";
-import { recipientFor } from "./contact";
+import { isRestricted, recipientFor } from "./contact";
 import { buildIcs } from "./ics";
 import { newId } from "./ids";
+import { logError, logInfo } from "./log";
 import { deliver } from "./messaging";
-import { templates, whenLabel } from "./messaging/templates";
+import { deleteProviderMessage } from "./messaging/providers";
+import { templates } from "./messaging/templates";
+import { isAllowed } from "./privacy/consent";
+import { DEFAULT_PRIVACY, getPrivacy } from "./privacy/settings";
 
 /** How long a claimed reminder is hidden from other workers before it's retried. */
 const LEASE_MS = 10 * 60_000;
 const MAX_ATTEMPTS = 3;
+
+// ---------------------------------------------------------------- risk-gated rules
+
+const RISK_RANK: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2 };
+
+/**
+ * A rule's onlyIfRisk travels with its reminder rows. The reminders table has no column for it
+ * (the schema is frozen; requested as reminders.only_if_risk), so it is the id's suffix:
+ * "<id>.risk-high". Like the rule's channel and askConfirmation, it is fixed when the reminders are
+ * scheduled; rows without the suffix are ungated.
+ */
+export function reminderRowId(rule: Pick<ReminderRule, "onlyIfRisk">): string {
+  return rule.onlyIfRisk ? `${newId()}.risk-${rule.onlyIfRisk}` : newId();
+}
+
+export function reminderRiskGate(r: Pick<Reminder, "id">): Exclude<RiskLevel, "low"> | null {
+  const m = /\.risk-(medium|high)$/.exec(r.id);
+  return m ? (m[1] as "medium" | "high") : null;
+}
+
+/**
+ * The risk level reminders may act on. A patient who objected to adaptive reminders (Art. 21),
+ * or a practice that has not turned on risk-based reminders, counts as no risk: their
+ * appointments get no risk-gated reminder.
+ */
+export async function effectiveRisk(
+  a: Pick<Appointment, "riskLevel">,
+  patient: Pick<Patient, "id">,
+  org: { settings: unknown },
+  tx: Tx = db,
+): Promise<RiskLevel | null> {
+  if (!a.riskLevel || !getPrivacy(org).riskBasedReminders) return null;
+  return (await isAllowed(patient.id, "adaptive_reminders", tx)) ? a.riskLevel : null;
+}
+
+export function meetsRisk(risk: RiskLevel | null, threshold: Exclude<RiskLevel, "low">): boolean {
+  return risk !== null && RISK_RANK[risk] >= RISK_RANK[threshold];
+}
+
+// ---------------------------------------------------------------- scheduling
 
 /**
  * (Re)create the timed reminders for an appointment from the org's rules.
@@ -35,7 +92,7 @@ export async function scheduleReminders(
 
   const rows = settings.reminders.rules
     .map((rule) => ({
-      id: newId(),
+      id: reminderRowId(rule),
       appointmentId: appointment.id,
       kind: "reminder" as const,
       channel: rule.channel,
@@ -46,7 +103,8 @@ export async function scheduleReminders(
     .filter((r) => r.sendAt.getTime() > now.getTime());
 
   if (rows.length) await tx.insert(reminders).values(rows);
-  return rows.some((r) => r.askConfirmation);
+  // A risk-gated rule may never be sent, so it is not counted on to ask for confirmation.
+  return rows.some((r) => r.askConfirmation && !reminderRiskGate(r));
 }
 
 export async function cancelPendingReminders(tx: Tx, appointmentId: string, kinds?: Reminder["kind"][]) {
@@ -73,7 +131,8 @@ export async function enqueueNow(
 /**
  * Pick the channel for a patient. A text rule ("sms" or "whatsapp") means "a text message": which
  * one is `text`, the patient's text channel from textChannelFor() (WhatsApp only where the practice
- * enabled it and the patient consented), never the rule's own word.
+ * enabled it, the patient consented and a template exists in their language), never the rule's
+ * own word.
  */
 export function resolveChannel(
   rule: Channel,
@@ -89,13 +148,13 @@ export function resolveChannel(
   return null;
 }
 
-/** The address for `channel`: the guardian's for a patient under 14 with guardian contacts (contact.ts). */
-function recipient(channel: Channel, patient: Patient): string {
-  const to = recipientFor(patient);
-  return channel === "email" ? to.email! : to.phone!;
-}
-
-function appointmentIcs(d: AppointmentDetails, status: "CONFIRMED" | "TENTATIVE" = "CONFIRMED") {
+/**
+ * The patient's calendar invite: "Appointment – {clinic}" in their language, the address and the
+ * practice's phone. No treatment, practitioner or link: calendars sync to other devices and
+ * accounts, and an invite is often forwarded.
+ */
+export function appointmentIcs(d: AppointmentDetails, status: "CONFIRMED" | "TENTATIVE" | "CANCELLED" = "CONFIRMED") {
+  const texts = templates.ics(templateData(d));
   return buildIcs({
     name: d.org.name,
     events: [
@@ -103,10 +162,9 @@ function appointmentIcs(d: AppointmentDetails, status: "CONFIRMED" | "TENTATIVE"
         uid: `${d.appointment.id}@sorriso`,
         start: d.appointment.startsAt,
         end: d.appointment.endsAt,
-        summary: `${d.service.name} — ${d.org.name}`,
-        description: `${practitionerName(d.practitioner)}\n${appointmentLinks(d).manageUrl}`,
-        location: `${d.location.name}, ${d.location.address}, ${d.location.city}`,
-        url: appointmentLinks(d).manageUrl,
+        summary: texts.summary,
+        description: texts.description,
+        location: texts.location,
         status,
         sequence: Math.floor(d.appointment.updatedAt.getTime() / 1000),
         alarmsMinutesBefore: [24 * 60, 60],
@@ -117,78 +175,113 @@ function appointmentIcs(d: AppointmentDetails, status: "CONFIRMED" | "TENTATIVE"
 
 type Outcome = { status: "sent" | "skipped" | "failed" | "retry"; reason?: string; messageId?: string };
 
+/** The WhatsApp template kind for each message (TWILIO_WHATSAPP_CONTENT_SIDS keys). */
+type TextKind = "booked" | "approved" | "reminder" | "reminderAsk";
+
 /** Build and send the message for one reminder. Pure decision logic + delivery. */
 async function sendForReminder(r: Reminder, d: AppointmentDetails, now: Date): Promise<Outcome> {
   const { appointment: a, patient } = d;
-  const data = templateData(d);
+  // Restricted (Art. 18) or erased: no messages at all.
+  if (isRestricted(patient)) return { status: "skipped", reason: "patient restricted" };
+  const data = templateData(d, now);
   const links = appointmentLinks(d);
-  const base = { orgId: d.org.id, appointmentId: a.id, patientId: patient.id, fromName: d.org.name, replyTo: d.org.email };
-  const text = await textChannelFor(patient, d.org);
+  const to = recipientFor(patient, now);
+  const base = {
+    orgId: d.org.id,
+    appointmentId: a.id,
+    patientId: patient.id,
+    fromName: d.org.name,
+    replyTo: d.org.email,
+    locale: to.locale,
+  };
 
-  const send = async (channel: Channel, email: { subject: string; text: string; html: string } | null, text: string, ics?: string) => {
+  const send = async (
+    channel: Channel,
+    content: { email: { subject: string; text: string; html: string } | null; text: string; kind: TextKind | null },
+    ics?: string,
+  ): Promise<Outcome> => {
+    const address = channel === "email" ? to.email : to.phone;
+    if (!address) return { status: "skipped", reason: `no ${channel} contact` };
     const msg = await deliver(
       channel === "email"
         ? {
             ...base,
             channel,
-            to: recipient(channel, patient),
-            subject: email!.subject,
-            text: email!.text,
-            html: email!.html,
-            attachments: ics ? [{ filename: "appointment.ics", content: ics, contentType: "text/calendar; charset=utf-8" }] : undefined,
+            to: address,
+            subject: content.email!.subject,
+            text: content.email!.text,
+            html: content.email!.html,
+            attachments: ics
+              ? [{ filename: "appointment.ics", content: ics, contentType: "text/calendar; charset=utf-8" }]
+              : undefined,
           }
         : {
             ...base,
             channel,
-            to: recipient(channel, patient),
-            text,
-            whatsappVariables: {
-              "1": patient.firstName,
-              "2": whenLabel(data, "short"),
-              "3": d.org.name,
-              "4": links.manageUrl,
-            },
+            to: address,
+            text: content.text,
+            ...(channel === "whatsapp" && content.kind ? appointmentWhatsApp(d, content.kind) : {}),
           },
     );
-    if (msg.status === "failed") return { status: "retry", reason: msg.error ?? "delivery failed" } as Outcome;
-    return { status: "sent", messageId: msg.id } as Outcome;
+    if (msg.status === "failed") return { status: "retry", reason: msg.error ?? "delivery failed" };
+    return { status: "sent", messageId: msg.id };
   };
 
   switch (r.kind) {
     case "booking_confirmation": {
       if (!["scheduled", "requested"].includes(a.status)) return { status: "skipped", reason: `appointment ${a.status}` };
+      const text = await textChannelFor(patient, d.org, now, "booked");
       const channel = resolveChannel("email", patient, true, text) ?? resolveChannel("sms", patient, false, text);
       if (!channel) return { status: "skipped", reason: "patient has no reachable contact" };
       if (a.status === "requested") {
         if (channel !== "email") return { status: "skipped", reason: "request receipts are email-only" };
-        return send(channel, templates.bookingRequested(data), "");
+        return send(channel, { email: templates.bookingRequested(data), text: "", kind: null });
       }
-      return send(channel, templates.bookingConfirmation(data), templates.bookingConfirmationSms(data), appointmentIcs(d));
+      return send(
+        channel,
+        { email: templates.bookingConfirmation(data), text: templates.bookingConfirmationSms(data), kind: "booked" },
+        appointmentIcs(d),
+      );
     }
 
     case "approval": {
       if (a.status !== "scheduled") return { status: "skipped", reason: `appointment ${a.status}` };
+      const text = await textChannelFor(patient, d.org, now, "approved");
       const channel = resolveChannel("email", patient, true, text) ?? resolveChannel("sms", patient, false, text);
       if (!channel) return { status: "skipped", reason: "patient has no reachable contact" };
-      return send(channel, templates.bookingApproved(data), templates.bookingConfirmationSms(data), appointmentIcs(d));
+      return send(
+        channel,
+        { email: templates.bookingApproved(data), text: templates.bookingApprovedSms(data), kind: "approved" },
+        appointmentIcs(d),
+      );
     }
 
     case "reminder": {
       if (a.status !== "scheduled") return { status: "skipped", reason: `appointment ${a.status}` };
       if (a.startsAt.getTime() <= now.getTime()) return { status: "skipped", reason: "appointment already started" };
-      const channel = resolveChannel(r.channel, patient, r.fallbackToEmail, text);
-      if (!channel) return { status: "skipped", reason: `can't reach patient by ${r.channel}` };
+      const gate = reminderRiskGate(r);
+      if (gate && !meetsRisk(await effectiveRisk(a, patient, d.org), gate)) {
+        return { status: "skipped", reason: `only for ${gate} no-show risk` };
+      }
       // Don't ask again once they've confirmed: just remind.
       const ask = r.askConfirmation && a.confirmation === "pending";
-      return send(channel, templates.reminderEmail(data, ask), templates.reminderSms(data, ask));
+      // A confirmation request uses its own WhatsApp template when there is one, else the plain reminder's.
+      const askText = ask ? await textChannelFor(patient, d.org, now, "reminderAsk") : null;
+      const kind: TextKind = askText === "whatsapp" ? "reminderAsk" : "reminder";
+      const text = askText === "whatsapp" ? askText : await textChannelFor(patient, d.org, now, "reminder");
+      const channel = resolveChannel(r.channel, patient, r.fallbackToEmail, text);
+      if (!channel) return { status: "skipped", reason: `can't reach patient by ${r.channel}` };
+      return send(channel, { email: templates.reminderEmail(data, ask), text: templates.reminderSms(data, ask), kind });
     }
 
     case "review_request": {
       if (a.status !== "completed") return { status: "skipped", reason: `appointment ${a.status}` };
+      // An invitation to review is optional processing: only with a current feedback_request consent.
+      if (!(await isAllowed(patient.id, "feedback_request"))) return { status: "skipped", reason: "no feedback_request consent" };
       const [existing] = await db.select({ id: reviews.id }).from(reviews).where(eq(reviews.appointmentId, a.id));
       if (existing) return { status: "skipped", reason: "already reviewed" };
-      if (!canReachByEmail(patient)) return { status: "skipped", reason: "review requests are email-only" };
-      return send("email", templates.reviewRequest(data, links.reviewUrl), "");
+      if (!canReachByEmail(patient, now)) return { status: "skipped", reason: "review requests are email-only" };
+      return send("email", { email: templates.reviewRequest(data, links.reviewUrl), text: "", kind: null });
     }
   }
 }
@@ -234,22 +327,75 @@ export async function processReminder(r: Reminder, now = new Date()): Promise<Ou
   return outcome;
 }
 
-/** Send everything that's due. Called by the cron endpoint / background worker. */
-export async function processDueReminders(opts: { now?: Date; limit?: number; appointmentId?: string } = {}) {
+/**
+ * Send everything that's due. Called by the cron endpoint and the background worker (every
+ * practice), by "Send due reminders now" in the dashboard (`orgId`: only that practice's) and
+ * right after a booking (`appointmentId`).
+ */
+export async function processDueReminders(opts: { now?: Date; limit?: number; appointmentId?: string; orgId?: string } = {}) {
   const now = opts.now ?? new Date();
-  const conditions = [eq(reminders.status, "pending"), lte(reminders.sendAt, now)];
+  const conditions: SQL[] = [eq(reminders.status, "pending"), lte(reminders.sendAt, now)];
   if (opts.appointmentId) conditions.push(eq(reminders.appointmentId, opts.appointmentId));
+  if (opts.orgId) conditions.push(eq(appointments.orgId, opts.orgId));
   const due = await db
-    .select()
+    .select({ r: reminders })
     .from(reminders)
+    .innerJoin(appointments, eq(appointments.id, reminders.appointmentId))
     .where(and(...conditions))
     .orderBy(asc(reminders.sendAt))
     .limit(opts.limit ?? 100);
 
   const summary = { due: due.length, sent: 0, skipped: 0, failed: 0, retry: 0 };
-  for (const r of due) {
+  for (const { r } of due) {
     const outcome = await processReminder(r, now);
     summary[outcome.status]++;
   }
+  return summary;
+}
+
+// ---------------------------------------------------------------- provider copies
+
+/**
+ * Ask Twilio to delete its copies of texts (outbound and inbound) older than each practice's
+ * privacy.retention.providerMessageDays, and mark them providerDeletedAt. Platform messages (no
+ * practice: privacy-center codes) use the default. Copies Twilio can't delete yet (still being
+ * delivered, credentials missing) stay unmarked and are retried on the next run. Run by the
+ * reminders cron.
+ */
+export async function purgeProviderCopies(now = new Date(), opts: { batch?: number } = {}) {
+  const batch = opts.batch ?? 200;
+  const orgs = await db.select({ id: organizations.id, settings: organizations.settings }).from(organizations);
+  const scopes: { orgId: string | null; days: number }[] = [
+    ...orgs.map((o) => ({ orgId: o.id, days: getPrivacy(o).retention.providerMessageDays })),
+    { orgId: null, days: DEFAULT_PRIVACY.retention.providerMessageDays },
+  ];
+  const summary = { deleted: 0, failed: 0 };
+  for (const scope of scopes) {
+    const cutoff = new Date(now.getTime() - scope.days * 86_400_000);
+    const rows = await db
+      .select({ id: messages.id, provider: messages.provider, providerId: messages.providerId })
+      .from(messages)
+      .where(
+        and(
+          scope.orgId ? eq(messages.orgId, scope.orgId) : isNull(messages.orgId),
+          or(eq(messages.provider, "twilio"), like(messages.provider, "twilio:%")),
+          isNotNull(messages.providerId),
+          isNull(messages.providerDeletedAt),
+          lt(messages.createdAt, cutoff),
+        ),
+      )
+      .limit(batch);
+    for (const m of rows) {
+      try {
+        await deleteProviderMessage(m.provider, m.providerId!);
+        await db.update(messages).set({ providerDeletedAt: now }).where(eq(messages.id, m.id));
+        summary.deleted++;
+      } catch (err) {
+        summary.failed++;
+        logError("messaging", err, { step: "provider-delete", messageId: m.id });
+      }
+    }
+  }
+  if (summary.deleted || summary.failed) logInfo("messaging", "provider copies purged", summary);
   return summary;
 }

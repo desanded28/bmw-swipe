@@ -1,10 +1,20 @@
 import "server-only";
-import { and, asc, desc, eq, gte, inArray, lt, ne, type SQL } from "drizzle-orm";
-import type { ApptDTO, Resources } from "@/components/dashboard/types";
+import { and, asc, desc, eq, gte, inArray, lt, ne, sql, type SQL } from "drizzle-orm";
+import { z } from "zod";
+import { fail, guard, staff, type ActionResult, type GuardOptions } from "@/app/dashboard/actions/_shared";
+import type {
+  ApptDetailDTO,
+  ApptListDTO,
+  RestrictedAccess,
+  Resources,
+  ThreadMessage,
+} from "@/components/dashboard/types";
 import { db } from "@/db";
 import {
   appointments,
   locations,
+  messages,
+  organizations,
   patients,
   practitionerServices,
   practitioners,
@@ -12,7 +22,27 @@ import {
   services,
   type AppointmentStatus,
 } from "@/db/schema";
+import { DEFAULT_LOCALE, isLocale, type Locale } from "@/i18n/config";
+import { getStaffLocale, getT } from "@/i18n/server";
+import type { Translator } from "@/i18n/types";
+import { auditStaff, type AuditAction } from "./audit";
+import type { StaffSession } from "./auth";
+import { BookingError } from "./booking";
 import { fullName, practitionerName } from "./format";
+import { logError } from "./log";
+import { can, PermissionError, permissionsFor, type Permission } from "./permissions";
+import { hasRestrictedAccess } from "./privacy/erasure";
+import { getPrivacy } from "./privacy/settings";
+import { loadCareFlags } from "./risk";
+
+/**
+ * Server-side data for the dashboard's scheduling screens (WP2): the resources the calendar is
+ * drawn with, the appointment list (data-minimised for every viewer), the drawer's detail
+ * (permission-filtered and audited), and the helpers that give the dashboard's actions their
+ * messages in the staff member's language.
+ */
+
+// ---------------------------------------------------------------- resources
 
 export async function loadResources(orgId: string, timezone: string): Promise<Resources> {
   const [pracs, locs, svcs] = await Promise.all([
@@ -39,21 +69,60 @@ export async function loadResources(orgId: string, timezone: string): Promise<Re
   };
 }
 
-export async function listAppointments(
-  orgId: string,
-  opts: {
-    from?: Date;
-    to?: Date;
-    locationId?: string;
-    practitionerIds?: string[];
-    statuses?: AppointmentStatus[];
-    includeCancelled?: boolean;
-    patientId?: string;
-    needsAttention?: boolean;
-    order?: "asc" | "desc";
-    limit?: number;
-  } = {},
-): Promise<ApptDTO[]> {
+// ---------------------------------------------------------------- the staff member's language
+
+/**
+ * The dashboard language for a staff member: their own choice (users.locale), else
+ * getStaffLocale() (cookie, Accept-Language, practice default), else, outside a request (tests,
+ * jobs), the practice default.
+ */
+export async function staffLocaleOf(s: { user: { locale?: string | null }; org: { defaultLocale?: string | null } }): Promise<Locale> {
+  if (isLocale(s.user.locale)) return s.user.locale;
+  try {
+    return await getStaffLocale();
+  } catch {
+    return isLocale(s.org.defaultLocale) ? s.org.defaultLocale : DEFAULT_LOCALE;
+  }
+}
+
+/** Who is looking at a list: decides which names, flags and notes markers it may carry. */
+export type ListViewer = { permissions: readonly Permission[]; locale: Locale };
+
+export function listViewer(s: Pick<StaffSession, "role">, locale: Locale): ListViewer {
+  return { permissions: permissionsFor(s.role), locale };
+}
+
+// ---------------------------------------------------------------- appointment list
+
+export type ListOptions = {
+  from?: Date;
+  to?: Date;
+  locationId?: string;
+  practitionerIds?: string[];
+  statuses?: AppointmentStatus[];
+  includeCancelled?: boolean;
+  patientId?: string;
+  /** Only these appointments (the drawer's detail). */
+  ids?: string[];
+  needsAttention?: boolean;
+  order?: "asc" | "desc";
+  limit?: number;
+  /**
+   * The viewer. Without one the list is built for a viewer with no extra permissions: restricted
+   * names are masked (in the practice's default language), no notes markers, no clinical flags.
+   */
+  viewer?: ListViewer;
+};
+
+/**
+ * Appointments for the calendar and the lists, scoped to the org. Data minimisation: the rows
+ * carry no free text (notes, cancellation reason), no contact details and no link token; the
+ * encrypted columns are not even selected, only whether the notes are empty. A restricted or
+ * erased patient's name is replaced by a placeholder unless the viewer has
+ * patient.restricted.read, and nothing else about that patient (no-show count, risk, minor flag)
+ * is passed on.
+ */
+export async function listAppointments(orgId: string, opts: ListOptions = {}): Promise<ApptListDTO[]> {
   const conditions: SQL[] = [eq(appointments.orgId, orgId)];
   if (opts.from) conditions.push(gte(appointments.startsAt, opts.from));
   if (opts.to) conditions.push(lt(appointments.startsAt, opts.to));
@@ -62,10 +131,39 @@ export async function listAppointments(
   if (opts.statuses?.length) conditions.push(inArray(appointments.status, opts.statuses));
   else if (!opts.includeCancelled) conditions.push(ne(appointments.status, "cancelled"));
   if (opts.patientId) conditions.push(eq(appointments.patientId, opts.patientId));
+  if (opts.ids) conditions.push(opts.ids.length ? inArray(appointments.id, opts.ids) : sql`0`);
   if (opts.needsAttention) conditions.push(eq(appointments.needsAttention, true));
 
   const query = db
-    .select({ a: appointments, patient: patients, service: services, practitioner: practitioners, location: locations, room: rooms })
+    .select({
+      id: appointments.id,
+      startsAt: appointments.startsAt,
+      endsAt: appointments.endsAt,
+      blockedUntil: appointments.blockedUntil,
+      status: appointments.status,
+      confirmation: appointments.confirmation,
+      confirmedVia: appointments.confirmedVia,
+      needsAttention: appointments.needsAttention,
+      source: appointments.source,
+      isNewPatient: appointments.isNewPatient,
+      processingContext: appointments.processingContext,
+      minorFlag: appointments.minorFlag,
+      // Whether there is a note, without selecting (and decrypting) it.
+      hasNotes: sql<number>`(${appointments.patientNote} is not null or ${appointments.internalNote} is not null)`,
+      patient: {
+        id: patients.id,
+        firstName: patients.firstName,
+        lastName: patients.lastName,
+        noShowCount: patients.noShowCount,
+        preferredChannel: patients.preferredChannel,
+        restrictedAt: patients.restrictedAt,
+        erasedAt: patients.erasedAt,
+      },
+      service: { id: services.id, name: services.name, durationMinutes: services.durationMinutes },
+      practitioner: { id: practitioners.id, title: practitioners.title, name: practitioners.name, color: practitioners.color },
+      location: { id: locations.id, name: locations.name, timezone: locations.timezone },
+      room: { id: rooms.id, name: rooms.name },
+    })
     .from(appointments)
     .innerJoin(patients, eq(patients.id, appointments.patientId))
     .innerJoin(services, eq(services.id, appointments.serviceId))
@@ -75,32 +173,245 @@ export async function listAppointments(
     .where(and(...conditions))
     .orderBy(opts.order === "desc" ? desc(appointments.startsAt) : asc(appointments.startsAt));
   const rows = opts.limit ? await query.limit(opts.limit) : await query;
+  if (!rows.length) return [];
 
-  return rows.map(({ a, patient, service, practitioner, location, room }) => ({
-    id: a.id,
-    start: a.startsAt.toISOString(),
-    end: a.endsAt.toISOString(),
-    blockedUntil: a.blockedUntil.toISOString(),
-    status: a.status,
-    confirmation: a.confirmation,
-    confirmedVia: a.confirmedVia,
-    needsAttention: a.needsAttention,
-    source: a.source,
-    isNewPatient: a.isNewPatient,
-    patientNote: a.patientNote,
-    internalNote: a.internalNote,
-    cancelReason: a.cancelReason,
-    patient: {
-      id: patient.id,
-      name: fullName(patient),
-      phone: patient.phone,
-      email: patient.email,
-      noShowCount: patient.noShowCount,
-      preferredChannel: patient.preferredChannel,
+  const perms = opts.viewer?.permissions ?? [];
+  const seeRestricted = perms.includes("patient.restricted.read");
+  const seeNotes = perms.includes("appointment.notes.read");
+  const flags = await loadCareFlags(
+    orgId,
+    rows.map((r) => r.id),
+    perms,
+  );
+
+  // The placeholder's language: the viewer's, else the practice's (looked up only when needed).
+  let placeholderT: CalendarT | null = null;
+  const placeholder = async (erased: boolean) => {
+    placeholderT ??= getT(opts.viewer?.locale ?? (await orgLocale(orgId)), "calendar");
+    return erased ? placeholderT("erasedPatient") : placeholderT("restrictedPatient");
+  };
+
+  const out: ApptListDTO[] = [];
+  for (const r of rows) {
+    const restricted = Boolean(r.patient.restrictedAt || r.patient.erasedAt);
+    const masked = restricted && !seeRestricted;
+    const f = flags.get(r.id);
+    out.push({
+      id: r.id,
+      start: r.startsAt.toISOString(),
+      end: r.endsAt.toISOString(),
+      blockedUntil: r.blockedUntil.toISOString(),
+      status: r.status,
+      confirmation: r.confirmation,
+      confirmedVia: r.confirmedVia,
+      needsAttention: r.needsAttention,
+      source: r.source,
+      isNewPatient: r.isNewPatient,
+      processingContext: r.processingContext,
+      hasNotes: !masked && seeNotes && Boolean(r.hasNotes),
+      minorFlag: !masked && r.minorFlag,
+      riskLevel: masked ? null : (f?.riskLevel ?? null),
+      riskReasons: masked ? [] : (f?.riskReasons ?? []),
+      anamnesis: masked ? null : (f?.anamnesis ?? null),
+      redFlag: masked ? null : (f?.redFlag ?? null),
+      restricted,
+      patient: {
+        id: r.patient.id,
+        name: masked ? await placeholder(Boolean(r.patient.erasedAt)) : fullName(r.patient),
+        masked,
+        noShowCount: masked ? 0 : r.patient.noShowCount,
+        preferredChannel: r.patient.preferredChannel,
+      },
+      service: r.service,
+      practitioner: { id: r.practitioner.id, name: practitionerName(r.practitioner), color: r.practitioner.color },
+      location: r.location,
+      room: r.room?.id ? { id: r.room.id, name: r.room.name } : null,
+    });
+  }
+  return out;
+}
+
+async function orgLocale(orgId: string): Promise<Locale> {
+  const [org] = await db.select({ defaultLocale: organizations.defaultLocale }).from(organizations).where(eq(organizations.id, orgId));
+  return isLocale(org?.defaultLocale) ? org.defaultLocale : DEFAULT_LOCALE;
+}
+
+// ---------------------------------------------------------------- the drawer's detail
+
+const MESSAGE_LIMIT = 50;
+
+/**
+ * One appointment as the drawer shows it, filtered by the viewer's permissions: contacts with
+ * patient.contact.read, notes with appointment.notes.read, the message thread with messages.read.
+ * A restricted patient's record opens only after the viewer gave a reason (patient.restricted.read
+ * plus a recent patient.restricted_access row). Null for another org's appointment.
+ *
+ * Every call writes exactly one audit row, appointment.view, with what was disclosed (as
+ * booleans and counts, never the values).
+ */
+export async function loadAppointmentDetail(s: StaffSession, id: string, locale: Locale): Promise<ApptDetailDTO | null> {
+  const viewer = listViewer(s, locale);
+  const [row] = await listAppointments(s.org.id, { ids: [id], includeCancelled: true, viewer });
+  if (!row) return null;
+
+  let restricted: RestrictedAccess = "open";
+  if (row.restricted) {
+    if (!can(s.role, "patient.restricted.read")) restricted = "placeholder";
+    else if (!(await hasRestrictedAccess(s, row.patient.id))) restricted = "needs_reason";
+  }
+  const open = restricted === "open";
+  const access: ApptDetailDTO["access"] = {
+    restricted,
+    contacts: open && can(s.role, "patient.contact.read"),
+    notes: open && can(s.role, "appointment.notes.read"),
+    writeNotes: open && can(s.role, "appointment.notes.write"),
+    messages: open && can(s.role, "messages.read"),
+    write: can(s.role, "appointment.write"),
+    manageCare: open && can(s.role, "recalls.manage"),
+  };
+
+  const [full] = await db
+    .select({
+      patientNote: appointments.patientNote,
+      internalNote: appointments.internalNote,
+      cancelReason: appointments.cancelReason,
+      phone: patients.phone,
+      email: patients.email,
+      guardianName: patients.guardianName,
+      guardianRelation: patients.guardianRelation,
+      guardianPhone: patients.guardianPhone,
+      guardianEmail: patients.guardianEmail,
+    })
+    .from(appointments)
+    .innerJoin(patients, eq(patients.id, appointments.patientId))
+    .where(and(eq(appointments.id, id), eq(appointments.orgId, s.org.id)));
+
+  let contacts: ApptDetailDTO["contacts"] = null;
+  if (access.contacts && full) {
+    const waLinks = getPrivacy(s.org).staffWaLinks;
+    const hasGuardian = full.guardianName || full.guardianPhone || full.guardianEmail;
+    contacts = {
+      phone: full.phone,
+      email: full.email,
+      whatsappUrl: waLinks && full.phone ? `https://wa.me/${full.phone.replace(/\D/g, "")}` : null,
+      guardian: hasGuardian
+        ? { name: full.guardianName, relation: full.guardianRelation, phone: full.guardianPhone, email: full.guardianEmail }
+        : null,
+    };
+  }
+
+  let thread: ThreadMessage[] | null = null;
+  if (access.messages) {
+    const rows = await db
+      .select({
+        id: messages.id,
+        channel: messages.channel,
+        direction: messages.direction,
+        status: messages.status,
+        intent: messages.intent,
+        createdAt: messages.createdAt,
+        subject: messages.subject,
+        body: messages.body,
+      })
+      .from(messages)
+      .where(and(eq(messages.appointmentId, id), eq(messages.orgId, s.org.id)))
+      .orderBy(desc(messages.createdAt))
+      .limit(MESSAGE_LIMIT);
+    thread = rows.reverse().map((m) => ({ ...m, createdAt: m.createdAt.toISOString() }));
+  }
+
+  const detail: ApptDetailDTO = {
+    ...row,
+    access,
+    contacts,
+    patientNote: access.notes ? (full?.patientNote ?? null) : null,
+    internalNote: access.notes ? (full?.internalNote ?? null) : null,
+    cancelReason: access.notes ? (full?.cancelReason ?? null) : null,
+    messages: thread,
+  };
+  await auditStaff(
+    s,
+    "appointment.view",
+    { type: "appointment", id },
+    {
+      metadata: {
+        view: "drawer",
+        restricted,
+        contacts: access.contacts,
+        notes: access.notes,
+        messages: thread?.length ?? null,
+      },
     },
-    service: { id: service.id, name: service.name, durationMinutes: service.durationMinutes },
-    practitioner: { id: practitioner.id, name: practitionerName(practitioner), color: practitioner.color },
-    location: { id: location.id, name: location.name, timezone: location.timezone },
-    room: room ? { id: room.id, name: room.name } : null,
-  }));
+  );
+  return detail;
+}
+
+// ---------------------------------------------------------------- list views in the access log
+
+/**
+ * Record that a list of patients' appointments was shown (calendar, overview, confirmations,
+ * waitlist): one row per view with the count, never the names. The drawer audits each record.
+ */
+export async function auditListView(s: StaffSession, view: string, count: number, action: AuditAction = "appointment.view") {
+  if (count > 0) await auditStaff(s, action, undefined, { metadata: { view, count } });
+}
+
+// ---------------------------------------------------------------- actions in the staff's language
+
+export type CalendarT = Translator<"calendar">;
+
+/** The calendar namespace in the staff member's language, plus that language. */
+export async function calendarTexts(s: Parameters<typeof staffLocaleOf>[0]): Promise<{ t: CalendarT; locale: Locale }> {
+  const locale = await staffLocaleOf(s);
+  return { t: getT(locale, "calendar"), locale };
+}
+
+/**
+ * A domain error as a localised ActionResult: BookingError codes map to calendar.errors.<code>
+ * (or calendar.errors.reasons.<reason> for a privacy, relation or restriction rule), Zod issues
+ * carry the zodErrorMap message prefixed with the field's label. Null for anything else.
+ */
+export function localiseError(err: unknown, t: CalendarT): ActionResult | null {
+  if (err instanceof BookingError) {
+    const reasonKey = `errors.reasons.${err.reason ?? ""}` as const;
+    if (err.reason && t.has(reasonKey)) return fail(t(reasonKey), err.reason === "restriction_reason_required" ? "restricted" : err.code);
+    const key = `errors.${err.code}` as const;
+    return fail(t.has(key) ? t(key) : t("errors.unexpected"), err.code);
+  }
+  if (err instanceof z.ZodError) {
+    const issue = err.issues[0];
+    if (!issue) return fail(t("errors.invalid"), "invalid");
+    const field = `fields.${String(issue.path[0] ?? "")}` as const;
+    return fail(t.has(field) ? t("validation.field", { field: t(field), message: issue.message }) : issue.message, "invalid");
+  }
+  return null;
+}
+
+/**
+ * guard() with every message in the staff member's language: `fn` receives the calendar
+ * translator and the locale (for zodErrorMap), domain errors are localised, a missing permission
+ * reads calendar.errors.forbidden and an unexpected error calendar.errors.unexpected.
+ */
+export async function dashboardAction(
+  fn: (s: StaffSession, t: CalendarT, locale: Locale) => Promise<ActionResult>,
+  opts: GuardOptions = {},
+): Promise<ActionResult> {
+  const res = await guard(async (s) => {
+    const { t, locale } = await calendarTexts(s);
+    try {
+      return await fn(s, t, locale);
+    } catch (err) {
+      const failure = localiseError(err, t);
+      if (failure) return failure;
+      // Next.js redirects and notFound() propagate; guard() answers permission errors.
+      if (err instanceof PermissionError || (err && typeof err === "object" && "digest" in err)) throw err;
+      logError("dashboard action", err);
+      return fail(t("errors.unexpected"), "unexpected");
+    }
+  }, opts);
+  if (!res.ok && res.code === "forbidden") {
+    const { t } = await calendarTexts(await staff());
+    return fail(t("errors.forbidden"), "forbidden");
+  }
+  return res;
 }

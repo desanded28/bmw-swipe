@@ -4,36 +4,53 @@ import Link from "next/link";
 import { ApiKeys } from "@/components/dashboard/ApiKeys";
 import { Card, PageHeader } from "@/components/ui";
 import { db } from "@/db";
-import { apiKeys } from "@/db/schema";
-import { fmtDay, zonedDate } from "@/lib/datefmt";
+import { apiKeys, users } from "@/db/schema";
+import { fmtDay, zonedDate } from "@/i18n/datefmt";
+import { lhref } from "@/i18n/href";
+import { getStaffLocale, getT } from "@/i18n/server";
 import { requirePermission } from "@/lib/permissions";
 
-export const metadata: Metadata = { title: "API" };
+export async function generateMetadata(): Promise<Metadata> {
+  return { title: getT(await getStaffLocale(), "security")("api.metaTitle") };
+}
 
-/** Partner API keys (WP6: scopes, expiry, last use). Moved here from the settings page. */
+/** Partner API keys: scopes, expiry, IP allow-lists, who created them and when they were last used. */
 export default async function ApiSettingsPage() {
   const s = await requirePermission("apikeys.manage");
   const org = s.org;
-  const keys = await db.select().from(apiKeys).where(eq(apiKeys.orgId, org.id)).orderBy(desc(apiKeys.createdAt));
+  const locale = await getStaffLocale();
+  const t = getT(locale, "security");
+  const rows = await db
+    .select({ key: apiKeys, creator: users.name })
+    .from(apiKeys)
+    .leftJoin(users, eq(users.id, apiKeys.createdByUserId))
+    .where(eq(apiKeys.orgId, org.id))
+    .orderBy(desc(apiKeys.createdAt));
+  const now = Date.now();
+  const day = (d: Date) => fmtDay(zonedDate(d, org.timezone), "short", locale);
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
-      <PageHeader title="API" />
+      <PageHeader title={t("api.title")} />
       <Card className="p-6">
-        <h2 className="mb-1 text-lg font-bold">API keys</h2>
-        <p className="mb-3 text-sm text-slate-500">
-          For your practice-management software: read and sync appointments, book with front-desk powers.{" "}
-          <Link href="/developers" target="_blank" className="font-semibold text-brand-700 hover:underline">
-            API docs ↗
+        <h2 className="mb-1 text-lg font-bold">{t("api.keysTitle")}</h2>
+        <p className="mb-4 text-sm text-slate-500">
+          {t("api.description")}{" "}
+          <Link href={lhref(locale, "/developers")} target="_blank" className="font-semibold text-brand-700 hover:underline">
+            {t("api.docs")} ↗
           </Link>
         </p>
         <ApiKeys
-          keys={keys.map((k) => ({
+          keys={rows.map(({ key: k, creator }) => ({
             id: k.id,
             name: k.name,
             prefix: k.prefix,
-            revoked: Boolean(k.revokedAt),
-            lastUsed: k.lastUsedAt ? fmtDay(zonedDate(k.lastUsedAt, org.timezone), "weekday") : null,
+            scopes: k.scopes,
+            status: k.revokedAt ? "revoked" : k.expiresAt && k.expiresAt.getTime() <= now ? "expired" : "active",
+            lastUsed: k.lastUsedAt ? day(k.lastUsedAt) : null,
+            expires: k.expiresAt ? fmtDay(zonedDate(k.expiresAt, org.timezone), "long", locale) : null,
+            createdBy: creator ?? null,
+            allowedIps: k.allowedIps?.length ?? 0,
           }))}
         />
       </Card>

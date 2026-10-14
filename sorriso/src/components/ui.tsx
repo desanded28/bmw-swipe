@@ -1,6 +1,14 @@
 import clsx from "clsx";
 import Link from "next/link";
-import type { ComponentProps, ReactNode } from "react";
+import {
+  Children,
+  cloneElement,
+  isValidElement,
+  useId,
+  type ComponentProps,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { APP_NAME } from "@/lib/config";
 import { initials } from "@/lib/format";
 
@@ -77,8 +85,12 @@ export function Badge({ tone = "slate", className, ...props }: ComponentProps<"s
   );
 }
 
+/*
+ * Form controls: the boundary (ring-line-strong) is 3.6:1 against white, the placeholder (slate-500)
+ * 4.7:1, the focus ring (brand-600) 4.8:1. See docs/accessibility.md.
+ */
 const field =
-  "block w-full rounded-xl border-0 bg-white px-3.5 py-2.5 text-sm text-ink shadow-sm ring-1 ring-inset ring-slate-200 placeholder:text-slate-400 focus:ring-2 focus:ring-inset focus:ring-brand-500 focus:outline-none disabled:bg-slate-50";
+  "block w-full rounded-xl border-0 bg-white px-3.5 py-2.5 text-sm text-ink shadow-sm ring-1 ring-inset ring-line-strong placeholder:text-slate-500 focus:ring-2 focus:ring-inset focus:ring-brand-600 focus:outline-none disabled:bg-slate-50 aria-[invalid=true]:ring-red-600";
 
 export function Input({ className, ...props }: ComponentProps<"input">) {
   return <input className={clsx(field, className)} {...props} />;
@@ -92,29 +104,96 @@ export function Select({ className, ...props }: ComponentProps<"select">) {
   return <select className={clsx(field, "pr-8", className)} {...props} />;
 }
 
+/** What Field wires into its control: the id its label points at, plus the hint and error to announce. */
+export type FieldControlProps = {
+  id: string;
+  "aria-describedby"?: string;
+  "aria-invalid"?: true;
+};
+
+type ControlElementProps = { id?: string; "aria-describedby"?: string; "aria-invalid"?: unknown };
+
+const CONTROL_TYPES: unknown[] = ["input", "select", "textarea", Input, Select, Textarea];
+
+/** A single form control Field can wire up by cloning it (anything else keeps the legacy wrapping label). */
+function isControl(node: ReactNode): node is ReactElement<ControlElementProps> {
+  return isValidElement(node) && CONTROL_TYPES.includes(node.type);
+}
+
+/**
+ * A labelled form control. The label points at the control (htmlFor), and the hint and error are
+ * linked to it with aria-describedby, the error also with aria-invalid, so a screen reader reads all
+ * three on focus. Hint and error sit outside the label: the accessible name stays the label alone.
+ *
+ * The id is `id`, else the child's own id, else a generated one. The child gets it by cloning when
+ * it is a single <Input>, <Select>, <Textarea> or native control. For a composite control (a
+ * country-code select next to a number), pass a function: it receives the props to spread on the
+ * element the label names. Any other children keep the legacy behaviour (wrapped in the label).
+ */
 export function Field({
   label,
   hint,
   error,
   children,
   className,
+  id,
 }: {
   label: ReactNode;
   hint?: ReactNode;
   error?: string | null;
-  children: ReactNode;
+  children: ReactNode | ((control: FieldControlProps) => ReactNode);
   className?: string;
+  /** The control's id; generated when omitted. */
+  id?: string;
 }) {
-  return (
-    <label className={clsx("block", className)}>
-      <span className="mb-1.5 block text-[13px] font-semibold text-slate-700">{label}</span>
-      {children}
-      {error ? (
-        <span className="mt-1 block text-xs font-medium text-red-600">{error}</span>
-      ) : hint ? (
-        <span className="mt-1 block text-xs text-slate-500">{hint}</span>
+  const generated = useId();
+  const only = typeof children === "function" ? null : Children.count(children) === 1 ? Children.toArray(children)[0] : null;
+  const child = isControl(only) ? only : null;
+  const controlId = id ?? child?.props.id ?? `${generated}control`;
+  const hintId = `${controlId}-hint`;
+  const errorId = `${controlId}-error`;
+  const describedBy = [child?.props["aria-describedby"], error ? errorId : null, hint ? hintId : null].filter(Boolean).join(" ");
+  const control: FieldControlProps = {
+    id: controlId,
+    ...(describedBy ? { "aria-describedby": describedBy } : {}),
+    ...(error ? { "aria-invalid": true as const } : {}),
+  };
+  const labelClass = "mb-1.5 block text-[13px] font-semibold text-slate-700";
+  const notes = (
+    <>
+      {hint ? (
+        <span id={hintId} className="mt-1 block text-xs text-slate-500">
+          {hint}
+        </span>
       ) : null}
-    </label>
+      {error ? (
+        <span id={errorId} className="mt-1 block text-xs font-medium text-red-600">
+          {error}
+        </span>
+      ) : null}
+    </>
+  );
+
+  if (typeof children === "function" || child) {
+    return (
+      <div className={clsx("block", className)}>
+        <label htmlFor={controlId} className={labelClass}>
+          {label}
+        </label>
+        {typeof children === "function" ? children(control) : cloneElement(child!, control)}
+        {notes}
+      </div>
+    );
+  }
+  // Legacy: arbitrary children, labelled by the wrapping <label> (implicit association).
+  return (
+    <div className={clsx("block", className)}>
+      <label className="block">
+        <span className={labelClass}>{label}</span>
+        {children}
+      </label>
+      {notes}
+    </div>
   );
 }
 
@@ -145,21 +224,38 @@ export function Avatar({
   );
 }
 
-export function Stars({ value, size = 14, className }: { value: number; size?: number; className?: string }) {
+/**
+ * A star rating drawn as one image. Pass `label`, the localised reading of the rating (for example
+ * t("rating.stars", { rating }) from the a11y namespace): it is what screen readers announce. Without
+ * it the label falls back to a language-neutral "4.5/5" (kept optional only for existing callers).
+ */
+export function Stars({
+  value,
+  size = 14,
+  className,
+  label,
+}: {
+  value: number;
+  size?: number;
+  className?: string;
+  label?: string;
+}) {
+  const uid = useId();
   return (
-    <span className={clsx("inline-flex", className)} aria-label={`${value.toFixed(1)} out of 5`}>
+    <span role="img" aria-label={label ?? `${value.toFixed(1)}/5`} className={clsx("inline-flex", className)}>
       {[1, 2, 3, 4, 5].map((i) => {
         const fill = Math.max(0, Math.min(1, value - (i - 1)));
+        const gradient = `${uid}star${i}`;
         return (
-          <svg key={i} width={size} height={size} viewBox="0 0 20 20" aria-hidden>
+          <svg key={i} width={size} height={size} viewBox="0 0 20 20" aria-hidden focusable="false">
             <defs>
-              <linearGradient id={`star-${i}-${Math.round(fill * 100)}`}>
+              <linearGradient id={gradient}>
                 <stop offset={`${fill * 100}%`} stopColor="#f59e0b" />
-                <stop offset={`${fill * 100}%`} stopColor="#e2e8f0" />
+                <stop offset={`${fill * 100}%`} stopColor="#cbd5e1" />
               </linearGradient>
             </defs>
             <path
-              fill={`url(#star-${i}-${Math.round(fill * 100)})`}
+              fill={`url(#${gradient})`}
               d="M10 1.5l2.6 5.4 5.9.8-4.3 4.1 1 5.8L10 14.9l-5.2 2.7 1-5.8L1.5 7.7l5.9-.8L10 1.5z"
             />
           </svg>
@@ -172,7 +268,11 @@ export function Stars({ value, size = 14, className }: { value: number; size?: n
 export function EmptyState({ icon, title, children }: { icon?: ReactNode; title: string; children?: ReactNode }) {
   return (
     <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-white/60 px-6 py-12 text-center">
-      {icon ? <div className="mb-3 text-slate-400">{icon}</div> : null}
+      {icon ? (
+        <div className="mb-3 text-slate-500" aria-hidden>
+          {icon}
+        </div>
+      ) : null}
       <p className="font-semibold text-slate-800">{title}</p>
       {children ? <div className="mt-1 max-w-md text-sm text-slate-500">{children}</div> : null}
     </div>

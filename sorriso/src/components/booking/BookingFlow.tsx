@@ -1,19 +1,24 @@
 "use client";
 
 import { ArrowLeft, Check, Clock, MapPin, Stethoscope } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useReducer } from "react";
 import type { ProcessingContext } from "@/db/enums";
+import { fmtWhen, zonedDate, zonedTime } from "@/i18n/datefmt";
+import { formatMoney } from "@/i18n/number";
+import { useLocale, useT } from "@/i18n/provider";
+import type { Locale } from "@/i18n/config";
 import type { PublicClinic } from "@/lib/directory";
-import { formatPrice, practitionerName } from "@/lib/format";
-import { fmtWhen, zonedDate, zonedTime } from "@/lib/datefmt";
+import { practitionerName } from "@/lib/format";
+import { ClinicHelp } from "../ClinicHelp";
+import { LanguageSwitcher } from "../LanguageSwitcher";
 import { Avatar, Field, Select, cx } from "../ui";
-import { DetailsStep } from "./DetailsStep";
+import { CONFIRM_WORD, DetailsStep, initialBookingForm, type BookingFormState, type DetailsForm } from "./DetailsStep";
 import { DoneStep, type BookedAppointment } from "./DoneStep";
-import { ServiceStep } from "./ServiceStep";
+import { ServiceStep, type ServiceLabels } from "./ServiceStep";
 import { SlotPicker, type PickedSlot } from "./SlotPicker";
-import { WaitlistOffer } from "./WaitlistOffer";
+import { WaitlistOffer, initialWaitlist, type WaitlistState } from "./WaitlistOffer";
 
-type Step = "service" | "time" | "details" | "done";
+export type Step = "service" | "time" | "details" | "done";
 
 export type BookingInitial = {
   serviceId?: string;
@@ -23,6 +28,124 @@ export type BookingInitial = {
   waitlistEntryId?: string;
 };
 
+/** Texts the server formats for the flow, so client components never format money or units. */
+export type BookingLabels = { services: ServiceLabels };
+
+/**
+ * Talking to the page that embeds the widget. Messages go only to `parentOrigin` (checked by the
+ * embed page against the practice's allowed origins), never to "*", and carry only
+ * { source, type, height }; the booked event is sent only if the host opted in (data-events), and
+ * with the appointment id only if it asked for it (data-include-id).
+ */
+export type EmbedMessaging = { parentOrigin: string | null; events: boolean; includeId: boolean };
+
+/** Everything the flow holds, in memory only (never web storage): survives Back and a taken slot. */
+export type FlowState = {
+  step: Step;
+  serviceId: string;
+  practitionerId: string;
+  locationId: string;
+  slot: PickedSlot | null;
+  form: BookingFormState;
+  waitlist: WaitlistState;
+  /** The chosen time was taken by someone else: the time step shows an alert. */
+  slotTaken: boolean;
+  booked: BookedAppointment | null;
+  /** Bumped on every step change the visitor caused: the new step's heading takes focus. */
+  focusRequest: number;
+};
+
+export type FlowAction =
+  | { type: "selectService"; serviceId: string; keepPractitioner: boolean }
+  | { type: "setPractitioner"; practitionerId: string }
+  | { type: "setLocation"; locationId: string }
+  | { type: "pickSlot"; slot: PickedSlot }
+  | { type: "goto"; step: Exclude<Step, "done"> }
+  | { type: "slotTaken" }
+  | { type: "booked"; appointment: BookedAppointment }
+  | { type: "form"; patch: Partial<BookingFormState> }
+  | { type: "contact"; patch: Partial<DetailsForm> }
+  | { type: "waitlist"; patch: Partial<WaitlistState> };
+
+/**
+ * The flow's transitions, pure (unit-tested). Moving between steps never touches `form` or
+ * `waitlist`: what the visitor typed survives going back, changing the service or time, and a slot
+ * taken by someone else (WCAG 3.3.7 Redundant Entry).
+ */
+export function flowReducer(state: FlowState, action: FlowAction): FlowState {
+  const step = (s: Step, extra: Partial<FlowState> = {}): FlowState => ({
+    ...state,
+    ...extra,
+    step: s,
+    focusRequest: state.focusRequest + 1,
+  });
+  switch (action.type) {
+    case "selectService":
+      return step("time", {
+        serviceId: action.serviceId,
+        slot: null,
+        slotTaken: false,
+        practitionerId: action.keepPractitioner ? state.practitionerId : "",
+      });
+    case "setPractitioner":
+      return { ...state, practitionerId: action.practitionerId, locationId: "", slot: null };
+    case "setLocation":
+      return { ...state, locationId: action.locationId, slot: null };
+    case "pickSlot":
+      return step("details", { slot: action.slot, slotTaken: false });
+    case "goto":
+      return step(action.step, { slotTaken: false });
+    case "slotTaken":
+      return step("time", { slot: null, slotTaken: true });
+    case "booked":
+      return step("done", { booked: action.appointment });
+    case "form":
+      return { ...state, form: { ...state.form, ...action.patch } };
+    case "contact":
+      return { ...state, form: { ...state.form, details: { ...state.form.details, ...action.patch } } };
+    case "waitlist":
+      return { ...state, waitlist: { ...state.waitlist, ...action.patch } };
+  }
+}
+
+export function initialFlowState(
+  clinic: PublicClinic,
+  initial: BookingInitial,
+  today: string,
+  locale: Locale,
+): FlowState {
+  const tz = clinic.org.timezone;
+  const practitioner = clinic.practitioners.find((p) => p.id === initial.practitionerId);
+  const service = clinic.services.find((s) => s.id === initial.serviceId);
+  const location = clinic.locations.find((l) => l.id === initial.locationId);
+  const serviceId = service?.id ?? (practitioner?.serviceIds.length === 1 ? practitioner.serviceIds[0] : "");
+  const slot: PickedSlot | null =
+    initial.start && service && practitioner && location
+      ? {
+          start: initial.start,
+          end: initial.start,
+          time: zonedTime(initial.start, tz),
+          date: zonedDate(initial.start, tz),
+          practitionerId: practitioner.id,
+          locationId: location.id,
+        }
+      : null;
+  return {
+    step: slot ? "details" : serviceId ? "time" : "service",
+    serviceId,
+    practitionerId: practitioner?.id ?? "",
+    locationId: location?.id ?? "",
+    slot,
+    form: initialBookingForm(locale),
+    waitlist: initialWaitlist(today),
+    slotTaken: false,
+    booked: null,
+    focusRequest: 0,
+  };
+}
+
+const STEPS = ["service", "time", "details"] as const;
+
 export function BookingFlow({
   clinic,
   initial,
@@ -30,6 +153,8 @@ export function BookingFlow({
   embedded = false,
   context,
   practiceRef = null,
+  labels,
+  embed,
 }: {
   clinic: PublicClinic;
   initial: BookingInitial;
@@ -42,40 +167,34 @@ export function BookingFlow({
   context: ProcessingContext;
   /** The page's verified practice ref (signPracticeRef), posted with the booking; null on the marketplace. */
   practiceRef?: string | null;
+  /** Price and duration texts from the server; computed here (without Intl) when a page passes none. */
+  labels?: BookingLabels;
+  /** Embedded in the widget: where and what to post to the host page. */
+  embed?: EmbedMessaging;
 }) {
+  const t = useT("booking");
+  const tc = useT("common");
+  const ta = useT("a11y");
+  const te = useT("errors");
+  const locale = useLocale();
+  const uid = useId();
+  const headingId = `${uid}-step`;
   const tz = clinic.org.timezone;
+  const [state, dispatch] = useReducer(flowReducer, undefined, () => initialFlowState(clinic, initial, today, locale));
+  const { step, serviceId, practitionerId, locationId, slot, form } = state;
+
   const practitionerById = useMemo(() => new Map(clinic.practitioners.map((p) => [p.id, p])), [clinic]);
   const locationById = useMemo(() => new Map(clinic.locations.map((l) => [l.id, l])), [clinic]);
   const serviceById = useMemo(() => new Map(clinic.services.map((s) => [s.id, s])), [clinic]);
+  const serviceLabels = useMemo<ServiceLabels>(() => {
+    if (labels) return labels.services;
+    const price = (c: number | null) => (c == null ? tc("price.onRequest") : c === 0 ? tc("price.free") : formatMoney(c, locale));
+    return Object.fromEntries(
+      clinic.services.map((s) => [s.id, { price: price(s.priceCents), duration: tc("units.minutesShort", { count: s.durationMinutes }) }]),
+    );
+  }, [labels, clinic, tc, locale]);
 
-  const validInitialService = initial.serviceId && serviceById.has(initial.serviceId) ? initial.serviceId : "";
-  const validInitialPractitioner =
-    initial.practitionerId && practitionerById.has(initial.practitionerId) ? initial.practitionerId : "";
-  const fixedPractitioner = validInitialPractitioner ? practitionerById.get(validInitialPractitioner)! : null;
-
-  const [serviceId, setServiceId] = useState(
-    validInitialService ||
-      (fixedPractitioner?.serviceIds.length === 1 ? fixedPractitioner.serviceIds[0] : ""),
-  );
-  const [practitionerId, setPractitionerId] = useState(validInitialPractitioner);
-  const [locationId, setLocationId] = useState(
-    initial.locationId && locationById.has(initial.locationId) ? initial.locationId : "",
-  );
-  const initialSlot: PickedSlot | null =
-    initial.start && validInitialService && validInitialPractitioner && initial.locationId
-      ? {
-          start: initial.start,
-          end: initial.start,
-          time: zonedTime(initial.start, tz),
-          date: zonedDate(initial.start, tz),
-          practitionerId: validInitialPractitioner,
-          locationId: initial.locationId,
-        }
-      : null;
-  const [slot, setSlot] = useState<PickedSlot | null>(initialSlot);
-  const [step, setStep] = useState<Step>(initialSlot ? "details" : serviceId ? "time" : "service");
-  const [booked, setBooked] = useState<BookedAppointment | null>(null);
-
+  const fixedPractitioner = initial.practitionerId ? (practitionerById.get(initial.practitionerId) ?? null) : null;
   const service = serviceId ? serviceById.get(serviceId) : undefined;
   const eligiblePractitioners = clinic.practitioners.filter(
     (p) => (!serviceId || p.serviceIds.includes(serviceId)) && p.locationIds.length > 0,
@@ -89,38 +208,53 @@ export function BookingFlow({
     ? clinic.services.filter((s) => fixedPractitioner.serviceIds.includes(s.id))
     : clinic.services.filter((s) => clinic.practitioners.some((p) => p.serviceIds.includes(s.id)));
 
-  // Embedded in a widget iframe: tell the parent page our height.
+  // A step change the visitor caused moves focus to the new step's heading (never on first load).
   useEffect(() => {
-    if (!embedded || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() =>
-      window.parent?.postMessage({ source: "sorriso", type: "resize", height: document.body.scrollHeight }, "*"),
-    );
+    if (state.focusRequest > 0) document.getElementById(headingId)?.focus();
+  }, [state.focusRequest, headingId]);
+
+  // Embedded in the widget: tell the host page our height, only if it was validated.
+  const parentOrigin = embedded ? (embed?.parentOrigin ?? null) : null;
+  useEffect(() => {
+    if (!parentOrigin || typeof ResizeObserver === "undefined") return;
+    const post = () =>
+      window.parent?.postMessage({ source: "sorriso", type: "resize", height: document.body.scrollHeight }, parentOrigin);
+    const ro = new ResizeObserver(post);
     ro.observe(document.body);
     return () => ro.disconnect();
-  }, [embedded]);
+  }, [parentOrigin]);
 
   const chosenPractitioner = slot ? practitionerById.get(slot.practitionerId) : practitionerById.get(practitionerId);
   const chosenLocation = slot ? locationById.get(slot.locationId) : locationById.get(locationId);
-
+  const helpPhone = chosenLocation?.phone ?? clinic.org.phone ?? clinic.locations.find((l) => l.phone)?.phone ?? null;
   const stepIndex = { service: 0, time: 1, details: 2, done: 3 }[step];
+  const stepLabels = { service: t("steps.service"), time: t("steps.time"), details: t("steps.details") };
 
   return (
     <div className={cx("grid gap-6", step !== "done" && "lg:grid-cols-[1fr_300px]")}>
       <div className="min-w-0">
         {step !== "done" ? (
-          <ol className="mb-5 flex items-center gap-2 text-xs font-semibold text-slate-400">
-            {["Service", "Date & time", "Your details"].map((label, i) => (
-              <li key={label} className="flex items-center gap-2">
+          <ol aria-label={t("steps.label")} className="mb-5 flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-600">
+            {STEPS.map((s, i) => (
+              <li key={s} aria-current={i === stepIndex ? "step" : undefined} className="flex items-center gap-2">
                 <span
+                  aria-hidden
                   className={cx(
                     "inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px]",
-                    i < stepIndex ? "bg-brand-700 text-white" : i === stepIndex ? "bg-brand-100 text-brand-800 ring-2 ring-brand-600" : "bg-slate-100",
+                    i < stepIndex
+                      ? "bg-brand-700 text-white"
+                      : i === stepIndex
+                        ? "bg-brand-100 text-brand-800 ring-2 ring-brand-600"
+                        : "bg-slate-100 text-slate-700",
                   )}
                 >
                   {i < stepIndex ? <Check size={13} /> : i + 1}
                 </span>
-                <span className={cx(i === stepIndex && "text-slate-800")}>{label}</span>
-                {i < 2 ? <span className="mx-1 h-px w-6 bg-slate-200" /> : null}
+                <span className={cx(i === stepIndex && "text-slate-900")}>
+                  {stepLabels[s]}
+                  {i < stepIndex ? <span className="sr-only"> ({ta("completed")})</span> : null}
+                </span>
+                {i < STEPS.length - 1 ? <span aria-hidden className="mx-1 h-px w-6 bg-slate-300" /> : null}
               </li>
             ))}
           </ol>
@@ -130,57 +264,57 @@ export function BookingFlow({
           <ServiceStep
             services={visibleServices}
             selected={serviceId}
-            onSelect={(id) => {
-              setServiceId(id);
-              setSlot(null);
-              if (practitionerId && !practitionerById.get(practitionerId)?.serviceIds.includes(id)) setPractitionerId("");
-              setStep("time");
-            }}
+            labels={serviceLabels}
+            headingId={headingId}
+            onSelect={(id) =>
+              dispatch({
+                type: "selectService",
+                serviceId: id,
+                keepPractitioner: Boolean(practitionerId && practitionerById.get(practitionerId)?.serviceIds.includes(id)),
+              })
+            }
           />
         ) : null}
 
         {step === "time" && service ? (
           <div className="animate-fade-up">
-            <button
-              type="button"
-              onClick={() => setStep("service")}
-              className="mb-4 inline-flex items-center gap-1 text-sm font-semibold text-slate-500 hover:text-slate-800"
-            >
-              <ArrowLeft size={15} /> Change service
-            </button>
+            {visibleServices.length > 1 ? (
+              <button
+                type="button"
+                onClick={() => dispatch({ type: "goto", step: "service" })}
+                className="mb-4 inline-flex min-h-10 items-center gap-1 text-sm font-semibold text-slate-600 hover:text-slate-900"
+              >
+                <ArrowLeft size={15} aria-hidden /> {t("time.changeService")}
+              </button>
+            ) : null}
+            <h2 id={headingId} tabIndex={-1} className="mb-4 text-lg font-bold">
+              {t("time.heading")}
+            </h2>
+            {state.slotTaken ? (
+              <div role="alert" className="mb-4 rounded-xl bg-amber-50 p-3 text-sm font-medium text-amber-900 ring-1 ring-amber-200">
+                {te("slotTaken")}
+              </div>
+            ) : null}
             <div className="mb-5 grid gap-3 sm:grid-cols-2">
               {!fixedPractitioner ? (
-                <Field label="Practitioner">
-                  <Select
-                    value={practitionerId}
-                    onChange={(e) => {
-                      setPractitionerId(e.target.value);
-                      setSlot(null);
-                      setLocationId("");
-                    }}
-                  >
-                    <option value="">First available</option>
+                <Field label={t("time.practitioner")}>
+                  <Select value={practitionerId} onChange={(e) => dispatch({ type: "setPractitioner", practitionerId: e.target.value })}>
+                    <option value="">{t("time.firstAvailable")}</option>
                     {eligiblePractitioners.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {practitionerName(p)} — {p.specialty}
+                        {t("time.practitionerOption", { name: practitionerName(p), specialty: p.specialty })}
                       </option>
                     ))}
                   </Select>
                 </Field>
               ) : null}
               {eligibleLocations.length > 1 ? (
-                <Field label="Office">
-                  <Select
-                    value={locationId}
-                    onChange={(e) => {
-                      setLocationId(e.target.value);
-                      setSlot(null);
-                    }}
-                  >
-                    <option value="">Any office</option>
+                <Field label={t("time.office")}>
+                  <Select value={locationId} onChange={(e) => dispatch({ type: "setLocation", locationId: e.target.value })}>
+                    <option value="">{t("time.anyOffice")}</option>
                     {eligibleLocations.map((l) => (
                       <option key={l.id} value={l.id}>
-                        {l.name} — {l.address}
+                        {t("time.officeOption", { name: l.name, address: l.address })}
                       </option>
                     ))}
                   </Select>
@@ -198,10 +332,7 @@ export function BookingFlow({
               practitionerNames={Object.fromEntries(eligiblePractitioners.map((p) => [p.id, practitionerName(p)]))}
               locationNames={Object.fromEntries(eligibleLocations.map((l) => [l.id, l.name]))}
               selectedStart={slot?.start}
-              onSelect={(s) => {
-                setSlot(s);
-                setStep("details");
-              }}
+              onSelect={(s) => dispatch({ type: "pickSlot", slot: s })}
             />
             <WaitlistOffer
               clinic={clinic}
@@ -211,6 +342,10 @@ export function BookingFlow({
               today={today}
               context={context}
               practiceRef={practiceRef}
+              contact={form.details}
+              onContactChange={(patch) => dispatch({ type: "contact", patch })}
+              value={state.waitlist}
+              onChange={(patch) => dispatch({ type: "waitlist", patch })}
             />
           </div>
         ) : null}
@@ -224,75 +359,107 @@ export function BookingFlow({
             source={embedded ? "widget" : "online"}
             context={context}
             practiceRef={practiceRef}
-            onBack={() => setStep("time")}
+            headingId={headingId}
+            form={form}
+            onFormChange={(patch) => dispatch({ type: "form", patch })}
+            onDetailsChange={(patch) => dispatch({ type: "contact", patch })}
+            onBack={() => dispatch({ type: "goto", step: "time" })}
             onBooked={(a) => {
-              setBooked(a);
-              setStep("done");
-              window.parent?.postMessage({ source: "sorriso", type: "booked", appointmentId: a.id }, "*");
-              window.scrollTo({ top: 0, behavior: "smooth" });
+              dispatch({ type: "booked", appointment: a });
+              if (parentOrigin && embed?.events) {
+                window.parent?.postMessage(
+                  { source: "sorriso", type: "booked", ...(embed.includeId ? { appointmentId: a.id } : {}) },
+                  parentOrigin,
+                );
+              }
             }}
-            onSlotTaken={() => {
-              setSlot(null);
-              setStep("time");
-            }}
+            onSlotTaken={() => dispatch({ type: "slotTaken" })}
           />
         ) : null}
 
-        {step === "done" && booked ? <DoneStep appointment={booked} clinic={clinic} /> : null}
+        {step === "done" && state.booked ? (
+          <DoneStep
+            appointment={state.booked}
+            clinic={clinic}
+            confirmWord={CONFIRM_WORD[form.details.locale]}
+            headingId={headingId}
+            embedded={embedded}
+          />
+        ) : null}
       </div>
 
       {step !== "done" ? (
-        <aside className="h-fit rounded-2xl bg-slate-50 p-5 ring-1 ring-slate-200/70 lg:sticky lg:top-6">
-          <p className="mb-3 text-xs font-bold uppercase tracking-wider text-slate-400">Your appointment</p>
-          <div className="space-y-3 text-sm">
-            <SummaryRow icon={<Stethoscope size={16} />} label="Service">
+        <aside
+          aria-labelledby={`${uid}-summary`}
+          className="h-fit rounded-2xl bg-slate-50 p-5 ring-1 ring-slate-200/70 lg:sticky lg:top-20"
+        >
+          <div className="mb-3 flex items-start justify-between gap-2">
+            <h2 id={`${uid}-summary`} className="pt-2 text-xs font-bold uppercase tracking-wider text-slate-600">
+              {t("summary.title")}
+            </h2>
+            <LanguageSwitcher mode={embedded ? "url" : "cookie"} />
+          </div>
+          <dl className="space-y-3 text-sm">
+            <SummaryRow icon={<Stethoscope size={16} />} label={t("summary.service")}>
               {service ? (
                 <>
                   {service.name}
-                  <span className="block text-xs font-normal text-slate-500">
-                    {service.durationMinutes} min · {formatPrice(service.priceCents)}
+                  <span className="block text-xs font-normal text-slate-600">
+                    {t("summary.serviceMeta", {
+                      duration: serviceLabels[service.id]?.duration ?? "",
+                      price: serviceLabels[service.id]?.price ?? "",
+                    })}
                   </span>
                 </>
               ) : (
-                <span className="text-slate-400">Choose a service</span>
+                <span className="font-normal text-slate-600">{t("summary.chooseService")}</span>
               )}
             </SummaryRow>
-            <SummaryRow icon={<Avatar name={chosenPractitioner?.name ?? "?"} color={chosenPractitioner?.color} size={18} />} label="With">
-              {chosenPractitioner ? practitionerName(chosenPractitioner) : <span className="text-slate-500">First available</span>}
-            </SummaryRow>
-            <SummaryRow icon={<Clock size={16} />} label="When">
-              {slot ? (
-                fmtWhen(slot.start, tz)
+            <SummaryRow
+              icon={<Avatar name={chosenPractitioner?.name ?? "?"} color={chosenPractitioner?.color} size={18} />}
+              label={t("summary.with")}
+            >
+              {chosenPractitioner ? (
+                practitionerName(chosenPractitioner)
               ) : (
-                <span className="text-slate-400">Pick a time</span>
+                <span className="font-normal text-slate-600">{t("time.firstAvailable")}</span>
               )}
             </SummaryRow>
-            <SummaryRow icon={<MapPin size={16} />} label="Where">
+            <SummaryRow icon={<Clock size={16} />} label={t("summary.when")}>
+              {slot ? fmtWhen(slot.start, tz, locale) : <span className="font-normal text-slate-600">{t("summary.pickTime")}</span>}
+            </SummaryRow>
+            <SummaryRow icon={<MapPin size={16} />} label={t("summary.where")}>
               {chosenLocation ? (
                 <>
                   {chosenLocation.name}
-                  <span className="block text-xs font-normal text-slate-500">
-                    {chosenLocation.address}, {chosenLocation.city}
+                  <span className="block text-xs font-normal text-slate-600">
+                    {t("summary.address", { address: chosenLocation.address, city: chosenLocation.city })}
                   </span>
                 </>
               ) : clinic.locations.length === 1 ? (
-                `${clinic.locations[0].name}`
+                clinic.locations[0].name
               ) : (
-                <span className="text-slate-500">Any office</span>
+                <span className="font-normal text-slate-600">{t("time.anyOffice")}</span>
               )}
             </SummaryRow>
-          </div>
-          <div className="mt-4 space-y-1.5 border-t border-slate-200 pt-4 text-xs text-slate-500">
-            <p className="flex gap-2">
-              <Check size={14} className="shrink-0 text-brand-600" /> No account needed, no booking fee
-            </p>
-            <p className="flex gap-2">
-              <Check size={14} className="shrink-0 text-brand-600" /> Reminder by SMS, WhatsApp or email
-            </p>
-            <p className="flex gap-2">
-              <Check size={14} className="shrink-0 text-brand-600" /> Reschedule or cancel online anytime
-            </p>
-          </div>
+          </dl>
+          <ul className="mt-4 space-y-1.5 border-t border-slate-200 pt-4 text-xs text-slate-600">
+            {[
+              t("summary.noAccount"),
+              clinic.privacy.whatsappEnabled ? t("summary.remindersWhatsapp") : t("summary.reminders"),
+              t("summary.reschedule"),
+            ].map((text) => (
+              <li key={text} className="flex gap-2">
+                <Check size={14} className="shrink-0 text-brand-700" aria-hidden /> {text}
+              </li>
+            ))}
+          </ul>
+          <ClinicHelp
+            clinicName={clinic.org.name}
+            phone={helpPhone}
+            email={clinic.org.email}
+            className="mt-4 border-t border-slate-200 pt-4"
+          />
         </aside>
       ) : null}
     </div>
@@ -301,12 +468,14 @@ export function BookingFlow({
 
 function SummaryRow({ icon, label, children }: { icon: React.ReactNode; label: string; children: React.ReactNode }) {
   return (
-    <div className="flex gap-3">
-      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center text-slate-400">{icon}</span>
-      <div className="min-w-0">
-        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{label}</div>
-        <div className="font-semibold text-slate-800">{children}</div>
-      </div>
+    <div className="relative min-w-0 pl-8">
+      <dt className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+        <span className="absolute left-0 top-0.5 flex h-5 w-5 items-center justify-center text-slate-500" aria-hidden>
+          {icon}
+        </span>
+        {label}
+      </dt>
+      <dd className="font-semibold text-slate-800">{children}</dd>
     </div>
   );
 }
