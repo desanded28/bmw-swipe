@@ -1,8 +1,9 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
-import { legalAcceptances, locations, memberships, organizations, patients, type ConsentPurpose } from "../../src/db/schema";
+import { and, asc, eq, gt, inArray, notInArray } from "drizzle-orm";
+import { appointments, legalAcceptances, locations, memberships, organizations, patients, type ConsentPurpose } from "../../src/db/schema";
 import { newId } from "../../src/lib/ids";
 import { LEGAL_VERSIONS } from "../../src/lib/privacy/versions";
 import { recordConsent } from "../../src/lib/privacy/consent";
+import { restrictPatient } from "../../src/lib/privacy/erasure";
 import { recordLegalAcceptance } from "../../src/lib/privacy/legal";
 import {
   addMonthsClamped,
@@ -22,9 +23,11 @@ import type { SeedContext } from "../seed";
  *  - acceptance of the current DPA, terms and sub-processor list by each practice's owner (or
  *    admin), and of the staff instructions by every member, so the dashboard gates and
  *    canAcceptOnlineBookings() let the demo work (critique 23: no lockout after the rollout);
- *  - a few consent-ledger rows (channel choices, feedback consents, a withdrawal, an objection);
+ *  - a few consent-ledger rows (channel choices, feedback consents, a withdrawal, objections);
  *  - privacy requests in each state for the flagship practice: new, in progress close to its
- *    deadline, extended, completed; plus one to Sorriso as controller.
+ *    deadline, extended, completed, rejected; plus one to Sorriso as controller;
+ *  - a restricted record (Art. 18) with an upcoming visit, and its in-progress restriction request:
+ *    the calendar, the lists and the drawer show the "Restricted patient" placeholder.
  * Deterministic in content (dates relative to ctx.now; no randomness).
  */
 
@@ -98,7 +101,9 @@ export async function seedPrivacy(ctx: SeedContext): Promise<void> {
       // Skip children: their consents need a guardian (recordConsent enforces it).
       if (p.birthDate && now.getTime() - Date.parse(p.birthDate) < 14 * 365 * DAY) continue;
       if (n % 2 === 0) await consent(p.id, "feedback_request", true, 60 - n);
+      if (n === 1) await consent(p.id, "whatsapp_channel", true, 45);
       if (n === 3) await consent(p.id, "sms_channel", false, 20, "sms_reply");
+      if (n === 7) await consent(p.id, "adaptive_reminders", false, 9, "staff");
       if (n === 5) await consent(p.id, "no_show_tracking", false, 12, "privacy_center");
       if (n === 6) {
         await consent(p.id, "feedback_request", true, 90);
@@ -106,7 +111,13 @@ export async function seedPrivacy(ctx: SeedContext): Promise<void> {
       }
     }
 
-    const req = (patientId: string | null, type: "access" | "erasure" | "rectification" | "objection", channel: "privacy_center" | "phone" | "email" | "in_person", days: number, details: string) =>
+    const req = (
+      patientId: string | null,
+      type: "access" | "erasure" | "rectification" | "objection",
+      channel: "privacy_center" | "phone" | "email" | "in_person",
+      days: number,
+      details: string,
+    ) =>
       createPrivacyRequest(tx, {
         orgId: flagship,
         patientId,
@@ -137,6 +148,16 @@ export async function seedPrivacy(ctx: SeedContext): Promise<void> {
     // Completed.
     const done = await req(rows[4]?.id ?? null, "rectification", "in_person", 40, "Numero di telefono errato.");
     await completePrivacyRequest(tx, { orgId: flagship, id: done.id, decision: "granted", reason: "Numero aggiornato nella scheda.", actor: staffActor, now: ago(38) });
+    // Rejected (refused, with the reasons sent to the patient).
+    const refused = await req(rows[8]?.id ?? null, "erasure", "email", 16, "Cancellate la mia cartella clinica, non sono più vostro paziente.");
+    await completePrivacyRequest(tx, {
+      orgId: flagship,
+      id: refused.id,
+      decision: "refused",
+      reason: "La cartella clinica va conservata per 10 anni (obbligo di legge, art. 17(3)(b) GDPR). I promemoria e i dati non necessari sono stati cancellati.",
+      actor: staffActor,
+      now: ago(6),
+    });
 
     // A request to Sorriso as controller (marketplace booking), for the platform inbox.
     await createPrivacyRequest(tx, {
@@ -152,4 +173,41 @@ export async function seedPrivacy(ctx: SeedContext): Promise<void> {
       now: ago(5),
     });
   });
+
+  // ---- a restricted record (Art. 18): a patient contesting their data, with an upcoming visit.
+  const [upcoming] = await db
+    .select({ patientId: appointments.patientId })
+    .from(appointments)
+    .where(
+      and(
+        eq(appointments.orgId, flagship),
+        eq(appointments.status, "scheduled"),
+        eq(appointments.minorFlag, false),
+        gt(appointments.startsAt, new Date(now.getTime() + 2 * DAY)),
+        notInArray(appointments.patientId, rows.map((r) => r.id)),
+      ),
+    )
+    .orderBy(asc(appointments.startsAt))
+    .limit(1);
+  if (upcoming) {
+    await db.transaction(async (tx) => {
+      const r = await createPrivacyRequest(tx, {
+        orgId: flagship,
+        patientId: upcoming.patientId,
+        type: "restriction",
+        channel: "phone",
+        details: "Telefonata: contesta l'anamnesi registrata e chiede di limitare il trattamento finché non è verificata.",
+        requesterLocale: "it",
+        actor: staffActor,
+        receivedAt: ago(4),
+        now: ago(4),
+      });
+      await startPrivacyRequest(tx, { orgId: flagship, id: r.id, actor: staffActor, now: ago(3) });
+    });
+    await restrictPatient(flagship, upcoming.patientId, {
+      reason: "Art. 18(1)(a): the patient contests the accuracy of their data; restricted while we check it.",
+      actor: staffActor,
+      now: ago(3),
+    });
+  }
 }

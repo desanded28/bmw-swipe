@@ -320,7 +320,7 @@ export function WaitlistOffer({
                 aria-label={t("details.countryCode")}
                 value={contact.phoneCountry}
                 onChange={(e) => onContactChange({ phoneCountry: e.target.value })}
-                className="w-24 shrink-0"
+                className="max-w-24 shrink-0"
               >
                 {DIAL_CODES.map((code) => (
                   <option key={code} value={code}>

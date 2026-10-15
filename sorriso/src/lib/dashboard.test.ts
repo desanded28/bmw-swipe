@@ -2,7 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import type { MembershipRole } from "@/db/enums";
-import { appointments, auditLog, memberships, messages, organizations, patients, reminders, sessions, users, waitlist } from "@/db/schema";
+import { appointments, auditLog, consents, memberships, messages, organizations, patients, reminders, sessions, users, waitlist } from "@/db/schema";
 import { getT } from "@/i18n/t";
 import { createPractice, TZ } from "@/test/fixtures";
 import type { StaffSession } from "./auth";
@@ -70,6 +70,7 @@ const {
   cancelByStaff,
   clearAttention,
   remindNow,
+  approve,
 } = await import("@/app/dashboard/actions/appointments");
 const { switchOrg, updateMyLocale } = await import("@/app/dashboard/actions/session");
 const { removeWaitlistEntry } = await import("@/app/dashboard/actions/waitlist");
@@ -568,6 +569,76 @@ describe("the drawer and a rebooking offer (WP8)", () => {
     const readOnly = await getAppointmentDetail(flagged.id);
     if (!readOnly.ok) throw new Error(readOnly.error);
     expect(readOnly.data.rebookOfferSent).toBe(false);
+  });
+});
+
+describe("a Sorriso booking held for another adult (WP8)", () => {
+  it("the drawer says it waits for the patient, and approve explains why it can't be approved yet", async () => {
+    const held = await addAppointment(practice, { status: "requested", processingContext: "marketplace", bookedFor: "other_adult" });
+    await signIn("reception");
+    const detail = await getAppointmentDetail(held.id);
+    if (!detail.ok) throw new Error(detail.error);
+    expect(detail.data.awaitingAdultConfirmation).toBe(true);
+    // No users.locale: the request's Accept-Language (it-IT) picks the language.
+    const t = getT("it", "calendar");
+    expect(await approve(held.id)).toEqual({ ok: false, error: t("errors.reasons.awaiting_adult_confirmation"), code: "not_allowed" });
+    const [still] = await db.select({ status: appointments.status }).from(appointments).where(eq(appointments.id, held.id));
+    expect(still.status).toBe("requested");
+
+    // Once the adult has given their own consent, the practice may approve it.
+    await db.insert(consents).values({
+      id: newId(),
+      orgId: practice.orgId,
+      patientId: held.patientId,
+      appointmentId: held.id,
+      purpose: "platform_booking_art9",
+      granted: true,
+      textKey: "privacy.test",
+      textVersion: "1",
+      locale: "it",
+      method: "web_checkbox",
+      source: "manage_link",
+      actorRelation: "self",
+    });
+    const released = await getAppointmentDetail(held.id);
+    if (!released.ok) throw new Error(released.error);
+    expect(released.data.awaitingAdultConfirmation).toBe(false);
+
+    // A practice-channel request (or one the patient booked for themselves) never waits for anyone.
+    const own = await addAppointment(practice, { status: "requested", processingContext: "marketplace" });
+    const ownDetail = await getAppointmentDetail(own.id);
+    if (!ownDetail.ok) throw new Error(ownDetail.error);
+    expect(ownDetail.data.awaitingAdultConfirmation).toBe(false);
+  });
+});
+
+describe("createStaffAppointment and a restricted record", () => {
+  it("refuses a restricted-access reason from a role without patient.restricted.read, and records nothing", async () => {
+    const { patientId } = await addAppointment(practice, { status: "scheduled" }, { restrictedAt: new Date(), restrictionReason: "Art. 18 request" });
+    const booked = () => db.select({ id: appointments.id }).from(appointments).where(eq(appointments.patientId, patientId));
+    const accessRows = () =>
+      db.select().from(auditLog).where(and(eq(auditLog.action, "patient.restricted_access"), eq(auditLog.entityId, patientId)));
+    const input = {
+      patientId,
+      serviceId: practice.visit,
+      practitionerId: practice.drC,
+      locationId: practice.milano,
+      date: "2030-03-11",
+      time: "10:00",
+      notifyPatient: false,
+      force: true,
+      restrictedAccessReason: "Patient at the desk, asked to book",
+    };
+    await signIn("reception");
+    expect(await createStaffAppointment(input)).toMatchObject({ ok: false, code: "forbidden" });
+    expect(await booked()).toHaveLength(1);
+    expect(await accessRows()).toHaveLength(0);
+
+    // A role that may read restricted records books it, and the reason is audited.
+    await signIn("owner");
+    expect(await createStaffAppointment(input)).toMatchObject({ ok: true });
+    expect(await booked()).toHaveLength(2);
+    expect(await accessRows()).toHaveLength(1);
   });
 });
 

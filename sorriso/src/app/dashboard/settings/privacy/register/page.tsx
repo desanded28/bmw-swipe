@@ -49,7 +49,7 @@ export default async function RegisterPage({ searchParams }: { searchParams: Pro
               <label className="sr-only" htmlFor="register-lang">
                 {t("register.language")}
               </label>
-              <Select id="register-lang" name="lang" defaultValue={locale} className="w-40">
+              <Select id="register-lang" name="lang" defaultValue={locale} className="max-w-40">
                 {LOCALES.map((l) => (
                   <option key={l} value={l} lang={l}>
                     {ENDONYM[l]}
@@ -86,7 +86,7 @@ export default async function RegisterPage({ searchParams }: { searchParams: Pro
         <p className="mt-2 text-xs text-slate-500">{lt("register.generated", { date: fmtDay(zonedDate(register.generatedAt, s.org.timezone), "long", locale) })}</p>
       </Card>
 
-      <Card className="overflow-x-auto" lang={locale}>
+      <Card className="relative overflow-x-auto" lang={locale}>
         <table className="w-full min-w-[1100px] text-left text-xs">
           <thead className="bg-slate-50 font-bold uppercase tracking-wide text-slate-500">
             <tr>

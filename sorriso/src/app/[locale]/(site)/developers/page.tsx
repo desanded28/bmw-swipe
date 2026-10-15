@@ -43,7 +43,7 @@ function Code({ children, label }: { children: string; label: string }) {
       tabIndex={0}
       role="group"
       aria-label={label}
-      className="scrollbar-thin overflow-x-auto rounded-xl bg-ink p-4 text-[13px] leading-relaxed text-slate-100"
+      className="scrollbar-thin relative overflow-x-auto rounded-xl bg-ink p-4 text-[13px] leading-relaxed text-slate-100"
     >
       <code>{children.trim()}</code>
     </pre>
@@ -146,7 +146,7 @@ export default async function DevelopersPage({ params }: { params: Params }) {
         <Code label={t("developers.codeSample")}>{`<div id="booking"></div>
 <script src="${APP_URL}/widget.js" data-clinic="studio-bianchi" data-lang="de"
         data-target="#booking" data-practitioner="PRACTITIONER_ID" async></script>`}</Code>
-        <div className="overflow-x-auto">
+        <div className="relative overflow-x-auto">
           <table className="w-full text-left text-sm">
             <caption className="sr-only">{t("developers.widget.attributesCaption")}</caption>
             <thead className="text-xs uppercase tracking-wide text-slate-600">
@@ -217,7 +217,7 @@ curl -X POST "${APP_URL}/api/v1/clinics/studio-bianchi/appointments" \\
     "relation": { "bookedFor": "self" },
     "fundId": null
   }'`}</Code>
-        <div className="overflow-x-auto">
+        <div className="relative overflow-x-auto">
           <table className="w-full text-left text-sm">
             <caption className="sr-only">{t("developers.booking.fieldsCaption")}</caption>
             <thead className="text-xs uppercase tracking-wide text-slate-600">

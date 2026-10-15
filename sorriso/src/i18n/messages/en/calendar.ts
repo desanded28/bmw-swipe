@@ -54,6 +54,7 @@ export default {
     reasons: {
       patient_erased: "This patient record was erased and can't be booked.",
       restriction_reason_required: "This patient's data is restricted. Give a reason to book anyway.",
+      awaiting_adult_confirmation: "The patient hasn't confirmed this booking yet. You can approve it once they do.",
     },
   },
 
@@ -247,6 +248,10 @@ export default {
     cancelReason: "Cancellation reason",
     actions: "Actions",
     approve: "Approve request",
+    /** A Sorriso booking made for another adult, held until that adult confirms it themselves (WP4/WP8). */
+    awaitingAdult: "Waiting for the patient's confirmation",
+    awaitingAdultHint:
+      "Someone else booked this visit for the patient on Sorriso. The patient confirms it through their own link within 48 hours, or before the visit; until then it can't be approved.",
     confirmByPhone: "Confirmed by phone",
     markHandled: "Mark handled",
     markHandledRebookConfirm:

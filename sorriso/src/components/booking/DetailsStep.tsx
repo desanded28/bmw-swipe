@@ -423,7 +423,7 @@ export function DetailsStep({
                 aria-label={t("details.countryCode")}
                 value={d.phoneCountry}
                 onChange={(e) => set("phoneCountry", e.target.value)}
-                className="w-24 shrink-0"
+                className="max-w-24 shrink-0"
               >
                 {DIAL_CODES.map((code) => (
                   <option key={code} value={code}>
@@ -446,7 +446,8 @@ export function DetailsStep({
         <Field label={t("details.email")} error={errors.email}>
           <Input value={d.email} onChange={(e) => set("email", e.target.value)} type="email" autoComplete="email" />
         </Field>
-        <Field label={t("details.birthDate")} hint={tc("words.optional")} error={errors.birthDate}>
+        {/* A minor's birth date is required (the API answers birthdate_required), as on the waitlist form. */}
+        <Field label={t("details.birthDate")} hint={form.relation.bookedFor === "minor" ? undefined : tc("words.optional")} error={errors.birthDate}>
           <Input value={d.birthDate} onChange={(e) => set("birthDate", e.target.value)} type="date" autoComplete="bday" />
         </Field>
         <Field label={t("details.newPatient")}>

@@ -82,6 +82,16 @@ export function reportDetailsValue(text: string): string {
   return encodeDetails({ text });
 }
 
+/** A moderator's statement of reasons as stored on a report (encrypted). For seeds and imports. */
+export function decisionReasonValue(reason: string): string {
+  return encrypt(reason, DECISION_AAD);
+}
+
+/** The statement of reasons as stored on a removed review (encrypted). For seeds and imports. */
+export function removedReasonValue(reason: string): string {
+  return encrypt(reason, REMOVED_AAD);
+}
+
 export function readComment(value: string | null): string | null {
   if (value == null) return null;
   try {

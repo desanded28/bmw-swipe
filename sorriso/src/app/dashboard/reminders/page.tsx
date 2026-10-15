@@ -214,7 +214,7 @@ export default async function RemindersPage() {
           <Card className="p-4 sm:p-6">
             <h2 className="mb-1 text-lg font-bold">{t("replies.title")}</h2>
             <p className="mb-4 text-sm text-slate-500">{t("replies.description")}</p>
-            <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+            <div className="relative -mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
               <table className="w-full min-w-[640px] text-left text-xs">
                 <caption className="sr-only">{t("replies.title")}</caption>
                 <thead className="border-b border-slate-200 text-slate-500">

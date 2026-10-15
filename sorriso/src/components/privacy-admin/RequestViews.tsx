@@ -36,7 +36,7 @@ export function RequestInbox({ t, rows, filter, base }: { t: T; rows: InboxRow[]
       <form method="get" className="flex flex-wrap items-end gap-3" aria-label={t("requests.filters.apply")}>
         <label className="block">
           <span className="mb-1.5 block text-[13px] font-semibold text-slate-700">{t("requests.filters.status")}</span>
-          <Select name="status" defaultValue={filter.status} className="w-40">
+          <Select name="status" defaultValue={filter.status} className="max-w-40">
             <option value="open">{t("requests.filters.open")}</option>
             <option value="closed">{t("requests.filters.closed")}</option>
             <option value="all">{t("requests.filters.all")}</option>
@@ -44,7 +44,7 @@ export function RequestInbox({ t, rows, filter, base }: { t: T; rows: InboxRow[]
         </label>
         <label className="block">
           <span className="mb-1.5 block text-[13px] font-semibold text-slate-700">{t("requests.filters.type")}</span>
-          <Select name="type" defaultValue={filter.type ?? ""} className="w-48">
+          <Select name="type" defaultValue={filter.type ?? ""} className="max-w-48">
             <option value="">{t("requests.filters.allTypes")}</option>
             {PRIVACY_REQUEST_TYPES.map((v) => (
               <option key={v} value={v}>
@@ -65,7 +65,7 @@ export function RequestInbox({ t, rows, filter, base }: { t: T; rows: InboxRow[]
       {rows.length === 0 ? (
         <EmptyState title={t("requests.empty")} />
       ) : (
-        <Card className="overflow-x-auto">
+        <Card className="relative overflow-x-auto">
           <table className="w-full min-w-[680px] text-sm">
             <thead className="border-b border-slate-100 bg-slate-50 text-left text-xs font-bold uppercase tracking-wide text-slate-500">
               <tr>

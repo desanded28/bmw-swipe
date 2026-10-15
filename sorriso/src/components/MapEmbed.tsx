@@ -46,7 +46,8 @@ export function MapEmbed({ lat, lng, office, address }: { lat: number | null; ln
         {hasPoint ? (
           <button
             type="button"
-            className={buttonClass("secondary", "sm")}
+            // The label is long (it names the third party): let it wrap on narrow screens.
+            className={buttonClass("secondary", "sm", "text-left whitespace-normal!")}
             aria-expanded={open}
             aria-controls={regionId}
             onClick={() => setOpen((v) => !v)}

@@ -19,6 +19,7 @@ import { isStepUpRequired } from "@/lib/privacy/gates";
 import { isPlatformConsentPurpose } from "@/lib/privacy/roles";
 import { getPrivacy } from "@/lib/privacy/settings";
 import { formatPhone, normalizePhone } from "@/lib/phone";
+import { clearRiskFor } from "@/lib/risk";
 import { fail, guard, ok, optional, staff, str, type ActionResult } from "./_shared";
 
 /**
@@ -444,20 +445,24 @@ export async function recordConsentAction(id: string, _prev: unknown, fd: FormDa
       if (!PRACTICE_PURPOSES.includes(purpose)) return fail(t("errors.invalid"), "invalid");
       const relation = str(fd, "givenBy");
       const actorRelation = relation === "parent" || relation === "legal_guardian" ? relation : "self";
+      const granted = str(fd, "decision") === "grant";
       try {
-        await db.transaction((tx) =>
-          recordConsent(tx, {
+        await db.transaction(async (tx) => {
+          await recordConsent(tx, {
             orgId: s.org.id,
             patientId: p.id,
             purpose,
-            granted: str(fd, "decision") === "grant",
+            granted,
             locale: p.locale,
             method: "staff_recorded",
             source: "staff",
             actorRelation,
             actorUserId: s.user.id,
-          }),
-        );
+          });
+          // An objection to adaptive reminders or no-show tracking also drops the stored no-show
+          // risk of their upcoming visits (WP8), as the privacy center and the appointment link do.
+          if (!granted && (purpose === "adaptive_reminders" || purpose === "no_show_tracking")) await clearRiskFor(tx, s.org.id, p.id);
+        });
       } catch (err) {
         return domainFail(err, t);
       }

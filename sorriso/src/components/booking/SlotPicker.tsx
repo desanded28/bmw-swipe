@@ -209,7 +209,8 @@ export function SlotPicker({
         </div>
       ) : (
         <div className={cx("relative transition-opacity", loading && "opacity-60")} aria-busy={loading}>
-          <div className="scrollbar-thin -mx-1 flex gap-2 overflow-x-auto px-1 pb-2 sm:grid sm:grid-cols-7 sm:overflow-visible">
+          {/* relative: the scroller is the containing block of the sr-only labels, so it clips them (else they widen the page). */}
+          <div className="scrollbar-thin relative -mx-1 flex gap-2 overflow-x-auto px-1 pb-2 sm:grid sm:grid-cols-7 sm:overflow-visible">
             {(data?.dates ?? Array.from({ length: days }, (_, i) => ({ date: addDays(from, i), slots: [] as SlotDTO[] }))).map(
               (d) => {
                 const isOpen = isExpanded(d.date);

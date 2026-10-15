@@ -114,6 +114,14 @@ describe("/[locale]/a/[token]", () => {
     expect(rows[0].ipHash).toBeTruthy();
   });
 
+  it("gives the reschedule picker the practice's offices, so a time at another office says where it is", async () => {
+    const { token } = await appointmentWithToken();
+    const manage = findElement(await open(token), ManageAppointment);
+    const data = manage!.props.data as { locationId: string; locationNames: Record<string, string> };
+    expect(Object.values(data.locationNames).sort()).toEqual(["Milano", "Monza"]);
+    expect(data.locationNames[data.locationId]).toBe("Milano");
+  });
+
   it("answers the 31st request from one network within 10 minutes with the rate-limit page", async () => {
     const { token } = await appointmentWithToken();
     for (let i = 0; i < 30; i++) expect(findElement(await open(token), ManageAppointment)).not.toBeNull();

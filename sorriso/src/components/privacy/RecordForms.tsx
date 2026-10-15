@@ -150,7 +150,7 @@ export function ContactChangeForm({
           </label>
           <div className="flex gap-2">
             {kind === "phone" ? (
-              <Select name="dial" defaultValue="39" aria-label={t("center.signIn.countryCode")} className="w-24 shrink-0">
+              <Select name="dial" defaultValue="39" aria-label={t("center.signIn.countryCode")} className="max-w-24 shrink-0">
                 {DIAL_CODES.map((code) => (
                   <option key={code} value={code}>
                     {t("center.signIn.dialOption", { code })}

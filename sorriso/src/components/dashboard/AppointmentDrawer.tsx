@@ -272,7 +272,9 @@ export function AppointmentDrawer({
             ) : null}
             <Badge>{t.has(sourceKey) ? t(sourceKey) : appt.source}</Badge>
             {appt.processingContext === "marketplace" ? <Badge tone="brand">{t("drawer.marketplace")}</Badge> : null}
+            {detail?.awaitingAdultConfirmation ? <Badge tone="amber">{t("drawer.awaitingAdult")}</Badge> : null}
           </div>
+          {detail?.awaitingAdultConfirmation ? <p className="text-sm text-slate-600">{t("drawer.awaitingAdultHint")}</p> : null}
 
           {restricted === "placeholder" || restricted === "needs_reason" ? (
             <div className="rounded-xl bg-amber-50 p-4 text-sm text-amber-950 ring-1 ring-amber-200">
@@ -365,7 +367,7 @@ export function AppointmentDrawer({
 
           {canWrite ? (
             <section aria-label={t("drawer.actions")} className="flex flex-wrap gap-2">
-              {appt.status === "requested" ? (
+              {appt.status === "requested" && !detail?.awaitingAdultConfirmation ? (
                 <Button size="sm" disabled={pending} onClick={() => run(() => approve(appt.id))}>
                   <Check size={15} aria-hidden /> {t("drawer.approve")}
                 </Button>

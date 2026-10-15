@@ -110,6 +110,11 @@ export type ApptDetailDTO = ApptListDTO & {
    * the offer is still open: "Mark handled" would withdraw it. False without appointment.write.
    */
   rebookOfferSent: boolean;
+  /**
+   * A request booked on Sorriso for another adult, held until that adult confirms it through
+   * their own link (WP4's adult confirmation): the practice can't approve it before then.
+   */
+  awaitingAdultConfirmation: boolean;
 };
 
 export type DetailResult = { ok: true; data: ApptDetailDTO } | { ok: false; error: string; code?: string };

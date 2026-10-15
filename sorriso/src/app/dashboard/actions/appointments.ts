@@ -66,6 +66,9 @@ export async function createStaffAppointment(input: StaffBookingInput): Promise<
   return dashboardAction(
     async (s, t, locale) => {
       const v = staffBookingSchema(t).parse(input, { error: zodErrorMap(locale) });
+      // createAppointment records any reason it gets (it doesn't know the role): only staff who
+      // may read restricted records may give one, as for openRestrictedAppointment.
+      if (v.restrictedAccessReason && !can(s.role, "patient.restricted.read")) return fail(t("errors.forbidden"), "forbidden");
       const [loc] = await db
         .select()
         .from(locations)

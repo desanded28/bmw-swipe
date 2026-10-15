@@ -138,7 +138,7 @@ export default async function ClinicPage({ params, searchParams }: { params: Par
           </div>
         </Card>
 
-        <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_360px]">
+        <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
           <div className="space-y-6">
             <Card className="p-6">
               <h2 className="mb-4 text-lg font-bold">{t("clinic.team")}</h2>

@@ -5,6 +5,8 @@
  * Product copy makes no comparative claims about competitors (D.Lgs. 145/2007). Code, attribute
  * names and API values stay in <code> tags and are never translated.
  */
+import { p } from "../../plural";
+
 export default {
   meta: {
     title: "{app}: book your dentist online",
@@ -72,7 +74,8 @@ export default {
     },
     citiesTitle: "Dentists by city",
     cityLink: "Dentists in {city}",
-    cityCount: "{count} practitioners",
+    /** listCities counts practices (organisations) with an office in the city. */
+    cityCount: p({ one: "{count} practice", other: "{count} practices" }),
     practices: {
       kicker: "For dental practices",
       title: "Fewer no-shows. Every office on one calendar.",

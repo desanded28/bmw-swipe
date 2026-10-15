@@ -976,7 +976,7 @@ export async function rescheduleAppointment(
  * A marketplace booking for another adult the adult hasn't confirmed yet: only their own consent
  * releases it (confirmAdultBooking in src/lib/privacy/adult-confirmation.ts), never the practice.
  */
-async function awaitsAdultConsent(tx: Tx, a: Pick<Appointment, "id" | "processingContext" | "bookedFor">): Promise<boolean> {
+export async function awaitsAdultConsent(tx: Tx, a: Pick<Appointment, "id" | "processingContext" | "bookedFor">): Promise<boolean> {
   if (a.processingContext !== "marketplace" || a.bookedFor !== "other_adult") return false;
   const [given] = await tx
     .select({ id: consents.id })

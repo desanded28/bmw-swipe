@@ -16,10 +16,21 @@ import {
   type PractitionerCareOptions,
   type SpokenLanguage,
 } from "../../src/db/schema";
+import { findSlots, loadAvailabilityContext, rangeForDates } from "../../src/lib/availability";
+import { BookingError, createAppointment, type CreateAppointmentInput } from "../../src/lib/booking";
 import { reviewFlags } from "../../src/lib/health-terms";
 import { newId } from "../../src/lib/ids";
+import { logInfo } from "../../src/lib/log";
+import { fakePhone } from "../../src/lib/security/seed-guard";
 import { recordConsent } from "../../src/lib/privacy/consent";
-import { heldCommentValue, PSEUDONYM_AUTHOR_NAME, reportDetailsValue } from "../../src/lib/reviews";
+import {
+  decisionReasonValue,
+  heldCommentValue,
+  PSEUDONYM_AUTHOR_NAME,
+  removedReasonValue,
+  reportDetailsValue,
+  withdrawReview,
+} from "../../src/lib/reviews";
 import { addDays, todayIn } from "../../src/lib/time";
 import type { SeedContext } from "../seed";
 
@@ -32,8 +43,12 @@ import type { SeedContext } from "../seed";
  *   removed themselves from the marketplace and one whose approval is pending;
  * - price types (starting price with a range, quote after a visit) and office accessibility;
  * - reviews held by the health-term check, a review reported by the practice and a notice from
- *   the public, for /dashboard/platform/reviews; their publication consents in the ledger;
- * - two weeks of profile statistics.
+ *   the public, for /dashboard/platform/reviews; their publication consents in the ledger; a
+ *   review removed after a decided report (still open to appeal) and one its author withdrew;
+ * - two weeks of profile statistics;
+ * - bookings made on Sorriso (processing context "marketplace", Sorriso's Art. 9 consent in the
+ *   ledger): a German patient using her health fund, and a French patient booked by her husband,
+ *   held until she confirms it herself (the drawer's "Waiting for the patient's confirmation").
  * Deterministic: everything is picked by position, never at random.
  */
 
@@ -184,6 +199,70 @@ export async function seedMarketplace(ctx: SeedContext): Promise<void> {
   }
 
   await seedModeration(ctx);
+  await seedMarketplaceBookings(ctx);
+}
+
+/**
+ * Two bookings made on Sorriso at the flagship practice, through createAppointment as the public
+ * booking route makes them (online, marketplace context, the form's privacy choices).
+ */
+async function seedMarketplaceBookings(ctx: SeedContext) {
+  const { db, now } = ctx;
+  const orgId = ctx.orgIds[0];
+  if (!orgId) return;
+  const [visit] = await db
+    .select()
+    .from(services)
+    .where(and(eq(services.orgId, orgId), eq(services.category, "checkup")))
+    .orderBy(asc(services.sortOrder))
+    .limit(1);
+  if (!visit) return;
+  const from = addDays(todayIn(TZ, now), 3);
+  const actx = await loadAvailabilityContext({ orgId, serviceId: visit.id, ...rangeForDates(from, 7, TZ) });
+  if (!actx) return;
+  const slots = findSlots(actx, { fromDate: from, days: 7, now, enforcePolicy: true });
+
+  const bookings: { patient: CreateAppointmentInput["patient"]; locale: "de" | "fr"; fundId?: string; relation?: CreateAppointmentInput["relation"] }[] = [
+    {
+      patient: { firstName: "Lena", lastName: "Hoffmann", phone: fakePhone(9_900_101), email: "lena.hoffmann@example.com", locale: "de" },
+      locale: "de",
+      fundId: "fund_fasi",
+    },
+    {
+      patient: { firstName: "Camille", lastName: "Dubois", phone: fakePhone(9_900_102), email: "camille.dubois@example.com", locale: "fr" },
+      locale: "fr",
+      relation: { bookedFor: "other_adult", bookedBy: { name: "Julien Dubois", phone: fakePhone(9_900_103), email: "julien.dubois@example.com" } },
+    },
+  ];
+  let made = 0;
+  // Every fifth slot, so the two land on different days and times; a taken one is skipped.
+  for (let i = 0; i < slots.length && made < bookings.length; i += 5) {
+    const b = bookings[made];
+    const slot = slots[i];
+    try {
+      await createAppointment({
+        orgId,
+        serviceId: visit.id,
+        practitionerId: slot.practitionerId,
+        locationId: slot.locationId,
+        startsAt: slot.start,
+        patient: b.patient,
+        source: "online",
+        online: true,
+        isNewPatient: true,
+        processingContext: "marketplace",
+        privacy: { choices: { platformConsent: true, feedback: true }, noticeVersion: null, locale: b.locale, source: "booking" },
+        relation: b.relation,
+        fundId: b.fundId ?? null,
+        actor: { type: "system", id: null },
+        now,
+      });
+      made++;
+    } catch (err) {
+      if (!(err instanceof BookingError)) throw err;
+    }
+  }
+  logInfo("seed", "marketplace bookings", { made });
 }
 
 const addDaysTo = (d: Date, days: number) => new Date(d.getTime() + days * 86_400_000);
@@ -240,13 +319,14 @@ async function seedModeration(ctx: SeedContext) {
     });
   }
 
-  // Reports: the two oldest published reviews of the flagship practice.
+  // Reports: the two oldest published reviews of the flagship practice; the next two are a
+  // removed one (a decided report) and one the author withdrew.
   const published = await db
-    .select({ id: reviews.id })
+    .select({ id: reviews.id, comment: reviews.comment })
     .from(reviews)
     .where(and(eq(reviews.orgId, orgId), eq(reviews.status, "published")))
     .orderBy(asc(reviews.createdAt))
-    .limit(2);
+    .limit(4);
   const [owner] = await db.select({ userId: memberships.userId }).from(memberships).where(and(eq(memberships.orgId, orgId), eq(memberships.role, "owner")));
   if (published[0] && owner) {
     await db.insert(reviewReports).values({
@@ -274,4 +354,35 @@ async function seedModeration(ctx: SeedContext) {
       createdAt: addDaysTo(now, -1),
     });
   }
+  if (published[2] && owner) {
+    // Removed after the practice's report: the statement of reasons is stored on both rows, the
+    // comment is kept encrypted for the appeal window (APPEAL_DAYS).
+    const reason = "La recensione descrive una visita presso un altro studio: non riguarda questo professionista.";
+    const decidedAt = addDaysTo(now, -6);
+    await db.insert(reviewReports).values({
+      id: newId(),
+      reviewId: published[2].id,
+      orgId,
+      reporterUserId: owner.userId,
+      ground: "not_about_visit",
+      details: reportDetailsValue("Il paziente si riferisce a un altro studio della zona."),
+      status: "decided",
+      decision: "remove",
+      decisionReason: decisionReasonValue(reason),
+      decidedAt,
+      createdAt: addDaysTo(now, -9),
+    });
+    await db
+      .update(reviews)
+      .set({
+        status: "removed",
+        published: false,
+        removedReason: removedReasonValue(reason),
+        comment: published[2].comment ? heldCommentValue(published[2].comment) : null,
+        decidedAt,
+      })
+      .where(eq(reviews.id, published[2].id));
+  }
+  // Withdrawn by its author from the appointment link (the ledger records the consent withdrawal).
+  if (published[3]) await withdrawReview(published[3].id, { type: "patient_link", id: null });
 }

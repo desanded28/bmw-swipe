@@ -27,7 +27,7 @@ import { getStaffLocale, getT } from "@/i18n/server";
 import type { Translator } from "@/i18n/types";
 import { auditStaff, type AuditAction } from "./audit";
 import type { StaffSession } from "./auth";
-import { BookingError } from "./booking";
+import { awaitsAdultConsent, BookingError } from "./booking";
 import { fullName, practitionerName } from "./format";
 import { logError } from "./log";
 import { can, PermissionError, permissionsFor, type Permission } from "./permissions";
@@ -277,6 +277,7 @@ export async function loadAppointmentDetail(s: StaffSession, id: string, locale:
       patientNote: appointments.patientNote,
       internalNote: appointments.internalNote,
       cancelReason: appointments.cancelReason,
+      bookedFor: appointments.bookedFor,
       phone: patients.phone,
       email: patients.email,
       guardianName: patients.guardianName,
@@ -332,6 +333,9 @@ export async function loadAppointmentDetail(s: StaffSession, id: string, locale:
 
   // Clearing the flag ("Mark handled") withdraws a rebooking offer (WP8): the drawer warns first.
   const rebookOfferSent = row.needsAttention && access.write ? (await rebookStatus(s.org.id, id)).offerSent : false;
+  // A Sorriso booking for another adult is held until that adult confirms it (approveRequest refuses it).
+  const awaitingAdultConfirmation =
+    row.status === "requested" && full ? await awaitsAdultConsent(db, { id, processingContext: row.processingContext, bookedFor: full.bookedFor }) : false;
 
   const detail: ApptDetailDTO = {
     ...row,
@@ -342,6 +346,7 @@ export async function loadAppointmentDetail(s: StaffSession, id: string, locale:
     cancelReason: access.notes ? (full?.cancelReason ?? null) : null,
     messages: thread,
     rebookOfferSent,
+    awaitingAdultConfirmation,
   };
   await auditStaff(
     s,

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { createElement as h } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -107,5 +107,45 @@ describe("form control contrast (WCAG 1.4.11)", () => {
     expect(contrast("#0a8172", "#ffffff")).toBeGreaterThanOrEqual(3);
     expect(contrast("#0a8172", "#0b1324")).toBeGreaterThanOrEqual(3);
     expect(render(h(Input, {}))).toContain("placeholder:text-slate-500");
+  });
+});
+
+describe("form control width", () => {
+  /** Every .tsx file under src. */
+  const files = (dir: string): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? files(path.join(dir, e.name)) : e.name.endsWith(".tsx") ? [path.join(dir, e.name)] : [],
+    );
+
+  it("is narrowed with max-w-*, never w-*: a w-* class loses to the controls' own w-full", () => {
+    // Input/Select/Textarea join classes with clsx (no merging): w-full and w-24 both apply, and the
+    // stylesheet's order makes w-full win, so e.g. a country-code select took the whole phone field.
+    const offenders: string[] = [];
+    for (const file of files(path.join(__dirname, ".."))) {
+      const src = readFileSync(file, "utf8");
+      for (const m of src.matchAll(/<(?:Input|Select|Textarea)\b[^>]*?className="([^"]*)"/g)) {
+        if (/(^|\s)w-\S+/.test(m[1])) offenders.push(`${path.relative(path.join(__dirname, ".."), file)}: ${m[1]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe("horizontal scrollers", () => {
+  it("are positioned, so the sr-only (absolute) texts inside them are clipped instead of widening the page", () => {
+    // An absolutely positioned descendant escapes overflow clipping when its containing block is
+    // outside the scroller: a table's sr-only "Open" made /dashboard/privacy 623px wide on a phone.
+    const root = path.join(__dirname, "..");
+    const walk = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith(".tsx") ? [path.join(dir, e.name)] : [],
+      );
+    const offenders: string[] = [];
+    for (const file of walk(root)) {
+      for (const m of readFileSync(file, "utf8").matchAll(/className="([^"]*\boverflow-x-auto\b[^"]*)"/g)) {
+        if (!/(^|\s)(relative|absolute|fixed|sticky)(\s|$)/.test(m[1])) offenders.push(`${path.relative(root, file)}: ${m[1]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });

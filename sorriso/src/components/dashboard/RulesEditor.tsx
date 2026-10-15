@@ -33,7 +33,8 @@ function toRule({ amount, unit, channel, ...r }: EditableRule): ReminderRule {
   return { ...r, channel: channel === "email" ? "email" : "sms", offsetMinutes: Math.round(amount * (unit === "days" ? 1440 : 60)) };
 }
 
-const control = "!h-9 !w-auto !py-0";
+// max-w-full: a long option (the SMS channel) would otherwise make the select wider than a phone screen.
+const control = "!h-9 !w-auto max-w-full !py-0";
 
 export function RulesEditor({
   initial,

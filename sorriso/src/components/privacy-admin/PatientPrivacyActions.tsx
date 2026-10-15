@@ -109,7 +109,9 @@ function ExportPanel({ patientId }: { patientId: string }) {
         const body = (await res.json().catch(() => null)) as { error?: { code?: string; verify?: string | null } } | null;
         const code = body?.error?.code;
         setError(code === "step_up_required" ? t("errors.stepUp") : code === "restricted_reason_required" ? t("patient.errors.reason_required") : t("errors.forbidden"));
-        if (code === "step_up_required") setVerify(body?.error?.verify ?? `${STEP_UP_PAGE}?next=${encodeURIComponent(window.location.pathname)}`);
+        // Back to this record with the export panel open, not to the download URL the server names:
+        // after the confirmation the browser would fetch the file and stay on the confirmation page.
+        if (code === "step_up_required") setVerify(`${STEP_UP_PAGE}?next=${encodeURIComponent(`${window.location.pathname}?action=export`)}`);
         return;
       }
       if (!res.ok || !type.includes("zip")) {

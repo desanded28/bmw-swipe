@@ -7,7 +7,7 @@ import { ManageAppointment } from "@/components/booking/ManageAppointment";
 import { ClinicHelp } from "@/components/ClinicHelp";
 import { Avatar, Badge, Card, LinkButton } from "@/components/ui";
 import { db } from "@/db";
-import { reviews } from "@/db/schema";
+import { locations, reviews } from "@/db/schema";
 import { toLocale, type Locale } from "@/i18n/config";
 import { ClientMessages } from "@/i18n/ClientMessages";
 import { capitalizeFirst, fmtDay, fmtTime, zonedDate } from "@/i18n/datefmt";
@@ -157,6 +157,11 @@ export default async function ManagePage({
     .select({ id: reviews.id })
     .from(reviews)
     .where(and(eq(reviews.orgId, d.org.id), eq(reviews.appointmentId, a.id)));
+  // The practice's offices, so a new time at another office says where it is.
+  const offices = await db
+    .select({ id: locations.id, name: locations.name })
+    .from(locations)
+    .where(and(eq(locations.orgId, d.org.id), eq(locations.active, true)));
   const panel = sp.do === "confirm" || sp.do === "cancel" || sp.do === "reschedule" ? sp.do : null;
   // Booking again keeps the controller of this booking: a practice booking links back with the practice ref.
   const rebookRef = a.processingContext === "practice" ? `&ref=${signPracticeRef(d.org.id)}` : "";
@@ -267,7 +272,9 @@ export default async function ManagePage({
               serviceName: d.service.name,
               practitionerId: d.practitioner.id,
               practitionerName: practitionerName(d.practitioner),
+              locationId: d.location.id,
               locationLabel: t("details.address", { address: d.location.address, city: d.location.city }),
+              locationNames: Object.fromEntries([...offices, d.location].map((l) => [l.id, l.name])),
               canCancel: canPatientCancel(d),
               canReschedule: canPatientReschedule(d),
               lateCancellation: isLateCancellation(d),

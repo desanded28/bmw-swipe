@@ -70,7 +70,7 @@ export default async function PrivacySettingsPage({ searchParams }: { searchPara
         <form method="get" className="mb-4 flex flex-wrap items-end gap-2">
           <label className="block">
             <span className="mb-1.5 block text-[13px] font-semibold text-slate-700">{t("settingsPrivacy.notice.locale")}</span>
-            <Select name="notice" defaultValue={noticeLocale} className="w-48">
+            <Select name="notice" defaultValue={noticeLocale} className="max-w-48">
               {LOCALES.map((l) => (
                 <option key={l} value={l} lang={l}>
                   {ENDONYM[l]}

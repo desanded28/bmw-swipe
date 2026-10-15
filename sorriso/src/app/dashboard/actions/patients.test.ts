@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import type { MembershipRole } from "@/db/enums";
-import { auditLog, consents, messages, organizations, patients, privacyRequests, users } from "@/db/schema";
+import { appointments, auditLog, consents, messages, organizations, patients, privacyRequests, users } from "@/db/schema";
 import type { StaffSession } from "@/lib/auth";
 import { newId } from "@/lib/ids";
 import { createPractice } from "@/test/fixtures";
@@ -32,6 +32,7 @@ vi.mock("@/lib/auth", async (orig) => ({
 }));
 
 let orgId: string;
+let practice: Awaited<ReturnType<typeof createPractice>>;
 const userIds: Partial<Record<MembershipRole, string>> = {};
 
 async function signIn(role: MembershipRole) {
@@ -60,7 +61,8 @@ async function addPatient(over: Partial<typeof patients.$inferInsert> = {}) {
 }
 
 beforeAll(async () => {
-  ({ orgId } = await createPractice());
+  practice = await createPractice();
+  ({ orgId } = practice);
 });
 
 describe("patients list and search", () => {
@@ -168,6 +170,46 @@ describe("data protection actions", () => {
     expect(await consent()).toMatchObject({ ok: false, code: "restricted_reason_required" });
     expect((await openRestrictedRecord(p.id, null, form({ reason: "Il paziente ha chiamato" }))).ok).toBe(true);
     expect((await consent()).ok).toBe(true);
+  });
+
+  it("an objection to no-show tracking or adaptive reminders clears the stored risk of upcoming visits", async () => {
+    await signIn("reception");
+    const p = await addPatient();
+    const visit = async () => {
+      const id = newId();
+      const startsAt = new Date(Date.now() + 3 * 86_400_000);
+      const endsAt = new Date(startsAt.getTime() + 30 * 60_000);
+      await db.insert(appointments).values({
+        id,
+        orgId,
+        locationId: practice.milano,
+        practitionerId: practice.drA,
+        serviceId: practice.visit,
+        patientId: p.id,
+        startsAt,
+        endsAt,
+        blockedUntil: endsAt,
+        source: "staff",
+        manageToken: `h:${id}`,
+        manageTokenHash: `hash-${id}`,
+        riskLevel: "high",
+        riskReasons: ["history"],
+      });
+      return async () => (await db.select({ riskLevel: appointments.riskLevel }).from(appointments).where(eq(appointments.id, id)))[0].riskLevel;
+    };
+    const record = (purpose: string, decision: string) => recordConsentAction(p.id, null, form({ purpose, decision, givenBy: "self" }));
+
+    const first = await visit();
+    expect((await record("no_show_tracking", "grant")).ok).toBe(true);
+    expect(await first()).toBe("high");
+    expect((await record("marketing", "withdraw")).ok).toBe(true);
+    expect(await first()).toBe("high");
+    expect((await record("no_show_tracking", "withdraw")).ok).toBe(true);
+    expect(await first()).toBeNull();
+
+    const second = await visit();
+    expect((await record("adaptive_reminders", "withdraw")).ok).toBe(true);
+    expect(await second()).toBeNull();
   });
 
   it("lifting a restriction needs a reason", async () => {

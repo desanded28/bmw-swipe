@@ -3,7 +3,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { db } from "@/db";
 import type { MembershipRole } from "@/db/enums";
-import { auditLog, organizations, patients, practitioners } from "@/db/schema";
+import { auditLog, organizations, patients, practitioners, users } from "@/db/schema";
 import { getT } from "@/i18n/t";
 import type { StaffSession } from "@/lib/auth";
 import { sha256Hex } from "@/lib/crypto";
@@ -48,6 +48,9 @@ const common = getT("en", "common");
 
 async function signIn(role: MembershipRole) {
   const [org] = await db.select().from(organizations).where(eq(organizations.id, orgId));
+  // Real sessions always have a users row; columns that reference the actor (e.g.
+  // practitioners.ics_issued_by_user_id) need it.
+  await db.insert(users).values({ id: `user-${role}`, email: `user-${role}@example.com`, name: "Test", passwordHash: "x" }).onConflictDoNothing();
   state.session = {
     sessionId: "s1",
     user: { id: `user-${role}`, name: "Test", email: "t@example.com", isPlatformAdmin: false, locale: "en" },
@@ -313,6 +316,7 @@ describe("what the actions write", () => {
     const token = String((res as { data?: { url?: string } }).data?.url).match(/practitioner\/(.+)\.ics$/)![1];
     const [issued] = await db.select().from(practitioners).where(eq(practitioners.id, id));
     expect(issued.icsToken).toBe(`h:${id}`);
+    expect(issued.icsIssuedByUserId).toBe("user-owner");
 
     // The practice turns the feed off; a leftover plaintext token (rows rotated before this fix) is still there.
     await db.update(practitioners).set({ icsEnabled: false, icsToken: newId(24) }).where(eq(practitioners.id, id));

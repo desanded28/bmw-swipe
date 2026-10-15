@@ -11,6 +11,7 @@
  */
 import { eq } from "drizzle-orm";
 import { db, type DB } from "../src/db";
+import type { Locale } from "../src/i18n/config";
 import {
   apiKeys,
   appointments,
@@ -112,7 +113,39 @@ const REVIEW_COMMENTS = {
     "Easy online booking and the SMS reminder was really handy.",
     "Great with my kids, they actually enjoyed the visit.",
   ],
+  de: ["Sehr freundlich und kompetent, alles wurde mir genau erklärt.", "Pünktlich, saubere Praxis, Online-Termin in zwei Minuten gebucht."],
+  fr: ["Équipe très accueillante et à l'écoute. Je recommande !", "Rendez-vous en ligne facile et rappel par SMS bien pratique."],
+  es: ["Muy profesionales y amables, me lo explicaron todo con calma.", "Consulta impecable y puntual. ¡Muy recomendable!"],
+  pt: ["Muito profissionais e simpáticos, explicaram tudo com calma.", "Consultório impecável e pontual. Recomendo!"],
+  ro: ["Foarte profesioniști și amabili, mi-au explicat totul pe îndelete.", "Cabinet curat, punctuali și programare online foarte ușoară."],
+  pl: ["Bardzo profesjonalnie i miło, wszystko dokładnie wyjaśnione.", "Punktualnie, czysto, a rezerwacja online zajęła chwilę."],
+} satisfies Record<Locale, string[]>;
+
+/** How patients answer the reminder's "reply YES" in their language (src/lib/inbound.ts understands each). */
+const CONFIRM_REPLIES: Record<Locale, string[]> = {
+  it: ["SI", "Si grazie", "sì", "Confermo, grazie!"],
+  en: ["Yes", "YES", "yes thanks 👍"],
+  de: ["JA", "Ja, danke"],
+  fr: ["OUI", "Oui merci"],
+  es: ["SI", "Sí, gracias"],
+  pt: ["SIM", "Sim, obrigado"],
+  ro: ["DA", "Da, mulțumesc"],
+  pl: ["TAK", "Tak, dziękuję"],
 };
+
+/** A reply the keyword parser can't place ("can I come half an hour later?"), per language. */
+const NEEDS_A_HUMAN: Partial<Record<Locale, string>> = {
+  en: "Can I come half an hour later?",
+  de: "Kann ich eine halbe Stunde später kommen?",
+  fr: "Est-ce que je peux venir une demi-heure plus tard ?",
+  es: "¿Puedo llegar media hora más tarde?",
+  pt: "Posso chegar meia hora mais tarde?",
+  ro: "Pot să vin cu o jumătate de oră mai târziu?",
+  pl: "Czy mogę przyjść pół godziny później?",
+};
+
+/** Patients' languages: mostly Italian, then English, and a few of each other language Sorriso speaks. */
+const OTHER_LOCALES = ["de", "fr", "es", "pt", "ro", "pl"] as const satisfies readonly Locale[];
 
 type ServiceSeed = {
   key: string;
@@ -504,7 +537,9 @@ let phoneCounter = 1000;
 function makePatient(orgId: string): typeof patients.$inferInsert {
   const firstName = pick(FIRST);
   const lastName = pick(LAST);
-  const english = chance(0.12);
+  // One draw, as before the other languages were added: the rest of the demo stays the same.
+  const r = rand();
+  const locale: Locale = r < 0.12 ? "en" : r < 0.3 ? OTHER_LOCALES[Math.min(OTHER_LOCALES.length - 1, Math.floor((r - 0.12) / 0.03))] : "it";
   const channel = chance(0.25) ? "whatsapp" : chance(0.1) ? "email" : "sms";
   phoneCounter += Math.floor(rand() * 900) + 17;
   return {
@@ -515,7 +550,7 @@ function makePatient(orgId: string): typeof patients.$inferInsert {
     email: `${slugify(firstName)}.${slugify(lastName)}${Math.floor(rand() * 90 + 10)}@example.com`,
     phone: fakePhone(phoneCounter),
     birthDate: `${1950 + Math.floor(rand() * 60)}-0${1 + Math.floor(rand() * 9)}-1${Math.floor(rand() * 9)}`,
-    locale: english ? "en" : "it",
+    locale,
     preferredChannel: channel,
     emailOptIn: true,
     smsOptIn: true,
@@ -861,7 +896,7 @@ async function main() {
               direction: "inbound",
               to: PRACTICE_INBOUND,
               from: details.patient.phone,
-              body: pick(details.patient.locale === "en" ? ["Yes", "YES", "yes thanks 👍"] : ["SI", "Si grazie", "sì", "Confermo, grazie!"]),
+              body: pick(CONFIRM_REPLIES[details.patient.locale] ?? CONFIRM_REPLIES.it),
               status: "received",
               provider: "twilio",
               intent: "confirm",
@@ -885,12 +920,19 @@ async function main() {
       }
     }
 
-    // A couple of replies that need a human (flagship only)
+    // A few replies that need a human (flagship only): two in Italian, one in the patient's own
+    // other language (the inbox shows what they wrote).
     if (orgIndex === 0) {
-      const pending = upcoming.filter((a) => a.confirmation === "pending").slice(0, 2);
-      const texts = ["Posso venire mezz'ora più tardi?", "Devo portare le lastre di prima?"];
+      const localeOf = (a: Appointment) => patientList.find((x) => x.id === a.patientId)!.locale;
+      const unconfirmed = upcoming.filter((a) => a.confirmation === "pending");
+      const pending = [
+        ...unconfirmed.filter((a) => localeOf(a) === "it").slice(0, 2),
+        ...unconfirmed.filter((a) => localeOf(a) !== "it" && localeOf(a) !== "en").slice(0, 1),
+      ];
+      const italian = ["Posso venire mezz'ora più tardi?", "Devo portare le lastre di prima?"];
       for (const [i, a] of pending.entries()) {
         const p = patientList.find((x) => x.id === a.patientId)!;
+        const text = p.locale === "it" ? italian[i] : (NEEDS_A_HUMAN[p.locale] ?? italian[0]);
         await db.update(appointments).set({ needsAttention: true }).where(eq(appointments.id, a.id));
         await db.insert(messages).values({
           id: newId(),
@@ -901,7 +943,7 @@ async function main() {
           direction: "inbound",
           to: PRACTICE_INBOUND,
           from: p.phone,
-          body: texts[i],
+          body: text,
           status: "received",
           provider: "twilio",
           intent: "unknown",
@@ -942,6 +984,31 @@ async function main() {
           latestDate: addDays(today, 20),
           partOfDay: "afternoon",
         },
+        // Closed entries (the waitlist's history and the retention clock): one booked, one removed.
+        {
+          id: newId(),
+          orgId,
+          patientId: wlPatients[3].id,
+          serviceId: svcIds.checkup,
+          earliestDate: addDays(today, -20),
+          latestDate: addDays(today, -6),
+          status: "removed",
+          closedAt: new Date(now.getTime() - 8 * 86_400_000),
+          createdAt: new Date(now.getTime() - 21 * 86_400_000),
+        },
+        {
+          id: newId(),
+          orgId,
+          patientId: wlPatients[0].id,
+          serviceId: svcIds.whitening,
+          earliestDate: addDays(today, -30),
+          latestDate: addDays(today, -10),
+          status: "booked",
+          offersSent: 1,
+          lastOfferedAt: new Date(now.getTime() - 25 * 86_400_000),
+          closedAt: new Date(now.getTime() - 25 * 86_400_000),
+          createdAt: new Date(now.getTime() - 31 * 86_400_000),
+        },
       ]);
 
       // Demo API key: random, stored as a hash, printed once here and never again.
@@ -971,7 +1038,8 @@ async function main() {
           practitionerId: a.practitionerId,
           appointmentId: a.id,
           rating,
-          comment: chance(0.85) ? pick(REVIEW_COMMENTS[p.locale === "it" ? "it" : "en"]) : null,
+          comment: chance(0.85) ? pick(REVIEW_COMMENTS[p.locale] ?? REVIEW_COMMENTS.en) : null,
+          locale: p.locale,
           authorName: `${p.firstName} ${p.lastName[0]}.`,
           status: "published" as const,
           authorDisplay: "first_initial" as const,

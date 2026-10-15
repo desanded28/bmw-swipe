@@ -31,7 +31,10 @@ export type ManageData = {
   serviceName: string;
   practitionerId: string;
   practitionerName: string;
+  locationId: string;
   locationLabel: string;
+  /** The practice's offices by id: the picker names the office of each time when there are several. */
+  locationNames: Record<string, string>;
   canCancel: boolean;
   canReschedule: boolean;
   lateCancellation: boolean;
@@ -294,6 +297,7 @@ export function ManageAppointment({ data, initialPanel }: { data: ManageData; in
             today={data.today}
             maxAdvanceDays={data.maxAdvanceDays}
             practitionerNames={{ [data.practitionerId]: data.practitionerName }}
+            locationNames={data.locationNames}
             selectedStart={slot?.start}
             onSelect={(s) => {
               setSlot(s);
@@ -303,7 +307,9 @@ export function ManageAppointment({ data, initialPanel }: { data: ManageData; in
           {slot ? (
             <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl bg-brand-50 p-3">
               <p id={`${ids.reschedule}-move`} tabIndex={-1} className="text-sm font-semibold text-brand-900 outline-none">
-                {t("reschedule.moveTo", { when: fmtWhen(slot.start, data.timezone, locale) })}
+                {slot.locationId !== data.locationId && data.locationNames[slot.locationId]
+                  ? t("reschedule.moveToOffice", { when: fmtWhen(slot.start, data.timezone, locale), office: data.locationNames[slot.locationId] })
+                  : t("reschedule.moveTo", { when: fmtWhen(slot.start, data.timezone, locale) })}
               </p>
               <Button
                 size="sm"

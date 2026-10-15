@@ -177,7 +177,7 @@ export function TermsDocument({ t }: { t: T }) {
 
 export function SubprocessorTable({ t, rows }: { t: T; rows: SubprocessorRow[] }) {
   return (
-    <div className="overflow-x-auto rounded-2xl ring-1 ring-slate-200">
+    <div className="relative overflow-x-auto rounded-2xl ring-1 ring-slate-200">
       <table className="w-full min-w-[760px] text-left text-sm">
         <thead className="bg-slate-50 text-xs font-bold uppercase tracking-wide text-slate-500">
           <tr>

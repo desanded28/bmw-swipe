@@ -40,6 +40,7 @@ export default {
     button: "Reschedule",
     title: "Pick a new time with {practitioner}",
     moveTo: "Move your appointment to {when}?",
+    moveToOffice: "Move your appointment to {when} at {office}?",
     confirm: "Confirm the new time",
     done: "Done: your appointment has been moved.",
     closed: p({

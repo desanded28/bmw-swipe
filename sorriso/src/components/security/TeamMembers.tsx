@@ -115,7 +115,7 @@ function Member({ m, roles, editable }: { m: MemberRow; roles: readonly Membersh
             id={selectId}
             value={role}
             disabled={pending}
-            className="h-8 w-auto py-1 text-[13px]"
+            className="h-8 max-w-fit py-1 text-[13px]"
             onChange={(e) => setRole(e.target.value as MembershipRole)}
           >
             {roles.map((r) => (

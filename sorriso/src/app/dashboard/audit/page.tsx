@@ -123,7 +123,7 @@ export default async function AuditLogPage({ searchParams }: { searchParams: Pro
       {page.length === 0 ? (
         <EmptyState title={t("audit.empty")} />
       ) : (
-        <Card className="overflow-x-auto">
+        <Card className="relative overflow-x-auto">
           <table className="w-full min-w-[820px] text-sm">
             <thead className="border-b border-slate-100 bg-slate-50 text-left text-xs font-bold uppercase tracking-wide text-slate-500">
               <tr>

@@ -124,7 +124,7 @@ export function PatientSearch({ initial }: { initial: PatientPage }) {
 function PatientTable({ page }: { page: PatientPage }) {
   const t = useT("privacyAdmin");
   return (
-    <Card className="overflow-x-auto">
+    <Card className="relative overflow-x-auto">
       <table className="w-full min-w-[720px] text-sm">
         <thead className="border-b border-slate-100 bg-slate-50 text-left text-xs font-bold uppercase tracking-wide text-slate-500">
           <tr>

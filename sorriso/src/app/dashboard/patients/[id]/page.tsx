@@ -16,7 +16,7 @@ import { ENDONYM } from "@/i18n/config";
 import { fmtDay, fmtWhen, zonedDate } from "@/i18n/datefmt";
 import { getStaffLocale, getT } from "@/i18n/server";
 import { auditStaff } from "@/lib/audit";
-import { listAppointments, listViewer, loadResources } from "@/lib/dashboard";
+import { listAppointments, listViewer, loadResources, redactPatientLinks } from "@/lib/dashboard";
 import { fullName } from "@/lib/format";
 import { can, permissionsFor, requirePermission, visiblePatient } from "@/lib/permissions";
 import { currentConsents, isObjectable } from "@/lib/privacy/consent";
@@ -226,7 +226,9 @@ export default async function PatientPage({
                     {m.redactedAt ? (
                       <p className="mt-0.5 italic text-slate-400">{t("patient.redacted")}</p>
                     ) : (
-                      <p className="mt-0.5 line-clamp-2 text-slate-700">{m.subject || m.body}</p>
+                      // Sent texts carry the patient's personal links: staff get those only through the audited
+                      // issuePatientLink(), never off the log (as on the Messages page and in the drawer).
+                      <p className="mt-0.5 line-clamp-2 text-slate-700">{redactPatientLinks(m.subject || m.body, tReminders("messages.linkRedacted"))}</p>
                     )}
                     {m.intent ? <p className="mt-0.5 text-xs text-slate-500">{t("patient.understoodAs", { intent: tReminders(`messages.intent.${m.intent}`) })}</p> : null}
                   </div>

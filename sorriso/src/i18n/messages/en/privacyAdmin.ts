@@ -9,7 +9,8 @@ import { p } from "../../plural";
 export default {
   errors: {
     forbidden: "You don't have permission to do that.",
-    stepUp: "For your security, confirm it's you with your two-step code, then try again.",
+    // Neutral: the confirmation page asks for the two-step code, or the password when two-step sign-in is off.
+    stepUp: "For your security, confirm it's you, then try again.",
     stepUpLink: "Confirm it's you",
     generic: "Something went wrong. Please try again.",
     invalid: "Some fields aren't valid.",

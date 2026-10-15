@@ -53,7 +53,7 @@ export default async function ExportSchemaPage({ params }: { params: Params }) {
       <p className="mt-1 text-sm text-slate-600">{t("exportSchema.versioning")}</p>
 
       <h2 className="mb-2 mt-8 text-lg font-bold">{t("exportSchema.fields")}</h2>
-      <Card className="overflow-x-auto">
+      <Card className="relative overflow-x-auto">
         <table className="w-full min-w-[640px] text-left text-sm">
           <thead className="bg-slate-50 text-xs font-bold uppercase tracking-wide text-slate-500">
             <tr>
