@@ -54,8 +54,18 @@ beforeEach(() => {
 });
 
 describe("/[locale]/embed/[org]", () => {
-  it("posts only to the validated host origin, and the booked event only when the host opted in", async () => {
+  it("with no allowed websites set, any framing site gets a Sorriso page: marketplace, no practice ref, no events", async () => {
     const slug = await practice();
+    framedBy("https://evil.example/page");
+    const { flow, embed } = await open(slug, { parent: "https://evil.example", events: "1", id: "1" });
+    expect(flow).not.toBeNull();
+    expect(flow!.props.context).toBe("marketplace");
+    expect(flow!.props.practiceRef).toBeNull();
+    expect(embed?.parentOrigin).toBeNull();
+  });
+
+  it("posts only to the validated host origin, and the booked event only when the host opted in", async () => {
+    const slug = await practice(["https://host.example"]);
     framedBy("https://host.example/contatti");
     const plain = await open(slug, { parent: "https://host.example" });
     expect(plain.embed).toEqual({ parentOrigin: "https://host.example", events: false, includeId: false });
@@ -72,16 +82,17 @@ describe("/[locale]/embed/[org]", () => {
     ["garbage", "javascript:alert(1)"],
     ["missing", ""],
   ])("never posts to a parent that is %s", async (_, parent) => {
-    const slug = await practice();
-    framedBy(null);
+    const slug = await practice(["https://host.example"]);
+    framedBy("https://host.example/");
+    // Blocked (no flow at all) or shown without messages: never posted to.
     const { embed } = await open(slug, parent ? { parent } : {});
-    expect(embed?.parentOrigin).toBeNull();
+    expect(embed?.parentOrigin ?? null).toBeNull();
   });
 
   it("refuses a parent the browser's Referer contradicts, but not our own pages' Referer", async () => {
-    const slug = await practice();
+    const slug = await practice(["https://host.example"]);
     framedBy("https://attacker.example/");
-    expect((await open(slug, { parent: "https://host.example" })).embed?.parentOrigin).toBeNull();
+    expect((await open(slug, { parent: "https://host.example" })).flow).toBeNull();
     // The frame moved on inside itself (e.g. switched language): the Referer is our own page.
     framedBy(`https://sorriso.test/it/embed/${slug}?parent=https%3A%2F%2Fhost.example`);
     expect((await open(slug, { parent: "https://host.example" })).embed?.parentOrigin).toBe("https://host.example");
@@ -161,7 +172,7 @@ describe("/[locale]/embed/[org]", () => {
   });
 
   it("hands the flow prices with their price type, the default specialty and the query the proxy saw", async () => {
-    const slug = await practice();
+    const slug = await practice(["https://host.example"]);
     const [org] = await db.select().from(organizations).where(eq(organizations.slug, slug));
     await db.update(services).set({ priceType: "from", priceMaxCents: 12000 }).where(eq(services.orgId, org.id));
     await db.update(practitioners).set({ specialty: "" }).where(eq(practitioners.orgId, org.id));
