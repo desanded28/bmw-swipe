@@ -1,11 +1,15 @@
-import { and, asc, desc, eq, inArray, isNull, lt, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import {
+  appointments,
+  consents,
   memberships,
   organizations,
   patients,
   privacyRequests,
+  reviews,
   users,
+  type ConsentPurpose,
   type Locale,
   type Organization,
   type Patient,
@@ -27,6 +31,9 @@ import { logError } from "../log";
 import { deliver } from "../messaging";
 import { renderEmailLayout } from "../messaging/layout";
 import { pad, zonedParts, zonedToUtc } from "../time";
+import { currentConsents } from "./consent";
+import { ERASED_NAME } from "./erased";
+import { PLATFORM_CONSENT_PURPOSES } from "./roles";
 
 /**
  * Data-subject requests (Art. 15-22). Each one is answered within one month of receipt
@@ -104,7 +111,10 @@ export type PrivacyRequestErrorCode =
   | "extension_too_long"
   | "extension_not_later"
   | "extension_too_late"
-  | "already_extended";
+  | "already_extended"
+  | "erasure_not_done"
+  | "restriction_not_done"
+  | "objection_not_done";
 
 /** A refused request-handling step; `code` is a key of privacyAdmin.requests.errors. */
 export class PrivacyRequestError extends Error {
@@ -297,9 +307,140 @@ export async function extendPrivacyRequest(tx: Tx, s: Step & { until: Date; reas
   return row;
 }
 
+// ---------------------------------------------------------------- what an answer may say
+
+/**
+ * Request types whose outcome is a change to the record. Answering one "granted" tells the
+ * patient the change was made, so it is accepted only once it has been (decisionsAllowed).
+ */
+export const EFFECT_REQUEST_TYPES = ["erasure", "restriction", "objection"] as const satisfies readonly PrivacyRequestType[];
+type EffectType = (typeof EFFECT_REQUEST_TYPES)[number];
+
+export function isEffectRequest(type: PrivacyRequestType): type is EffectType {
+  return (EFFECT_REQUEST_TYPES as readonly string[]).includes(type);
+}
+
+const NOT_DONE: Record<EffectType, PrivacyRequestErrorCode> = {
+  erasure: "erasure_not_done",
+  restriction: "restriction_not_done",
+  objection: "objection_not_done",
+};
+
+/** The practice's purposes a patient objects to (Art. 21) or withdraws from (Art. 7(3)). */
+const OBJECTION_PURPOSES: readonly ConsentPurpose[] = ["adaptive_reminders", "no_show_tracking", "recalls", "marketing", "feedback_request"];
+
+const MAX_MERGE_HOPS = 5;
+
+/** The linked record, the record it was merged into (if any) and every record merged into that one. */
+async function subjectRecords(tx: Tx, patientId: string) {
+  const cols = {
+    id: patients.id,
+    orgId: patients.orgId,
+    mergedIntoId: patients.mergedIntoId,
+    erasedAt: patients.erasedAt,
+    restrictedAt: patients.restrictedAt,
+    erasureRequestedAt: patients.erasureRequestedAt,
+  };
+  const load = async (id: string) => (await tx.select(cols).from(patients).where(eq(patients.id, id)))[0] ?? null;
+  const linked = await load(patientId);
+  if (!linked) return null;
+  let kept = linked;
+  for (let hop = 0; kept.mergedIntoId && hop < MAX_MERGE_HOPS; hop++) {
+    const next = await load(kept.mergedIntoId);
+    if (!next) break;
+    kept = next;
+  }
+  const ids = [kept.id];
+  let frontier = [kept.id];
+  for (let hop = 0; frontier.length && hop < MAX_MERGE_HOPS; hop++) {
+    const rows = await tx.select({ id: patients.id }).from(patients).where(inArray(patients.mergedIntoId, frontier));
+    frontier = rows.map((r) => r.id).filter((id) => !ids.includes(id));
+    ids.push(...frontier);
+  }
+  return { linked, kept, ids };
+}
+
+/**
+ * Has Sorriso erased what it holds as controller about these records: no consent row of its own
+ * (org_id NULL) still names them, and no review of theirs still carries their name or words?
+ */
+async function platformDataErased(tx: Tx, ids: string[]): Promise<boolean> {
+  const [ledger] = await tx
+    .select({ n: sql<number>`count(*)` })
+    .from(consents)
+    .where(and(isNull(consents.orgId), inArray(consents.patientId, ids)));
+  if (ledger.n > 0) return false;
+  const [named] = await tx
+    .select({ n: sql<number>`count(*)` })
+    .from(reviews)
+    .innerJoin(appointments, eq(appointments.id, reviews.appointmentId))
+    .where(and(inArray(appointments.patientId, ids), or(ne(reviews.authorName, ERASED_NAME), isNotNull(reviews.comment), isNotNull(reviews.reply))));
+  return named.n === 0;
+}
+
+/**
+ * The decisions an answer to this request may carry now. A refusal is always possible. For an
+ * erasure, restriction or objection linked to a patient record, "granted" (and "granted in part")
+ * become possible only once the record shows the change, so the patient is never told their data
+ * was erased while nothing was:
+ * - erasure: granted once the record is erased (pseudonymised); granted in part once it is kept
+ *   restricted instead, or its erasure deferred to the end of the retention period;
+ * - restriction: once the record is restricted (or erased);
+ * - objection: once an objection or withdrawal is the current entry in the consent ledger (or the
+ *   record is restricted or erased).
+ * Sorriso's own requests (orgId null) are about what Sorriso controls: erasure is granted once the
+ * practice erased the record or Sorriso erased its own data about it (its consent rows unlinked,
+ * reviews pseudonymised: erasePlatformData), and the other decisions once Sorriso stopped its own
+ * processing (every Sorriso consent withdrawn) or the record is restricted or erased.
+ * A request linked to no record has nothing in Sorriso to check: staff decide.
+ */
+export async function decisionsAllowed(
+  r: Pick<PrivacyRequest, "orgId" | "patientId" | "type">,
+  tx: Tx = db,
+): Promise<readonly PrivacyRequestDecision[]> {
+  if (!isEffectRequest(r.type) || !r.patientId) return ["granted", "partially_granted", "refused"];
+  const subject = await subjectRecords(tx, r.patientId);
+  if (!subject) return ["refused"];
+  const { linked, kept, ids } = subject;
+  const erased = Boolean(linked.erasedAt || kept.erasedAt);
+  const restricted = erased || Boolean(linked.restrictedAt || kept.restrictedAt);
+  const deferred = Boolean(linked.erasureRequestedAt || kept.erasureRequestedAt);
+  const ledger = await currentConsents(kept.id, tx);
+  // The purposes an objection to this controller is about (channel choices are not objections).
+  const purposes = r.orgId === null ? PLATFORM_CONSENT_PURPOSES : OBJECTION_PURPOSES;
+  const objected = purposes.some((p) => ledger[p]?.granted === false);
+
+  let granted: boolean;
+  let partly: boolean;
+  if (r.orgId === null) {
+    // Sorriso no longer processes for itself: no consent of its own stands, and it recorded the
+    // withdrawals or erased its data.
+    const nothingGranted = purposes.every((p) => ledger[p]?.granted !== true);
+    const stopped = restricted || (nothingGranted && (objected || (await platformDataErased(tx, ids))));
+    if (r.type === "erasure") {
+      granted = erased || (await platformDataErased(tx, ids));
+      partly = granted || stopped || deferred;
+    } else {
+      granted = partly = stopped;
+    }
+  } else if (r.type === "erasure") {
+    granted = erased;
+    partly = erased || restricted || deferred;
+  } else if (r.type === "restriction") {
+    granted = partly = restricted;
+  } else {
+    granted = partly = restricted || objected;
+  }
+  return [...(granted ? (["granted"] as const) : []), ...(partly ? (["partially_granted"] as const) : []), "refused"];
+}
+
 /**
  * Close it with a decision and its reasons (sent to the requester afterwards). A refusal is
- * status 'rejected'; granted and partially granted requests are 'completed'.
+ * status 'rejected'; granted and partially granted requests are 'completed'. An erasure,
+ * restriction or objection can be answered "granted" only once it has been carried out
+ * (decisionsAllowed); otherwise this throws erasure_not_done / restriction_not_done /
+ * objection_not_done and staff carry it out first (erasePatient with `answer` closes the request
+ * itself).
  */
 export async function completePrivacyRequest(
   tx: Tx,
@@ -309,6 +450,7 @@ export async function completePrivacyRequest(
   const reason = s.reason.trim();
   if (!reason) throw new PrivacyRequestError("reason_required");
   const r = await loadOpen(tx, s.orgId, s.id);
+  if (isEffectRequest(r.type) && !(await decisionsAllowed(r, tx)).includes(s.decision)) throw new PrivacyRequestError(NOT_DONE[r.type]);
   const [row] = await tx
     .update(privacyRequests)
     .set({

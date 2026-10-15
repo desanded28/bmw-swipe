@@ -335,8 +335,11 @@ export async function afterClosureRemoved(orgId: string, closure: Closure, now: 
 
 // ---------------------------------------------------------------- the patient's page
 
-/** The rebooking state behind a patient's link. A restricted record's link offers nothing (the practice calls). */
-async function linkRebook(d: AppointmentDetails, now: Date): Promise<PatientRebook> {
+/**
+ * The rebooking state behind a patient's link (and their replies to the offer). A restricted
+ * record's link offers nothing (the practice calls).
+ */
+export async function linkRebook(d: AppointmentDetails, now: Date): Promise<PatientRebook> {
   return isRestricted(d.patient) ? { open: false, callRequested: false } : patientRebook(d.appointment, now);
 }
 

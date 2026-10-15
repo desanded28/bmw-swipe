@@ -6,6 +6,7 @@ import { useActionState, useEffect, useId, useRef, useState, useTransition } fro
 import type { ActionResult } from "@/app/dashboard/actions/_shared";
 import { searchPatients } from "@/app/dashboard/actions/patients";
 import {
+  carryOutPlatformRequestAction,
   completePlatformRequestAction,
   completePrivacyRequestAction,
   extendPlatformRequestAction,
@@ -176,6 +177,13 @@ type RequestActionsProps = {
   maxLabel: string;
   languageLabel: string;
   open: boolean;
+  /**
+   * The decisions the answer may carry now (decisionsAllowed): an erasure, restriction or
+   * objection is offered "granted" only once it has been carried out.
+   */
+  decisions: readonly (typeof PRIVACY_REQUEST_DECISIONS)[number][];
+  /** Why some decisions are missing, and how to make them available. */
+  decisionsHint?: string | null;
 };
 
 /** Start, extend (≤ 2 months, with reasons sent to the requester) and complete a request. */
@@ -192,7 +200,9 @@ export function RequestActions(p: RequestActionsProps) {
     (platform ? completePlatformRequestAction : completePrivacyRequestAction).bind(null, p.id),
     null,
   );
-  const [decision, setDecision] = useState<(typeof PRIVACY_REQUEST_DECISIONS)[number]>("granted");
+  const [decision, setDecision] = useState<(typeof PRIVACY_REQUEST_DECISIONS)[number]>(p.decisions[0] ?? "refused");
+  // The offer can shrink while the page is open (another tab carried out or undid the change).
+  const chosen = p.decisions.includes(decision) ? decision : (p.decisions[0] ?? "refused");
   useEffect(() => {
     if (extendState?.ok || completeState?.ok) router.refresh();
   }, [extendState, completeState, router]);
@@ -212,20 +222,21 @@ export function RequestActions(p: RequestActionsProps) {
         <form action={completeAction} className="space-y-3">
           <fieldset className="flex flex-wrap gap-2">
             <legend className="mb-1.5 block text-[13px] font-semibold text-slate-700">{t("requests.detail.complete.decision")}</legend>
-            {PRIVACY_REQUEST_DECISIONS.map((d) => (
+            {PRIVACY_REQUEST_DECISIONS.filter((d) => p.decisions.includes(d)).map((d) => (
               <label
                 key={d}
                 className={cx(
                   "flex cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-sm ring-1",
-                  decision === d ? "bg-brand-50 ring-2 ring-brand-500" : "bg-white ring-slate-200",
+                  chosen === d ? "bg-brand-50 ring-2 ring-brand-500" : "bg-white ring-slate-200",
                 )}
               >
-                <input type="radio" name="decision" value={d} checked={decision === d} onChange={() => setDecision(d)} className="h-4 w-4 accent-brand-700" />
+                <input type="radio" name="decision" value={d} checked={chosen === d} onChange={() => setDecision(d)} className="h-4 w-4 accent-brand-700" />
                 {t(`requests.decisions.${d}`)}
               </label>
             ))}
           </fieldset>
-          <Field label={t("requests.detail.complete.reason")} hint={decision !== "granted" ? t("requests.detail.complete.reasonHint") : undefined}>
+          {p.decisionsHint ? <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900 ring-1 ring-amber-200">{p.decisionsHint}</p> : null}
+          <Field label={t("requests.detail.complete.reason")} hint={chosen !== "granted" ? t("requests.detail.complete.reasonHint") : undefined}>
             <Textarea name="reason" rows={4} required minLength={3} maxLength={2000} />
           </Field>
           <div className="flex flex-wrap items-center gap-3">
@@ -254,5 +265,23 @@ export function RequestActions(p: RequestActionsProps) {
         </Card>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Sorriso's own inbox: carry out an erasure (erase Sorriso's data), restriction or objection (stop
+ * Sorriso's processing) for the linked patient, before answering it.
+ */
+export function PlatformCarryOut({ id, mode }: { id: string; mode: "stop" | "erase" }) {
+  const t = useT("privacyAdmin");
+  const { run, pending } = useRunAction();
+  return (
+    <Card className="p-5">
+      <h2 className="font-bold">{t("requests.detail.platformAct.title")}</h2>
+      <p className="mb-3 mt-0.5 text-sm text-slate-500">{t(mode === "erase" ? "requests.detail.platformAct.eraseBody" : "requests.detail.platformAct.stopBody")}</p>
+      <Button type="button" variant="secondary" disabled={pending} onClick={() => run(() => carryOutPlatformRequestAction(id))}>
+        {t(mode === "erase" ? "requests.detail.platformAct.erase" : "requests.detail.platformAct.stop")}
+      </Button>
+    </Card>
   );
 }

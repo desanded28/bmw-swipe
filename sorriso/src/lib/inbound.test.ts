@@ -1,14 +1,16 @@
 import { and, desc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
-import { appointments, consents, messages, organizations, patients } from "@/db/schema";
+import { appointments, auditLog, consents, messages, organizations, patients, timeOff } from "@/db/schema";
 import { LOCALES, type Locale } from "@/i18n/config";
 import { createPractice, MONDAY, NOW, TZ } from "@/test/fixtures";
-import { createAppointment, type NewPatientInput } from "./booking";
+import { cancelAppointment, createAppointment, type NewPatientInput } from "./booking";
+import { isContactVerified } from "./contact";
 import { newId } from "./ids";
 import { KEYWORDS, normalizeReply, parseIntent, handleInboundMessage, type Intent } from "./inbound";
 import { deliver } from "./messaging";
 import { withdrawConsent } from "./privacy/consent";
+import { patientRebook, sendRebookOffers } from "./rebooking";
 import { purgeProviderCopies } from "./reminders";
 import { addDays, zonedToUtc } from "./time";
 
@@ -558,6 +560,101 @@ describe("the Twilio webhook", () => {
     const wa = { ...form, From: `whatsapp:${form.From}`, To: `whatsapp:${A_NUMBER}` };
     expect((await send(wa, sign("ie1-token", wa))).status).toBe(403);
     expect((await send(wa, sign("us1-token", wa))).status).toBe(200);
+  });
+});
+
+describe("what a reply is about", () => {
+  it("an OK to 'we need to move your appointment' keeps the rebooking offer open and points to it", async () => {
+    const d = await book(A, person());
+    const a = d.appointment;
+    await db.insert(timeOff).values({ id: newId(), orgId: A.orgId, practitionerId: A.drA, startsAt: new Date(a.startsAt.getTime() - 3_600_000), endsAt: a.endsAt });
+    const offers = await sendRebookOffers(A.orgId, [a.id], { type: "user", id: null }, NOW);
+    expect(offers.sent).toEqual([a.id]);
+
+    const res = await handleInboundMessage({ channel: "sms", from: d.patient.phone!, to: A_NUMBER, body: "Ok", replyMode: "return", now: NOW });
+    expect(res).toMatchObject({ intent: "confirm", appointmentId: a.id });
+    const after = await row(a.id);
+    expect(after.confirmation).toBe("pending");
+    expect(after.needsAttention).toBe(true);
+    expect((await patientRebook(after, NOW)).open).toBe(true);
+    // The answer points to the rebooking page, never "you're confirmed".
+    expect(res.reply).toContain("/rebook");
+    expect(res.reply).not.toContain("confermat");
+  });
+
+  it("YES to a booking held for another adult's own confirmation confirms nothing; NO declines the hold", async () => {
+    const d = await book(A, person());
+    const a = d.appointment;
+    await db
+      .update(appointments)
+      .set({ processingContext: "marketplace", bookedFor: "other_adult", status: "requested", bookedByName: "Julien" })
+      .where(eq(appointments.id, a.id));
+    await textFrom(A.orgId, d.patient.phone!, a.id);
+
+    const yes = await handleInboundMessage({ channel: "sms", from: d.patient.phone!, to: A_NUMBER, body: "SI", replyMode: "return", now: NOW });
+    expect(yes.intent).toBe("confirm");
+    expect(await row(a.id)).toMatchObject({ status: "requested", confirmation: "pending" });
+    expect(yes.reply).toContain("/privacy/confirm");
+    expect(yes.reply).not.toContain("Presenza confermata");
+
+    const no = await handleInboundMessage({ channel: "sms", from: d.patient.phone!, to: A_NUMBER, body: "NO", replyMode: "return", now: NOW });
+    expect(no.intent).toBe("cancel");
+    const after = await row(a.id);
+    // Declined as on the confirmation page: neither the patient's nor the practice's cancellation.
+    expect(after).toMatchObject({ status: "cancelled", cancelledBy: null, confirmation: "declined", confirmedVia: "adult_declined" });
+    const actions = (await db.select({ action: auditLog.action }).from(auditLog).where(eq(auditLog.entityId, a.id))).map((r) => r.action);
+    expect(actions).toContain("adult_confirmation.decline");
+  });
+
+  it("YES to a request the practice still has to accept says so, and flags it for the front desk", async () => {
+    const d = await book(A, person());
+    await db.update(appointments).set({ status: "requested" }).where(eq(appointments.id, d.appointment.id));
+    await textFrom(A.orgId, d.patient.phone!, d.appointment.id);
+    const res = await handleInboundMessage({ channel: "sms", from: d.patient.phone!, to: A_NUMBER, body: "SI", replyMode: "return", now: NOW });
+    expect(await row(d.appointment.id)).toMatchObject({ status: "requested", confirmation: "pending", needsAttention: true });
+    expect(res.reply).toContain("accettata");
+    expect(res.reply).not.toContain("Presenza confermata");
+  });
+
+  it("a 'wrong number' answer, a STOP or a text nobody asked for doesn't verify the number", async () => {
+    const d = await book(A, person());
+    const phone = d.patient.phone!;
+    await textFrom(A.orgId, phone, d.appointment.id);
+    await handleInboundMessage({ channel: "sms", from: phone, to: A_NUMBER, body: "Chi è? Numero sbagliato", replyMode: "return", now: NOW });
+    expect(isContactVerified(await patientRow(d.patient.id), "phone", phone)).toBe(false);
+    await handleInboundMessage({ channel: "sms", from: phone, to: A_NUMBER, body: "STOP", replyMode: "return", now: NOW });
+    expect(isContactVerified(await patientRow(d.patient.id), "phone", phone)).toBe(false);
+
+    // Never texted by the practice: a YES is no proof either.
+    const quiet = await book(A, person());
+    await db.delete(messages).where(eq(messages.to, quiet.patient.phone!));
+    await handleInboundMessage({ channel: "sms", from: quiet.patient.phone!, to: A_NUMBER, body: "SI", replyMode: "return", now: NOW });
+    expect(isContactVerified(await patientRow(quiet.patient.id), "phone", quiet.patient.phone!)).toBe(false);
+  });
+
+  it("a reply to a waiting-list offer doesn't confirm the patient's next visit", async () => {
+    const d = await book(A, person());
+    const phone = d.patient.phone!;
+    await textFrom(A.orgId, phone, d.appointment.id);
+    // Later: "a slot opened…" (about no appointment).
+    await deliver({ orgId: A.orgId, appointmentId: null, channel: "sms", to: phone, text: "Si è liberato un posto" });
+    const res = await handleInboundMessage({ channel: "sms", from: phone, to: A_NUMBER, body: "Sì", replyMode: "return", now: NOW });
+    expect(res.appointmentId).toBeNull();
+    expect((await row(d.appointment.id)).confirmation).toBe("pending");
+    expect(res.reply).toContain("Studio Alfa");
+    expect(res.reply).not.toContain("confermat");
+  });
+
+  it("a NO to a cancellation notice doesn't cancel the patient's other visit", async () => {
+    const phone = `+39${seq++}`;
+    const first = await book(A, person({ phone }));
+    const second = await book(A, person({ phone }));
+    await textFrom(A.orgId, phone, second.appointment.id);
+    await cancelAppointment(first.appointment.id, { by: "staff", notifyPatient: false, now: NOW });
+    await textFrom(A.orgId, phone, first.appointment.id);
+    const res = await handleInboundMessage({ channel: "sms", from: phone, to: A_NUMBER, body: "NO", replyMode: "return", now: NOW });
+    expect(res.appointmentId).toBeNull();
+    expect((await row(second.appointment.id)).status).toBe("scheduled");
   });
 });
 

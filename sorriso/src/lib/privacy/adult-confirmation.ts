@@ -348,6 +348,23 @@ export async function declineAdultBooking(i: ProofInput): Promise<AdultConfirmat
 }
 
 /**
+ * The adult answered NO to the confirmation text (src/lib/inbound.ts, a reply from the number the
+ * request went to): the hold is declined as on the confirmation page, never counted as a patient's
+ * own (late) cancellation. A text reply can only decline: confirming needs the code and the consent.
+ */
+export async function declineAdultBookingByReply(
+  a: Pick<Appointment, "id" | "orgId" | "patientId">,
+  i: { via: "sms" | "whatsapp"; now?: Date },
+): Promise<boolean> {
+  return cancelHold(a, {
+    action: "adult_confirmation.decline",
+    actor: { type: "webhook", id: null },
+    metadata: { proof: `${i.via}_reply` },
+    now: i.now ?? new Date(),
+  });
+}
+
+/**
  * Cancel a held booking as the system: cancelled_by stays empty (neither 'staff', which would
  * count against the practice's reliability ranking, nor 'patient', which would count as the
  * patient's late cancellation), pending reminders go, a recall it had booked reopens. Audited as
@@ -357,7 +374,7 @@ async function cancelHold(
   a: Pick<Appointment, "id" | "orgId" | "patientId">,
   i: {
     action: "adult_confirmation.decline" | "adult_confirmation.expire";
-    actor: { type: "patient_link" | "system"; id: null };
+    actor: { type: "patient_link" | "system" | "webhook"; id: null };
     metadata?: Record<string, string>;
     headers?: Headers;
     now: Date;

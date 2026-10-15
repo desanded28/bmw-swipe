@@ -30,6 +30,7 @@ import {
   ERASED_NAME,
   ErasureError,
   erasePatient,
+  erasePlatformData,
   grantRestrictedAccess,
   hasRestrictedAccess,
   isDeferredErasure,
@@ -38,7 +39,7 @@ import {
   restrictPatient,
   unrestrictPatient,
 } from "./erasure";
-import { completePrivacyRequest, notifyRequester } from "./requests";
+import { completePrivacyRequest, decisionsAllowed, notifyRequester } from "./requests";
 
 const NOW = new Date("2030-03-01T09:00:00Z");
 const HOUR = 3_600_000;
@@ -594,5 +595,119 @@ describe("restriction (Art. 18)", () => {
       .where(and(eq(auditLog.action, "patient.unrestrict"), eq(auditLog.entityId, silent.id)));
     expect(audited.metadata).toMatchObject({ notified: false, informedOtherwise: true });
     expect(audited.reason).toBe("Dati verificati");
+  });
+});
+
+describe("answering an erasure, restriction or objection (only once carried out)", () => {
+  const request = async (patientId: string, type: "erasure" | "restriction" | "objection", orgId: string | null = p.orgId) => {
+    const id = newId();
+    await db.insert(privacyRequests).values({ id, orgId, patientId, type, channel: "privacy_center", receivedAt: NOW, dueAt: new Date(NOW.getTime() + 28 * DAY) });
+    return id;
+  };
+  const answer = (id: string, decision: "granted" | "partially_granted" | "refused", orgId: string | null = p.orgId) =>
+    db.transaction((tx) => completePrivacyRequest(tx, { orgId, id, decision, reason: "Abbiamo cancellato i dati.", actor: STAFF, now: NOW }));
+
+  it("refuses 'granted' for an erasure while the record still holds the data, and offers it once erased", async () => {
+    const patient = await addPatient();
+    const id = await request(patient.id, "erasure");
+    expect(await decisionsAllowed({ orgId: p.orgId, patientId: patient.id, type: "erasure" })).toEqual(["refused"]);
+    await expect(answer(id, "granted")).rejects.toMatchObject({ code: "erasure_not_done" });
+    await expect(answer(id, "partially_granted")).rejects.toMatchObject({ code: "erasure_not_done" });
+    const [still] = await db.select().from(privacyRequests).where(eq(privacyRequests.id, id));
+    expect(still).toMatchObject({ status: "open", decision: null });
+    // The one-click erasure closes it as granted, with the record pseudonymised first.
+    await erasePatient(p.orgId, patient.id, { mode: "anonymise", reason: "Richiesta", actor: STAFF, now: NOW, answer: { requestId: id, text: "Fatto." } });
+    const [closed] = await db.select().from(privacyRequests).where(eq(privacyRequests.id, id));
+    expect(closed).toMatchObject({ status: "completed", decision: "granted" });
+  });
+
+  it("offers 'granted in part' for an erasure kept and restricted, never 'granted'", async () => {
+    const patient = await addPatient();
+    const id = await request(patient.id, "erasure");
+    await erasePatient(p.orgId, patient.id, { mode: "restrict", reason: "Cartella clinica", retainUntil: "2040-01-01", actor: STAFF, now: NOW });
+    expect(await decisionsAllowed({ orgId: p.orgId, patientId: patient.id, type: "erasure" })).toEqual(["partially_granted", "refused"]);
+    await expect(answer(id, "granted")).rejects.toMatchObject({ code: "erasure_not_done" });
+    expect(await answer(id, "partially_granted")).toMatchObject({ status: "completed", decision: "partially_granted" });
+  });
+
+  it("a restriction once the record is restricted, an objection once it is in the ledger", async () => {
+    const patient = await addPatient();
+    const restriction = await request(patient.id, "restriction");
+    await expect(answer(restriction, "granted")).rejects.toMatchObject({ code: "restriction_not_done" });
+    await restrictPatient(p.orgId, patient.id, { reason: "Contesta l'esattezza", actor: STAFF, now: NOW });
+    expect(await answer(restriction, "granted")).toMatchObject({ decision: "granted" });
+
+    const other = await addPatient();
+    const objection = await request(other.id, "objection");
+    await expect(answer(objection, "granted")).rejects.toMatchObject({ code: "objection_not_done" });
+    // A channel opt-out is not an objection.
+    await db.transaction((tx) =>
+      recordConsent(tx, { orgId: p.orgId, patientId: other.id, purpose: "sms_channel", granted: false, locale: "it", method: "staff_recorded", source: "staff", now: NOW }),
+    );
+    await expect(answer(objection, "granted")).rejects.toMatchObject({ code: "objection_not_done" });
+    await db.transaction((tx) =>
+      recordConsent(tx, { orgId: p.orgId, patientId: other.id, purpose: "no_show_tracking", granted: false, locale: "it", method: "staff_recorded", source: "staff", now: NOW }),
+    );
+    expect(await answer(objection, "granted")).toMatchObject({ decision: "granted" });
+  });
+
+  it("a refusal is always possible, and a request linked to no record is left to staff", async () => {
+    const patient = await addPatient();
+    expect(await answer(await request(patient.id, "erasure"), "refused")).toMatchObject({ status: "rejected" });
+    expect(await decisionsAllowed({ orgId: p.orgId, patientId: null, type: "erasure" })).toEqual(["granted", "partially_granted", "refused"]);
+  });
+
+  it("Sorriso's inbox: granted once Sorriso erased its own data (consents unlinked, reviews pseudonymised)", async () => {
+    const patient = await addPatient();
+    const appt = await addAppointment(patient.id, new Date(NOW.getTime() - 20 * DAY), { status: "completed", processingContext: "marketplace" });
+    await db.transaction((tx) =>
+      recordConsent(tx, { orgId: p.orgId, patientId: patient.id, appointmentId: appt.id, purpose: "platform_booking_art9", granted: true, locale: "it", method: "web_checkbox", source: "booking", now: NOW }),
+    );
+    await db.insert(reviews).values({ id: newId(), orgId: p.orgId, practitionerId: p.drA, appointmentId: appt.id, rating: 5, comment: "Bravissimi ZQ-review", authorName: "Zebedeo Q.", status: "published" });
+    const id = await request(patient.id, "erasure", null);
+    await expect(answer(id, "granted", null)).rejects.toMatchObject({ code: "erasure_not_done" });
+    const counts = await erasePlatformData(patient.id, { mode: "erase", actor: { type: "platform_admin", id: STAFF.id }, requestId: id, now: NOW });
+    expect(counts).toMatchObject({ platformConsentsUnlinked: 1, reviewsPseudonymised: 1 });
+    expect(await answer(id, "granted", null)).toMatchObject({ decision: "granted" });
+    // The practice's record is untouched.
+    const [kept] = await db.select().from(patients).where(eq(patients.id, patient.id));
+    expect(kept).toMatchObject({ firstName: "Zebedeo", erasedAt: null });
+  });
+
+  it("Sorriso's inbox: an objection once Sorriso's consents are withdrawn ('stop')", async () => {
+    const patient = await addPatient();
+    await db.transaction((tx) =>
+      recordConsent(tx, { orgId: p.orgId, patientId: patient.id, purpose: "platform_booking_art9", granted: true, locale: "it", method: "web_checkbox", source: "booking", now: NOW }),
+    );
+    const id = await request(patient.id, "objection", null);
+    await expect(answer(id, "granted", null)).rejects.toMatchObject({ code: "objection_not_done" });
+    expect(await erasePlatformData(patient.id, { mode: "stop", actor: { type: "platform_admin", id: STAFF.id }, now: NOW })).toMatchObject({ withdrawals: 2 });
+    expect(await answer(id, "granted", null)).toMatchObject({ decision: "granted" });
+  });
+});
+
+describe("erasure and Sorriso's own consent rows (org_id NULL)", () => {
+  it("are unlinked by the practice's erasure, so the platform retention clock starts", async () => {
+    const patient = await addPatient();
+    const appt = await addAppointment(patient.id, new Date(NOW.getTime() - 10 * DAY), { status: "completed", processingContext: "marketplace" });
+    await db.transaction((tx) =>
+      recordConsent(tx, { orgId: p.orgId, patientId: patient.id, appointmentId: appt.id, purpose: "platform_booking_art9", granted: true, locale: "it", method: "web_checkbox", source: "booking", now: NOW }),
+    );
+    const res = await erasePatient(p.orgId, patient.id, { mode: "anonymise", reason: "Richiesta", actor: STAFF, now: NOW });
+    expect(res.counts.platformConsentsUnlinked).toBe(1);
+    const rows = await db.select().from(consents).where(eq(consents.appointmentId, appt.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ orgId: null, patientId: null });
+    expect(rows[0].unlinkedAt?.getTime()).toBe(NOW.getTime());
+  });
+});
+
+describe("restriction stops profiling (Art. 18(2))", () => {
+  it("clears the stored no-show risk when the record is restricted", async () => {
+    const patient = await addPatient();
+    const appt = await addAppointment(patient.id, new Date(NOW.getTime() + 5 * DAY), { riskLevel: "high", riskReasons: ["no_show_history"], riskComputedAt: NOW });
+    await restrictPatient(p.orgId, patient.id, { reason: "Contesta l'esattezza", actor: STAFF, now: NOW });
+    const [row] = await db.select().from(appointments).where(eq(appointments.id, appt.id));
+    expect(row).toMatchObject({ riskLevel: null, riskReasons: [], riskComputedAt: null });
   });
 });

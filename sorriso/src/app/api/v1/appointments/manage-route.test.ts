@@ -1,11 +1,13 @@
 import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
-import { messages, patients } from "@/db/schema";
+import { appointments, messages, patients, timeOff } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { createAppointment } from "@/lib/booking";
 import { contactHash } from "@/lib/contact";
+import { newId } from "@/lib/ids";
 import { manageTokenOf } from "@/lib/links";
+import { patientRebook, sendRebookOffers } from "@/lib/rebooking";
 import { addDays, todayIn, zonedToUtc } from "@/lib/time";
 import { createPractice, TZ } from "@/test/fixtures";
 import { POST } from "./[token]/[action]/route";
@@ -82,5 +84,20 @@ describe("POST /api/v1/appointments/:token/:action and the contact it proves", (
     await db.insert(messages).values({ ...first, id: `${first.id}x`, channel: "email", to: "someone-else@example.com" });
     expect((await confirm(twice.token)).status).toBe(200);
     expect(await verified(twice.d.patient.id)).toEqual([]);
+  });
+});
+
+describe("POST /api/v1/appointments/:token/confirm while the practice is moving the visit", () => {
+  it("refuses with rebook_needed and keeps the rebooking offer open", async () => {
+    const { d, token } = await book("staff");
+    const a = d.appointment;
+    await db.insert(timeOff).values({ id: newId(), orgId: p.orgId, practitionerId: p.drA, startsAt: a.startsAt, endsAt: a.endsAt });
+    expect((await sendRebookOffers(p.orgId, [a.id], { type: "user", id: null })).sent).toEqual([a.id]);
+    const res = await confirm(token);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("rebook_needed");
+    const [after] = await db.select().from(appointments).where(eq(appointments.id, a.id));
+    expect(after).toMatchObject({ confirmation: "pending", needsAttention: true });
+    expect((await patientRebook(after)).open).toBe(true);
   });
 });

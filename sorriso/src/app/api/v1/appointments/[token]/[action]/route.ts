@@ -4,6 +4,7 @@ import { cancelAppointment, confirmAttendance, rescheduleAppointment } from "@/l
 import { markContactVerified } from "@/lib/contact";
 import { logError } from "@/lib/log";
 import { manageLinkContact } from "@/lib/security/link-contact";
+import { linkRebook } from "@/lib/rebooking";
 import { publicAppointment } from "@/lib/serializers";
 import { rescheduleInputSchema } from "@/lib/validation";
 
@@ -32,6 +33,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
       case "confirm": {
         if (details.appointment.status !== "scheduled")
           return apiError(409, "not_allowed", "Only scheduled appointments can be confirmed.");
+        // The practice closed and offered new times: this time can't be kept, so it can't be confirmed.
+        if ((await linkRebook(details, new Date())).open)
+          return apiError(409, "rebook_needed", "The practice needs to move this appointment. Please pick a new time.");
         await confirmAttendance(id, "web");
         break;
       }

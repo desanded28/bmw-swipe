@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { RequestActions } from "@/components/privacy-admin/RequestForms";
+import { PlatformCarryOut, RequestActions } from "@/components/privacy-admin/RequestForms";
 import { RequestFactsCard } from "@/components/privacy-admin/RequestViews";
 import { PageHeader } from "@/components/ui";
 import { db } from "@/db";
@@ -12,7 +12,17 @@ import { fmtDay, zonedDate } from "@/i18n/datefmt";
 import { getStaffLocale, getT } from "@/i18n/server";
 import { audit } from "@/lib/audit";
 import { requirePlatformAdmin } from "@/lib/auth";
-import { dueBadge, effectiveDueAt, getPrivacyRequest, isOpenRequest, maxExtensionUntil, requestTextAndContact, requesterLabel } from "@/lib/privacy/requests";
+import {
+  decisionsAllowed,
+  dueBadge,
+  effectiveDueAt,
+  getPrivacyRequest,
+  isEffectRequest,
+  isOpenRequest,
+  maxExtensionUntil,
+  requestTextAndContact,
+  requesterLabel,
+} from "@/lib/privacy/requests";
 import { addDays, zonedParts } from "@/lib/time";
 
 const TZ = "Europe/Rome";
@@ -47,6 +57,9 @@ export default async function PlatformPrivacyRequestPage({ params }: { params: P
   const open = isOpenRequest(r);
   const max = maxExtensionUntil(r.dueAt, TZ);
   const details = requestTextAndContact(r);
+  // "Granted" only once Sorriso carried the erasure, restriction or objection out (PlatformCarryOut).
+  const decisions = open ? await decisionsAllowed(r) : [];
+  const pendingEffect = open && isEffectRequest(r.type) && Boolean(patient) && !decisions.includes("granted");
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -75,6 +88,7 @@ export default async function PlatformPrivacyRequestPage({ params }: { params: P
           closedAt: r.closedAt ? long(r.closedAt) : null,
         }}
       />
+      {pendingEffect ? <PlatformCarryOut id={r.id} mode={r.type === "erasure" ? "erase" : "stop"} /> : null}
       <RequestActions
         id={r.id}
         scope="platform"
@@ -85,6 +99,8 @@ export default async function PlatformPrivacyRequestPage({ params }: { params: P
         extendMax={zonedParts(max, TZ).date}
         maxLabel={long(max)}
         languageLabel={ENDONYM[r.requesterLocale]}
+        decisions={decisions}
+        decisionsHint={pendingEffect ? t("requests.detail.complete.notDone.platform") : null}
       />
     </div>
   );

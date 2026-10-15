@@ -17,6 +17,7 @@ import { logError } from "@/lib/log";
 import { can } from "@/lib/permissions";
 import { normalizePhone } from "@/lib/phone";
 import { isStepUpRequired } from "@/lib/privacy/gates";
+import { erasePlatformData } from "@/lib/privacy/erasure";
 import { recordLegalAcceptance } from "@/lib/privacy/legal";
 import { recordPracticeNotices } from "@/lib/privacy/notices";
 import { cancelClosure, ClosureError, requestClosure } from "@/lib/privacy/org-closure";
@@ -27,6 +28,8 @@ import {
   DECISION_KIND,
   extendPrivacyRequest,
   getPrivacyRequest,
+  isEffectRequest,
+  isOpenRequest,
   notifyRequester,
   PrivacyRequestError,
   requestTextAndContact,
@@ -205,6 +208,26 @@ export async function extendPlatformRequestAction(id: string, _prev: unknown, fd
 
 export async function completePlatformRequestAction(id: string, _prev: unknown, fd: FormData): Promise<ActionResult> {
   return guard(async () => complete(await platformScope(), id, fd, await tr()));
+}
+
+/**
+ * Carry out an erasure, restriction or objection made to Sorriso (erasePlatformData): 'erase' for
+ * an erasure, 'stop' otherwise. Platform admins, with a fresh second factor. The request stays
+ * open: the admin answers it afterwards (completePrivacyRequest then accepts "granted").
+ */
+export async function carryOutPlatformRequestAction(id: string): Promise<ActionResult> {
+  return guard(async () => {
+    const scope = await platformScope();
+    const t = await tr();
+    const denied = await stepUp(t);
+    if (denied) return denied;
+    const r = await getPrivacyRequest(null, id);
+    if (!r) return fail(t("requests.errors.not_found"), "not_found");
+    if (!isOpenRequest(r)) return fail(t("requests.errors.closed"), "closed");
+    if (!r.patientId || !isEffectRequest(r.type)) return fail(t("errors.invalid"), "invalid");
+    await erasePlatformData(r.patientId, { mode: r.type === "erasure" ? "erase" : "stop", actor: scope.actor, requestId: r.id, headers: await headers() });
+    return ok(t("requests.detail.platformAct.done"));
+  });
 }
 
 // ---------------------------------------------------------------- privacy settings

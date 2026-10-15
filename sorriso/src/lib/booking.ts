@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import {
   appointments,
@@ -562,6 +562,56 @@ async function assertMayBook(tx: Tx, patient: Patient, input: CreateAppointmentI
   );
 }
 
+/**
+ * Is waiting-list record `w` the person booked as `p`? The same record, one merged into it or
+ * flagged as its possible duplicate, or the same first name with a contact in common (the test
+ * upsertPatient flags duplicates with): a public booking gets a record of its own whenever any
+ * detail differs from the one the waiting list holds.
+ */
+function samePerson(w: Patient, p: Patient): boolean {
+  if (w.id === p.id || w.mergedIntoId === p.id || p.possibleDuplicateOfId === w.id || w.possibleDuplicateOfId === p.id) return true;
+  if (w.firstName.trim().toLowerCase() !== p.firstName.trim().toLowerCase()) return false;
+  const shared = (x: string | null, y: string | null) => Boolean(x && y && x === y);
+  return (
+    shared(w.email, p.email) ||
+    shared(w.phone, p.phone) ||
+    shared(w.guardianEmail, p.guardianEmail) ||
+    shared(w.guardianPhone, p.guardianPhone)
+  );
+}
+
+/**
+ * Close the waiting-list entries a booking fulfils (status 'booked'): the entry named by the
+ * booking's wl link, and active entries for the same treatment whose date range holds `day`,
+ * when the entry's patient is the booked person (samePerson). An entry for other dates stays: the
+ * patient may still want an earlier (or later) time.
+ */
+async function closeWaitlistEntries(
+  tx: Tx,
+  i: { orgId: string; patient: Patient; serviceId: string; day: string; entryId?: string | null; now: Date },
+): Promise<void> {
+  const rows = await tx
+    .select({ id: waitlist.id, p: patients })
+    .from(waitlist)
+    .innerJoin(patients, eq(patients.id, waitlist.patientId))
+    .where(
+      and(
+        eq(waitlist.orgId, i.orgId),
+        eq(waitlist.status, "active"),
+        or(
+          i.entryId ? eq(waitlist.id, i.entryId) : undefined,
+          and(eq(waitlist.serviceId, i.serviceId), lte(waitlist.earliestDate, i.day), gte(waitlist.latestDate, i.day)),
+        ),
+      ),
+    );
+  const ids = rows.filter((r) => samePerson(r.p, i.patient)).map((r) => r.id);
+  if (!ids.length) return;
+  await tx
+    .update(waitlist)
+    .set({ status: "booked", closedAt: i.now })
+    .where(and(eq(waitlist.orgId, i.orgId), inArray(waitlist.id, ids), eq(waitlist.status, "active")));
+}
+
 export async function createAppointment(input: CreateAppointmentInput): Promise<AppointmentDetails> {
   const now = input.now ?? new Date();
   const start = input.startsAt;
@@ -683,9 +733,6 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
     }
     // The patient booked the treatment they were recalled for: the recall stops sending.
     await markRecallBooked(tx, { orgId: input.orgId, patientId: patient.id, serviceId: input.serviceId, appointmentId: id, now });
-    // No-show risk, only where the practice uses it and the patient hasn't objected (src/lib/risk.ts).
-    await refreshAppointmentRisk(tx, id, now);
-
     const willAsk = await scheduleReminders(tx, appointment, ctx.settings, now);
     // Booked by the patient themselves too close to the visit for a confirmation
     // request: booking it is confirmation enough.
@@ -695,25 +742,26 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
         .set({ confirmation: "confirmed", confirmedAt: now, confirmedVia: "booking" })
         .where(eq(appointments.id, appointment.id));
     }
+    // No-show risk, only where the practice uses it and the patient hasn't objected (src/lib/risk.ts).
+    // After the confirmation above: a visit confirmed by booking it is not "unconfirmed".
+    await refreshAppointmentRisk(tx, id, now);
 
     const notify = input.online || input.notifyPatient;
     if (notify && !held && ctx.settings.reminders.sendBookingConfirmation) {
       await enqueueNow(tx, appointment.id, "booking_confirmation", "email", now);
     }
 
-    if (input.waitlistEntryId) {
-      await tx
-        .update(waitlist)
-        .set({ status: "booked", closedAt: now })
-        .where(
-          and(
-            eq(waitlist.id, input.waitlistEntryId),
-            eq(waitlist.orgId, input.orgId),
-            eq(waitlist.patientId, patient.id),
-            eq(waitlist.status, "active"),
-          ),
-        );
-    }
+    // The patient's waiting-list wish is met: the entry the booking came from (its wl link) and
+    // any other active entry of theirs for this treatment whose dates take this visit.
+    const tz = ctx.locations.get(input.locationId)?.timezone ?? ctx.org.timezone;
+    await closeWaitlistEntries(tx, {
+      orgId: input.orgId,
+      patient,
+      serviceId: input.serviceId,
+      day: zonedParts(start, tz).date,
+      entryId: input.waitlistEntryId,
+      now,
+    });
     // Booked through the practice's channels for another adult reachable at a contact of their own.
     return { id: appointment.id, held, tellAdult: !held && ownContact };
   });
@@ -745,11 +793,22 @@ async function textOrEmail(d: AppointmentDetails, kind: "cancelled" | "reschedul
   return d.patient.preferredChannel === "email" ? (email ?? text) : (text ?? email);
 }
 
-/** Patient confirmed they'll attend (reply, link, or staff phoned them). */
+/**
+ * Patient confirmed they'll attend (reply, link, or staff phoned them). A visit the practice offered
+ * new times for (a rebooking offer for its current start, src/lib/rebooking.ts) keeps its
+ * needsAttention flag: clearing it would withdraw the offer while the visit still can't take place.
+ * The patient-facing paths (SMS reply, manage link) don't confirm such a visit at all.
+ */
 export async function confirmAttendance(appointmentId: string, via: string, now = new Date()) {
   const [updated] = await db
     .update(appointments)
-    .set({ confirmation: "confirmed", confirmedAt: now, confirmedVia: via, needsAttention: false, updatedAt: now })
+    .set({
+      confirmation: "confirmed",
+      confirmedAt: now,
+      confirmedVia: via,
+      needsAttention: sql`case when ${appointments.rebookOfferStartsAt} = ${appointments.startsAt} then ${appointments.needsAttention} else 0 end`,
+      updatedAt: now,
+    })
     .where(and(eq(appointments.id, appointmentId), eq(appointments.status, "scheduled")))
     .returning();
   return updated ?? null;

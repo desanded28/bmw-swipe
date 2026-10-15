@@ -1,3 +1,200 @@
+import { p } from "../../plural";
 import type { DeepPartial, Messages } from "../../types";
 
-export default {} satisfies DeepPartial<Messages["analytics"]>;
+export default {
+  title: "Statistiche",
+  description: "Calcolate sui nostri server dai dati del tuo studio quando apri questa pagina. Nessun cookie, nessun tracciamento.",
+  range: {
+    label: "Periodo",
+    months: p({ one: "Ultimo mese", other: "Ultimi {count} mesi" }),
+    window: "{from} – {to}",
+  },
+  export: "Scarica CSV",
+  exportHint: "Gli stessi dati di questa pagina, per un foglio di calcolo.",
+  dimension: {
+    label: "Suddividi per",
+    service: "Prestazione",
+    practitioner: "Professionista",
+    weekday: "Giorno della settimana",
+    partOfDay: "Momento della giornata",
+  },
+  showTable: "Mostra come tabella",
+  noData: "Non ci sono ancora abbastanza dati in questo periodo.",
+  none: "–",
+
+  kpi: {
+    noShow: "Tasso di mancate presentazioni",
+    noShowHint: "{noShows} mancate presentazioni su {visits} visite",
+    lateCancel: "Disdette tardive",
+    lateCancelHint: "Disdette dal paziente meno di {hours} ore prima",
+    confirmation: "Confermati dopo un promemoria",
+    confirmationHint: "{confirmed} su {sent} promemoria con richiesta di conferma",
+    waitlist: "Tasso di riempimento dalla lista d'attesa",
+    waitlistHint: "{booked} prenotati su {closed} iscrizioni chiuse",
+    recalls: "Conversione dei richiami",
+    recallsHint: "{booked} prenotati su {contacted} pazienti richiamati",
+    leadTime: "Anticipo mediano di prenotazione",
+    leadTimeValue: p({ one: "{count} giorno", other: "{count} giorni" }),
+    leadTimeHint: p({ one: "Su {count} prenotazione", other: "Su {count} prenotazioni" }),
+  },
+
+  sections: {
+    outcomesTotal: "Presenze",
+    attendance: "Presenze",
+    attendanceHint:
+      "Tasso di mancate presentazioni: mancate presentazioni sul totale delle visite effettuate o mancate. Disdette tardive: disdette dal paziente entro il termine di disdetta dello studio, sulle stesse visite più queste disdette.",
+    byService: "Per prestazione",
+    byPractitioner: "Per professionista",
+    byWeekday: "Per giorno della settimana",
+    byPartOfDay: "Per momento della giornata",
+    noShowChart: "Tasso di mancate presentazioni",
+    lateCancelChart: "Tasso di disdette tardive",
+    confirmation: "Conferme",
+    confirmationHint:
+      "Ogni conferma è attribuita all'ultimo promemoria inviato prima di essa. Le conferme raccolte dalla segreteria o al momento della prenotazione non sono conteggiate.",
+    confirmationByChannel: "Tasso di conferma per canale",
+    confirmationByOffset: "Tasso di conferma per anticipo del promemoria",
+    waitlist: "Lista d'attesa",
+    waitlistDetail: "{entries} iscrizioni · {booked} prenotate · {removed} rimosse · {expired} scadute · {waiting} ancora in attesa",
+    recalls: "Richiami",
+    recallsDetail: "{due} richiami in scadenza · {contacted} pazienti contattati · {booked} prenotati",
+    bookings: "Prenotazioni",
+    leadTime: "Con quanto anticipo prenotano i pazienti",
+    newBySource: "Nuovi pazienti per canale di prenotazione",
+    newByContext: "Nuovi pazienti: canali dello studio o Sorriso",
+    reviews: "Recensioni pubblicate",
+    reviewsHint: "Sono conteggiate solo le recensioni pubblicate sul tuo profilo.",
+    reviewsSummary: p({ one: "{count} recensione, media {average}", other: "{count} recensioni, media {average}" }),
+    funnel: "Funnel del marketplace",
+    funnelHint: "Comparse nei risultati di ricerca di Sorriso e visualizzazioni dei profili dei tuoi professionisti, rispetto alle prenotazioni iniziate su Sorriso.",
+    ranking: "I tuoi fattori di posizionamento",
+    rankingHint:
+      "Cosa sa oggi il sistema di posizionamento del marketplace di Sorriso su ciascun professionista, e il punteggio che assegna senza fattori legati alla ricerca (distanza, città, lingua, fondo sanitario). Nessuno può pagare per una posizione migliore.",
+    rankingLink: "Come funziona il posizionamento",
+  },
+
+  measures: {
+    noShowRate: "Tasso di mancate presentazioni (%)",
+    lateCancelRate: "Tasso di disdette tardive (%)",
+    confirmationRate: "Tasso di conferma (%)",
+    fillRate: "Tasso di riempimento (%)",
+    entries: "Iscrizioni",
+    recallConversion: "Conversione dei richiami (%)",
+    recallsDue: "Richiami in scadenza",
+    medianDays: "Anticipo mediano (giorni)",
+    bookings: "Prenotazioni",
+    newPatients: "Nuovi pazienti",
+    reviews: "Recensioni",
+    averageRating: "Valutazione media",
+    impressions: "Comparse nelle ricerche",
+    profileViews: "Visualizzazioni del profilo",
+    marketplaceBookings: "Prenotazioni su Sorriso",
+    bookingRate: "Prenotazioni per visualizzazione del profilo (%)",
+    score: "Punteggio di posizionamento (0-100)",
+    staffCancelRate: "Annullati dallo studio, 180 giorni (%)",
+    completeness: "Completezza del profilo (%)",
+  },
+
+  table: {
+    item: "Voce",
+    visits: "Visite",
+    noShows: "Mancate presentazioni",
+    lateCancels: "Disdette tardive",
+    noShowRate: "Tasso di mancate presentazioni",
+    lateCancelRate: "Tasso di disdette tardive",
+    sent: "Promemoria inviati",
+    confirmed: "Confermati",
+    rate: "Tasso",
+    count: "Numero",
+    month: "Mese",
+    average: "Valutazione media",
+  },
+
+  partsOfDay: {
+    morning: "Mattina (prima delle 13:00)",
+    afternoon: "Pomeriggio (13:00–18:00)",
+    evening: "Sera (dalle 18:00)",
+  },
+
+  offsets: {
+    h3: "Fino a 3 ore prima",
+    h12: "Da 3 a 12 ore prima",
+    d1: "Circa un giorno prima",
+    d2: "Circa due giorni prima",
+    d3: "Tre o più giorni prima",
+  },
+
+  leadBuckets: {
+    sameDay: "Entro 24 ore",
+    d2: "1–2 giorni",
+    d7: "3–7 giorni",
+    d14: "8–14 giorni",
+    d30: "15–30 giorni",
+    more: "Oltre 30 giorni",
+  },
+
+  sources: {
+    online: "Pagina di prenotazione online",
+    widget: "Widget sul sito",
+    api: "Software del partner",
+    staff: "Segreteria",
+    waitlist: "Lista d'attesa",
+  },
+
+  contexts: {
+    practice: "Canali dello studio",
+    marketplace: "Marketplace di Sorriso",
+  },
+
+  funnel: {
+    impressions: "Comparse nelle ricerche",
+    views: "Visualizzazioni del profilo",
+    bookings: "Prenotazioni su Sorriso",
+    viewRate: "Il {value} delle comparse ha portato a una visualizzazione del profilo",
+    bookingRate: "Il {value} delle visualizzazioni del profilo ha portato a una prenotazione",
+  },
+
+  ranking: {
+    practitioner: "Professionista",
+    score: "Punteggio",
+    soonest: "Primo orario libero",
+    noSlot: "Nessuno nei prossimi 14 giorni",
+    rating: "Recensioni",
+    ratingValue: p({ one: "{average} ({count} recensione)", other: "{average} ({count} recensioni)" }),
+    noReviews: "Ancora nessuna recensione",
+    cancellations: "Annullati dallo studio",
+    cancellationsValue: "{value} (180 giorni)",
+    completeness: "Profilo",
+    reasons: "Fattori positivi",
+    noReasons: "Ancora nessun fattore rilevante",
+    reasonLabels: {
+      soonest: "Orari liberi a breve",
+      rating: "Recensioni verificate",
+      reliability: "Annulla raramente",
+      completeness: "Profilo completo",
+      distance: "Vicino alla ricerca",
+      language: "Lingua parlata",
+      fund: "Fondo sanitario",
+    },
+    globalMean: "Valutazione media della piattaforma usata per la ponderazione: {value}",
+    empty: "Ancora nessun professionista attivo.",
+  },
+
+  chart: {
+    bar: "{label}: {value}",
+    column: "{label}: {value}",
+  },
+
+  csv: {
+    filename: "statistiche",
+    section: "Sezione",
+    item: "Voce",
+    measure: "Misura",
+    value: "Valore",
+    numerator: "Numeratore",
+    denominator: "Denominatore",
+    all: "Tutti",
+  },
+
+  forbidden: "Non hai l'autorizzazione per vedere le statistiche dello studio.",
+} satisfies DeepPartial<Messages["analytics"]>;

@@ -368,8 +368,17 @@ export const templates = {
     confirmed: (d: AppointmentTemplateData) => smsText(d, ["replies.confirmed", "replies.confirmedShort"], vars(d)),
     cancelled: (d: AppointmentTemplateData, rebookUrl: string) =>
       smsText(d, ["replies.cancelled", "replies.cancelledShort"], vars(d, rebookUrl)),
-    reschedule: (d: AppointmentTemplateData) => smsText(d, ["replies.reschedule"], vars(d, `${d.manageUrl}?do=reschedule`)),
+    /** `url`: where to pick the new time (default: the manage page's reschedule panel; the rebooking page for a visit the practice must move). */
+    reschedule: (d: AppointmentTemplateData, url: string = `${d.manageUrl}?do=reschedule`) => smsText(d, ["replies.reschedule"], vars(d, url)),
     unknown: (d: AppointmentTemplateData) => smsText(d, ["replies.unknown"], vars(d)),
+    /** A YES to a request the practice still has to accept: nothing is confirmed yet. */
+    awaitingApproval: (d: AppointmentTemplateData) => smsText(d, ["replies.awaitingApproval", "replies.awaitingApprovalShort"], vars(d)),
+    /** A YES to a booking held for the adult's own confirmation: only the confirmation page (code + consent) confirms it. */
+    confirmThroughLink: (d: AppointmentTemplateData, url: string) =>
+      smsText(d, ["replies.confirmThroughLink", "replies.confirmThroughLinkShort"], vars(d, url)),
+    /** A reply to a text about no upcoming visit (a waiting-list offer, a recall, a cancellation): nothing changes. */
+    general: (locale: Locale, clinicName: string, opts: { asciiFallback?: boolean } = {}) =>
+      prepareSms(tr(locale)("replies.general", { clinic: clinicName }), locale, opts),
     stop: (locale: Locale, clinicName: string, opts: { asciiFallback?: boolean } = {}) =>
       prepareSms(tr(locale)("replies.stop", { clinic: clinicName }), locale, opts),
     start: (locale: Locale, clinicName: string, opts: { asciiFallback?: boolean } = {}) =>

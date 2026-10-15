@@ -21,6 +21,9 @@ import { isRestricted } from "../contact";
 import { logError, maskEmail, maskPhone } from "../log";
 import { deleteProviderMessage } from "../messaging/providers";
 import { isDateString } from "../time";
+import { currentConsents, withdrawConsent } from "./consent";
+import { ERASED_FIRST_NAME, ERASED_LAST_NAME, ERASED_NAME } from "./erased";
+import { PLATFORM_CONSENT_PURPOSES } from "./roles";
 import {
   completePrivacyRequest,
   contactsOf,
@@ -67,9 +70,7 @@ import {
  */
 
 /** The placeholder identity of an erased record (first + last name reads "Paziente cancellato"). */
-export const ERASED_FIRST_NAME = "Paziente";
-export const ERASED_LAST_NAME = "cancellato";
-export const ERASED_NAME = `${ERASED_FIRST_NAME} ${ERASED_LAST_NAME}`;
+export { ERASED_FIRST_NAME, ERASED_LAST_NAME, ERASED_NAME };
 
 export type ErasureMode = "anonymise" | "restrict";
 
@@ -251,6 +252,60 @@ async function deleteCopies(copies: ProviderCopy[]) {
 const NO_REQUEST_TEXT = { details: null, decisionReason: null, extensionReason: null, answerContact: null } as const;
 
 /**
+ * Reviews stay (rating, date) under a pseudonym; every free text about them goes: the comment, the
+ * practice's public reply (often "Dear Mr …"), the removal reason, and the reports' details, the
+ * patient's own response and the statement of reasons.
+ */
+async function pseudonymiseReviews(tx: Tx, orgId: string, apptIds: string[]): Promise<Record<string, number>> {
+  if (!apptIds.length) return {};
+  const reviewIds = (
+    await tx
+      .select({ id: reviews.id })
+      .from(reviews)
+      .where(and(eq(reviews.orgId, orgId), inArray(reviews.appointmentId, apptIds)))
+  ).map((r) => r.id);
+  if (!reviewIds.length) return {};
+  return {
+    reviewsPseudonymised: (
+      await tx
+        .update(reviews)
+        .set({ authorName: ERASED_NAME, authorDisplay: "pseudonym", comment: null, reply: null, removedReason: null })
+        .where(and(eq(reviews.orgId, orgId), inArray(reviews.id, reviewIds)))
+    ).rowsAffected,
+    reviewReportsScrubbed: (
+      await tx
+        .update(reviewReports)
+        .set({ details: null, patientResponse: null, decisionReason: null })
+        .where(and(eq(reviewReports.orgId, orgId), inArray(reviewReports.reviewId, reviewIds)))
+    ).rowsAffected,
+  };
+}
+
+/**
+ * Unlink Sorriso's own consent rows (org_id NULL) from these records: they stay as proof (Art.
+ * 7(1)) and the platform retention deletes them consentMonths after unlinkedAt.
+ */
+async function unlinkPlatformConsents(tx: Tx, ids: string[], now: Date): Promise<number> {
+  return (
+    await tx
+      .update(consents)
+      .set({ patientId: null, unlinkedAt: now })
+      .where(and(isNull(consents.orgId), inArray(consents.patientId, ids)))
+  ).rowsAffected;
+}
+
+/** Remove the no-show risk score stored on these records' visits (profiling of a restricted or erased record). */
+export async function clearStoredRisk(tx: Tx, orgId: string, ids: string[]): Promise<number> {
+  if (!ids.length) return 0;
+  return (
+    await tx
+      .update(appointments)
+      .set({ riskLevel: null, riskReasons: [], riskComputedAt: null })
+      .where(and(eq(appointments.orgId, orgId), inArray(appointments.patientId, ids), isNotNull(appointments.riskComputedAt)))
+  ).rowsAffected;
+}
+
+/**
  * Erase or restrict one patient of `orgId`. Throws ErasureError for a refused request; the
  * whole change commits or nothing does. Audited as patient.erase (anonymise) or patient.restrict.
  */
@@ -301,20 +356,27 @@ export async function erasePatient(orgId: string, patientId: string, opts: Erasu
       if (policy === "restrict") mode = "restrict";
     }
 
+    let answerId: string | null = null;
     if (opts.answer) {
       const r = await getPrivacyRequest(orgId, opts.answer.requestId, tx);
       if (!r || !r.patientId || !ids.includes(r.patientId)) throw new ErasureError("request_invalid");
       if (!isOpenRequest(r)) throw new ErasureError("request_closed");
+      answerId = r.id;
+    }
+    // Closed once the record shows the change (completePrivacyRequest checks it): granted when
+    // pseudonymised, granted in part when kept and restricted.
+    const closeRequest = async () => {
+      if (!answerId) return;
       answered = await completePrivacyRequest(tx, {
         orgId,
-        id: r.id,
+        id: answerId,
         decision: mode === "anonymise" ? "granted" : "partially_granted",
         reason: answerText,
         actor: opts.actor,
         headers: opts.headers,
         now,
       });
-    }
+    };
 
     const counts: Record<string, number> = {};
     const future = await cancelFuture(tx, orgId, apptIds, now);
@@ -342,6 +404,9 @@ export async function erasePatient(orgId: string, patientId: string, opts: Erasu
           .set({ status: "dismissed", updatedAt: now })
           .where(and(eq(recalls.orgId, orgId), inArray(recalls.patientId, ids), inArray(recalls.status, ["due", "sent", "call"])))
       ).rowsAffected;
+      // Profiling stops with the restriction (Art. 18(2)): no stored risk score stays on the visits.
+      counts.risksCleared = await clearStoredRisk(tx, orgId, ids);
+      await closeRequest();
       await audit(
         {
           orgId,
@@ -349,7 +414,7 @@ export async function erasePatient(orgId: string, patientId: string, opts: Erasu
           action: "patient.restrict",
           entity: { type: "patient", id: patientId },
           reason,
-          metadata: { erasureRequest: true, retainUntil: opts.retainUntil ?? null, requested: opts.mode, requestId: answered?.id ?? null, ...counts },
+          metadata: { erasureRequest: true, retainUntil: opts.retainUntil ?? null, requested: opts.mode, requestId: answerId, ...counts },
           headers: opts.headers,
           at: now,
         },
@@ -391,39 +456,18 @@ export async function erasePatient(orgId: string, patientId: string, opts: Erasu
     ).rowsAffected;
 
     // The ledger stays as proof of what was consented (Art. 7(1), 17(3)(e)), unlinked from the
-    // record; retention deletes it consentMonths after unlinkedAt.
+    // record; retention deletes it consentMonths after unlinkedAt. Sorriso's own rows about the
+    // record (org_id NULL: platform_booking_art9, review_publication) are unlinked too, so the
+    // platform's retention clock starts for them as well.
     counts.consentsUnlinked = (
       await tx
         .update(consents)
         .set({ patientId: null, unlinkedAt: now })
         .where(and(eq(consents.orgId, orgId), inArray(consents.patientId, ids)))
     ).rowsAffected;
+    counts.platformConsentsUnlinked = await unlinkPlatformConsents(tx, ids, now);
 
-    if (apptIds.length) {
-      // Reviews stay (rating, date) under a pseudonym; every free text about them goes: the
-      // comment, the practice's public reply (often "Dear Mr …"), the removal reason, and the
-      // reports' details, the patient's own response and the statement of reasons.
-      const reviewIds = (
-        await tx
-          .select({ id: reviews.id })
-          .from(reviews)
-          .where(and(eq(reviews.orgId, orgId), inArray(reviews.appointmentId, apptIds)))
-      ).map((r) => r.id);
-      if (reviewIds.length) {
-        counts.reviewsPseudonymised = (
-          await tx
-            .update(reviews)
-            .set({ authorName: ERASED_NAME, authorDisplay: "pseudonym", comment: null, reply: null, removedReason: null })
-            .where(and(eq(reviews.orgId, orgId), inArray(reviews.id, reviewIds)))
-        ).rowsAffected;
-        counts.reviewReportsScrubbed = (
-          await tx
-            .update(reviewReports)
-            .set({ details: null, patientResponse: null, decisionReason: null })
-            .where(and(eq(reviewReports.orgId, orgId), inArray(reviewReports.reviewId, reviewIds)))
-        ).rowsAffected;
-      }
-    }
+    Object.assign(counts, await pseudonymiseReviews(tx, orgId, apptIds));
 
     // Privacy requests keep their type, dates and decision (accountability). Closed ones lose
     // their free text, which may name the patient. Open ones are still to be answered: they keep
@@ -434,8 +478,8 @@ export async function erasePatient(orgId: string, patientId: string, opts: Erasu
       .select({ id: privacyRequests.id, status: privacyRequests.status, answerContact: privacyRequests.answerContact })
       .from(privacyRequests)
       .where(and(eq(privacyRequests.orgId, orgId), inArray(privacyRequests.patientId, ids)))) {
-      // The request answered now is handled once its answer is sent.
-      if (answered && r.id === answered.id) continue;
+        // The request answered now is handled once its answer is sent.
+      if (r.id === answerId) continue;
       await tx
         .update(privacyRequests)
         .set(isOpenRequest(r) ? { answerContact: joinContacts(contacts, r.answerContact) } : NO_REQUEST_TEXT)
@@ -469,6 +513,8 @@ export async function erasePatient(orgId: string, patientId: string, opts: Erasu
       })
       .where(and(eq(patients.orgId, orgId), inArray(patients.id, ids)));
     counts.patients = ids.length;
+    counts.risksCleared = await clearStoredRisk(tx, orgId, ids);
+    await closeRequest();
 
     await audit(
       {
@@ -477,7 +523,7 @@ export async function erasePatient(orgId: string, patientId: string, opts: Erasu
         action: "patient.erase",
         entity: { type: "patient", id: patientId },
         reason,
-        metadata: { mode: "anonymise", requestId: answered?.id ?? null, ...counts },
+        metadata: { mode: "anonymise", requestId: answerId, ...counts },
         headers: opts.headers,
         at: now,
       },
@@ -526,6 +572,74 @@ async function sendAnswer(
   return { requestId: r.id, notified };
 }
 
+// ---------------------------------------------------------------- Sorriso's own data (platform inbox)
+
+/**
+ * Carry out a request made to Sorriso as controller of its marketplace (the platform inbox) for
+ * one patient record. The practice's copy is not touched: it stays the practice's, under Art.
+ * 9(2)(h).
+ * - 'stop' (restriction, objection): every Sorriso consent still standing (platform_booking_art9,
+ *   review_publication) gets a withdrawal row, so Sorriso's own processing stops, and the
+ *   record's published reviews are taken down (kept, unpublished).
+ * - 'erase' (erasure): Sorriso's consent rows are unlinked from the record (kept as proof, deleted
+ *   by the platform retention) and the record's reviews are pseudonymised.
+ * Audited in the platform chain (consent.record rows, and patient.erase for 'erase').
+ */
+export async function erasePlatformData(
+  patientId: string,
+  i: { mode: "stop" | "erase"; actor: ErasureActor; requestId?: string | null; headers?: Headers; now?: Date },
+): Promise<Record<string, number>> {
+  const now = i.now ?? new Date();
+  return db.transaction(async (tx) => {
+    const [p] = await tx.select().from(patients).where(eq(patients.id, patientId));
+    if (!p) throw new ErasureError("not_found");
+    const ids = await lineage(tx, p.orgId, p.id);
+    const apptIds = (
+      await tx
+        .select({ id: appointments.id })
+        .from(appointments)
+        .where(and(eq(appointments.orgId, p.orgId), inArray(appointments.patientId, ids)))
+    ).map((a) => a.id);
+    const counts: Record<string, number> = {};
+    if (i.mode === "erase") {
+      counts.platformConsentsUnlinked = await unlinkPlatformConsents(tx, ids, now);
+      Object.assign(counts, await pseudonymiseReviews(tx, p.orgId, apptIds));
+      await audit(
+        {
+          orgId: null,
+          actor: i.actor,
+          action: "patient.erase",
+          entity: { type: "patient", id: p.id },
+          reason: "platform",
+          metadata: { scope: "platform", requestId: i.requestId ?? null, ...counts },
+          headers: i.headers,
+          at: now,
+        },
+        tx,
+      );
+      return counts;
+    }
+    counts.withdrawals = 0;
+    if (!p.erasedAt && !p.mergedIntoId) {
+      const ledger = await currentConsents(p.id, tx);
+      for (const purpose of PLATFORM_CONSENT_PURPOSES) {
+        if (ledger[purpose]?.granted === false) continue;
+        await withdrawConsent(tx, { orgId: p.orgId, patientId: p.id, purpose, locale: p.locale, method: "staff_recorded", source: "staff", actorRelation: "staff", actor: i.actor, headers: i.headers, now });
+        counts.withdrawals++;
+      }
+    }
+    if (apptIds.length) {
+      counts.reviewsUnpublished = (
+        await tx
+          .update(reviews)
+          .set({ status: "withdrawn", published: false, decidedAt: now })
+          .where(and(eq(reviews.orgId, p.orgId), inArray(reviews.appointmentId, apptIds), inArray(reviews.status, ["pending", "published", "under_review"])))
+      ).rowsAffected;
+    }
+    return counts;
+  });
+}
+
 // ---------------------------------------------------------------- restriction (Art. 18)
 
 type RestrictionInput = { reason: string; retainUntil?: string | null; actor: ErasureActor; headers?: Headers; now?: Date };
@@ -560,6 +674,8 @@ export async function restrictPatient(orgId: string, patientId: string, i: Restr
       .update(patients)
       .set({ restrictedAt: p.restrictedAt ?? now, restrictionReason: reason.slice(0, 500), retainUntil: i.retainUntil ?? p.retainUntil, erasureRequestedAt: deferredSince })
       .where(and(eq(patients.orgId, orgId), eq(patients.id, patientId)));
+    // Restricted data may only be stored (Art. 18(2)): no risk score stays on the visits.
+    const risksCleared = await clearStoredRisk(tx, orgId, [patientId]);
     await audit(
       {
         orgId,
@@ -567,7 +683,7 @@ export async function restrictPatient(orgId: string, patientId: string, i: Restr
         action: "patient.restrict",
         entity: { type: "patient", id: patientId },
         reason,
-        metadata: { retainUntil: i.retainUntil ?? null, update: Boolean(p.restrictedAt) },
+        metadata: { retainUntil: i.retainUntil ?? null, update: Boolean(p.restrictedAt), risksCleared },
         headers: i.headers,
         at: now,
       },

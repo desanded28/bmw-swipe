@@ -1,3 +1,208 @@
 import type { DeepPartial, Messages } from "../../types";
+import { p } from "../../plural";
 
-export default {} satisfies DeepPartial<Messages["analytics"]>;
+export default {
+  title: "Statistici",
+  description: "Calculate pe serverele noastre, din datele proprii ale cabinetului, atunci când deschideți această pagină. Fără cookie-uri, fără urmărire.",
+  range: {
+    label: "Perioada",
+    months: p({ one: "Ultima lună", few: "Ultimele {count} luni", other: "Ultimele {count} de luni" }),
+    window: "{from} – {to}",
+  },
+  export: "Descărcați CSV",
+  exportHint: "Aceleași cifre ca pe această pagină, pentru o foaie de calcul.",
+  dimension: {
+    label: "Defalcare după",
+    service: "Tratament",
+    practitioner: "Medic",
+    weekday: "Ziua săptămânii",
+    partOfDay: "Momentul zilei",
+  },
+  showTable: "Afișați ca tabel",
+  noData: "Încă nu sunt suficiente date în această perioadă.",
+  none: "–",
+
+  kpi: {
+    noShow: "Rata de neprezentare",
+    noShowHint: "{noShows} neprezentări la {visits} vizite",
+    lateCancel: "Anulări târzii",
+    lateCancelHint: "Anulate de pacient cu mai puțin de {hours} ore înainte",
+    confirmation: "Confirmate după o reamintire",
+    confirmationHint: "{confirmed} din {sent} reamintiri cu cerere de confirmare",
+    waitlist: "Rata de ocupare din lista de așteptare",
+    waitlistHint: "{booked} programate din {closed} înscrieri închise",
+    recalls: "Conversia rechemărilor",
+    recallsHint: "{booked} programați din {contacted} pacienți rechemați",
+    leadTime: "Intervalul median până la programare",
+    leadTimeValue: p({ one: "{count} zi", few: "{count} zile", other: "{count} de zile" }),
+    leadTimeHint: p({ one: "Pe baza a {count} programare", few: "Pe baza a {count} programări", other: "Pe baza a {count} de programări" }),
+  },
+
+  sections: {
+    outcomesTotal: "Prezență",
+    attendance: "Prezență",
+    attendanceHint:
+      "Rata de neprezentare: neprezentările raportate la vizitele care au avut loc sau au fost ratate. Anulări târzii: anulate de pacient în termenul de anulare al cabinetului, raportate la aceleași vizite plus aceste anulări.",
+    byService: "După tratament",
+    byPractitioner: "După medic",
+    byWeekday: "După ziua săptămânii",
+    byPartOfDay: "După momentul zilei",
+    noShowChart: "Rata de neprezentare",
+    lateCancelChart: "Rata anulărilor târzii",
+    confirmation: "Confirmări",
+    confirmationHint:
+      "Fiecare confirmare este atribuită ultimei reamintiri trimise înaintea ei. Confirmările preluate de recepție sau la programare nu sunt numărate.",
+    confirmationByChannel: "Rata de confirmare pe canal",
+    confirmationByOffset: "Rata de confirmare după momentul reamintirii",
+    waitlist: "Listă de așteptare",
+    waitlistDetail: "{entries} înscrieri · {booked} programate · {removed} eliminate · {expired} expirate · {waiting} încă în așteptare",
+    recalls: "Rechemări",
+    recallsDetail: "{due} rechemări scadente · {contacted} pacienți contactați · {booked} programați",
+    bookings: "Programări",
+    leadTime: "Cu cât timp înainte se programează pacienții",
+    newBySource: "Pacienți noi după canalul de programare",
+    newByContext: "Pacienți noi: canalele cabinetului sau Sorriso",
+    reviews: "Recenzii publicate",
+    reviewsHint: "Sunt numărate doar recenziile publicate pe profilul dumneavoastră.",
+    reviewsSummary: p({
+      one: "{count} recenzie, medie {average}",
+      few: "{count} recenzii, medie {average}",
+      other: "{count} de recenzii, medie {average}",
+    }),
+    funnel: "Pâlnia platformei",
+    funnelHint: "Aparițiile în rezultatele căutării Sorriso și vizualizările profilurilor medicilor dumneavoastră, comparate cu programările începute pe Sorriso.",
+    ranking: "Datele dumneavoastră pentru clasament",
+    rankingHint:
+      "Ce știe astăzi clasamentul platformei Sorriso despre fiecare medic și scorul pe care îl acordă fără factori specifici căutării (distanță, oraș, limbă, fond de sănătate). Nimeni nu poate plăti pentru o poziție mai bună.",
+    rankingLink: "Cum funcționează clasamentul",
+  },
+
+  measures: {
+    noShowRate: "Rata de neprezentare (%)",
+    lateCancelRate: "Rata anulărilor târzii (%)",
+    confirmationRate: "Rata de confirmare (%)",
+    fillRate: "Rata de ocupare (%)",
+    entries: "Înscrieri",
+    recallConversion: "Conversia rechemărilor (%)",
+    recallsDue: "Rechemări scadente",
+    medianDays: "Interval median (zile)",
+    bookings: "Programări",
+    newPatients: "Pacienți noi",
+    reviews: "Recenzii",
+    averageRating: "Evaluare medie",
+    impressions: "Apariții în căutare",
+    profileViews: "Vizualizări ale profilului",
+    marketplaceBookings: "Programări pe Sorriso",
+    bookingRate: "Programări per vizualizare a profilului (%)",
+    score: "Scor de clasament (0-100)",
+    staffCancelRate: "Anulate de cabinet, 180 de zile (%)",
+    completeness: "Completitudinea profilului (%)",
+  },
+
+  table: {
+    item: "Element",
+    visits: "Vizite",
+    noShows: "Neprezentări",
+    lateCancels: "Anulări târzii",
+    noShowRate: "Rata de neprezentare",
+    lateCancelRate: "Rata anulărilor târzii",
+    sent: "Reamintiri trimise",
+    confirmed: "Confirmate",
+    rate: "Rata",
+    count: "Număr",
+    month: "Luna",
+    average: "Evaluare medie",
+  },
+
+  partsOfDay: {
+    morning: "Dimineața (înainte de 13:00)",
+    afternoon: "După-amiaza (13:00–18:00)",
+    evening: "Seara (de la 18:00)",
+  },
+
+  offsets: {
+    h3: "Cu până la 3 ore înainte",
+    h12: "Cu 3–12 ore înainte",
+    d1: "Cu aproximativ o zi înainte",
+    d2: "Cu aproximativ două zile înainte",
+    d3: "Cu trei zile sau mai mult înainte",
+  },
+
+  leadBuckets: {
+    sameDay: "În 24 de ore",
+    d2: "1–2 zile",
+    d7: "3–7 zile",
+    d14: "8–14 zile",
+    d30: "15–30 de zile",
+    more: "Peste 30 de zile",
+  },
+
+  sources: {
+    online: "Pagina de programare online",
+    widget: "Widget pe site",
+    api: "Software partener",
+    staff: "Recepție",
+    waitlist: "Listă de așteptare",
+  },
+
+  contexts: {
+    practice: "Canalele cabinetului",
+    marketplace: "Platforma Sorriso",
+  },
+
+  funnel: {
+    impressions: "Apariții în căutare",
+    views: "Vizualizări ale profilului",
+    bookings: "Programări pe Sorriso",
+    viewRate: "{value} dintre apariții au dus la o vizualizare a profilului",
+    bookingRate: "{value} dintre vizualizările profilului au dus la o programare",
+  },
+
+  ranking: {
+    practitioner: "Medic",
+    score: "Scor",
+    soonest: "Primul interval liber",
+    noSlot: "Niciunul în următoarele 14 zile",
+    rating: "Recenzii",
+    ratingValue: p({
+      one: "{average} ({count} recenzie)",
+      few: "{average} ({count} recenzii)",
+      other: "{average} ({count} de recenzii)",
+    }),
+    noReviews: "Încă nicio recenzie",
+    cancellations: "Anulate de cabinet",
+    cancellationsValue: "{value} (180 de zile)",
+    completeness: "Profil",
+    reasons: "Avantajat de",
+    noReasons: "Încă nimic nu iese în evidență",
+    reasonLabels: {
+      soonest: "Intervale libere în curând",
+      rating: "Recenzii verificate",
+      reliability: "Anulează rar",
+      completeness: "Profil complet",
+      distance: "Aproape de căutare",
+      language: "Limba vorbită",
+      fund: "Fond de sănătate",
+    },
+    globalMean: "Evaluarea medie pe platformă folosită pentru ponderare: {value}",
+    empty: "Încă niciun medic activ.",
+  },
+
+  chart: {
+    bar: "{label}: {value}",
+    column: "{label}: {value}",
+  },
+
+  csv: {
+    filename: "statistici",
+    section: "Secțiune",
+    item: "Element",
+    measure: "Indicator",
+    value: "Valoare",
+    numerator: "Numărător",
+    denominator: "Numitor",
+    all: "Toate",
+  },
+
+  forbidden: "Nu aveți permisiunea de a vedea statisticile cabinetului.",
+} satisfies DeepPartial<Messages["analytics"]>;

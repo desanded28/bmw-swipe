@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray, isNotNull, isNull, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, notExists, or, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import type { AnamnesisStatus } from "@/components/dashboard/slots/contracts";
 import {
@@ -7,6 +7,7 @@ import {
   formTemplates,
   organizations,
   patients,
+  type Appointment,
   type CareSettings,
   type FormField,
   type FormSchema,
@@ -527,6 +528,11 @@ async function sendInvite(d: AppointmentDetails, now: Date): Promise<boolean> {
  * Invite patients to fill in the form before upcoming visits (runCareJobs): practices with
  * care.anamnesisEnabled, scheduled visits starting in 2 hours to 7 days, patients without a form
  * within care.anamnesisRefreshMonths. Each visit is invited at most once. Returns the invitations sent.
+ *
+ * `limit` caps the invitations claimed per run, across practices. Visits already invited (a
+ * form_submissions row, signed or not) are left out by the query and soonest visits come first, so
+ * neither a practice with many invited-but-unsigned visits nor visits covered by an earlier form
+ * use up the run: the budget only counts invitations actually claimed.
  */
 export async function sendFormInvites(now: Date = new Date(), opts: { limit?: number; orgId?: string } = {}): Promise<number> {
   const orgs = (
@@ -537,35 +543,55 @@ export async function sendFormInvites(now: Date = new Date(), opts: { limit?: nu
   ).filter((o) => getCare(o).anamnesisEnabled);
   let sent = 0;
   let budget = opts.limit ?? 200;
+  const page = 200;
   for (const org of orgs) {
     if (budget <= 0) break;
     const care = getCare(org);
-    const rows = await db
-      .select({ id: appointments.id, patientId: appointments.patientId, status: appointments.status, startsAt: appointments.startsAt })
-      .from(appointments)
-      .innerJoin(patients, eq(patients.id, appointments.patientId))
-      .where(
-        and(
-          eq(appointments.orgId, org.id),
-          eq(appointments.status, "scheduled"),
-          gt(appointments.startsAt, new Date(now.getTime() + INVITE_FROM_MS)),
-          lte(appointments.startsAt, new Date(now.getTime() + INVITE_UNTIL_MS)),
-          isNull(patients.restrictedAt),
-          isNull(patients.erasedAt),
-        ),
-      )
-      .limit(budget);
-    const statuses = await anamnesisStatuses(org.id, rows, care);
-    for (const r of rows) {
-      if (statuses.get(r.id)?.status !== "missing") continue;
-      budget--;
-      try {
-        if (!(await claimInvitation(org.id, r.patientId, r.id, now))) continue;
-        const d = await getAppointmentDetails({ id: r.id });
-        if (d && (await sendInvite(d, now))) sent++;
-      } catch (err) {
-        logError("care", err, { step: "form-invite", appointmentId: r.id });
+    // Keyset pages by (startsAt, id): claimed rows drop out of the query, so offsets would skip some.
+    let after: { startsAt: Date; id: string } | null = null;
+    for (;;) {
+      const rows: { id: string; patientId: string; status: Appointment["status"]; startsAt: Date }[] = await db
+        .select({ id: appointments.id, patientId: appointments.patientId, status: appointments.status, startsAt: appointments.startsAt })
+        .from(appointments)
+        .innerJoin(patients, eq(patients.id, appointments.patientId))
+        .where(
+          and(
+            eq(appointments.orgId, org.id),
+            eq(appointments.status, "scheduled"),
+            gt(appointments.startsAt, new Date(now.getTime() + INVITE_FROM_MS)),
+            lte(appointments.startsAt, new Date(now.getTime() + INVITE_UNTIL_MS)),
+            isNull(patients.restrictedAt),
+            isNull(patients.erasedAt),
+            // Invited before (signed or not): never again from here.
+            notExists(
+              db
+                .select({ one: sql`1` })
+                .from(formSubmissions)
+                .where(and(eq(formSubmissions.orgId, org.id), eq(formSubmissions.appointmentId, appointments.id))),
+            ),
+            after
+              ? or(gt(appointments.startsAt, after.startsAt), and(eq(appointments.startsAt, after.startsAt), gt(appointments.id, after.id)))
+              : undefined,
+          ),
+        )
+        .orderBy(asc(appointments.startsAt), asc(appointments.id))
+        .limit(page);
+      const statuses = await anamnesisStatuses(org.id, rows, care);
+      for (const r of rows) {
+        if (budget <= 0) break;
+        if (statuses.get(r.id)?.status !== "missing") continue;
+        try {
+          if (!(await claimInvitation(org.id, r.patientId, r.id, now))) continue;
+          budget--;
+          const d = await getAppointmentDetails({ id: r.id });
+          if (d && (await sendInvite(d, now))) sent++;
+        } catch (err) {
+          logError("care", err, { step: "form-invite", appointmentId: r.id });
+        }
       }
+      if (budget <= 0 || rows.length < page) break;
+      const last = rows[rows.length - 1];
+      after = { startsAt: last.startsAt, id: last.id };
     }
   }
   return sent;

@@ -1,3 +1,200 @@
 import type { DeepPartial, Messages } from "../../types";
+import { p } from "../../plural";
 
-export default {} satisfies DeepPartial<Messages["analytics"]>;
+export default {
+  title: "Estatísticas",
+  description: "Calculadas nos nossos servidores a partir dos dados da sua própria clínica quando abre esta página. Sem cookies, sem rastreamento.",
+  range: {
+    label: "Período",
+    months: p({ one: "Último mês", other: "Últimos {count} meses" }),
+    window: "{from} – {to}",
+  },
+  export: "Transferir CSV",
+  exportHint: "Os mesmos valores desta página, para uma folha de cálculo.",
+  dimension: {
+    label: "Dividir por",
+    service: "Tratamento",
+    practitioner: "Profissional",
+    weekday: "Dia da semana",
+    partOfDay: "Período do dia",
+  },
+  showTable: "Mostrar como tabela",
+  noData: "Ainda não há dados suficientes neste período.",
+  none: "–",
+
+  kpi: {
+    noShow: "Taxa de faltas",
+    noShowHint: "{noShows} faltas em {visits} consultas",
+    lateCancel: "Cancelamentos tardios",
+    lateCancelHint: "Cancelados pelo paciente menos de {hours} horas antes",
+    confirmation: "Confirmadas após um lembrete",
+    confirmationHint: "{confirmed} de {sent} lembretes a pedir confirmação",
+    waitlist: "Taxa de preenchimento da lista de espera",
+    waitlistHint: "{booked} marcadas de {closed} inscrições encerradas",
+    recalls: "Conversão das chamadas de controlo",
+    recallsHint: "{booked} marcadas de {contacted} pacientes chamados",
+    leadTime: "Antecedência mediana da marcação",
+    leadTimeValue: p({ one: "{count} dia", other: "{count} dias" }),
+    leadTimeHint: p({ one: "Em {count} marcação", other: "Em {count} marcações" }),
+  },
+
+  sections: {
+    outcomesTotal: "Comparência",
+    attendance: "Comparência",
+    attendanceHint:
+      "Taxa de faltas: faltas em relação às consultas realizadas ou faltadas. Cancelamentos tardios: cancelados pelo paciente dentro do prazo de cancelamento da clínica, em relação às mesmas consultas mais esses cancelamentos.",
+    byService: "Por tratamento",
+    byPractitioner: "Por profissional",
+    byWeekday: "Por dia da semana",
+    byPartOfDay: "Por período do dia",
+    noShowChart: "Taxa de faltas",
+    lateCancelChart: "Taxa de cancelamentos tardios",
+    confirmation: "Confirmações",
+    confirmationHint:
+      "Cada confirmação conta para o último lembrete enviado antes dela. As confirmações recebidas pela receção ou no momento da marcação não são contadas.",
+    confirmationByChannel: "Taxa de confirmação por canal",
+    confirmationByOffset: "Taxa de confirmação por antecedência do lembrete",
+    waitlist: "Lista de espera",
+    waitlistDetail: "{entries} inscrições · {booked} marcadas · {removed} removidas · {expired} expiradas · {waiting} ainda em espera",
+    recalls: "Chamadas de controlo",
+    recallsDetail: "{due} chamadas de controlo vencidas · {contacted} pacientes contactados · {booked} marcadas",
+    bookings: "Marcações",
+    leadTime: "Com que antecedência os pacientes marcam",
+    newBySource: "Novos pacientes por canal de marcação",
+    newByContext: "Novos pacientes: canais da clínica ou Sorriso",
+    reviews: "Avaliações publicadas",
+    reviewsHint: "Só são contadas as avaliações publicadas no seu perfil.",
+    reviewsSummary: p({ one: "{count} avaliação, média {average}", other: "{count} avaliações, média {average}" }),
+    funnel: "Funil do marketplace",
+    funnelHint: "Aparições nos resultados de pesquisa da Sorriso e visualizações dos perfis dos seus profissionais, em comparação com as marcações iniciadas na Sorriso.",
+    ranking: "Os seus fatores de ordenação",
+    rankingHint:
+      "O que a ordenação do marketplace da Sorriso sabe hoje sobre cada profissional e a pontuação que atribui sem fatores específicos da pesquisa (distância, cidade, idioma, fundo de saúde). Ninguém pode pagar por uma posição mais alta.",
+    rankingLink: "Como funciona a ordenação",
+  },
+
+  measures: {
+    noShowRate: "Taxa de faltas (%)",
+    lateCancelRate: "Taxa de cancelamentos tardios (%)",
+    confirmationRate: "Taxa de confirmação (%)",
+    fillRate: "Taxa de preenchimento (%)",
+    entries: "Inscrições",
+    recallConversion: "Conversão das chamadas de controlo (%)",
+    recallsDue: "Chamadas de controlo vencidas",
+    medianDays: "Antecedência mediana (dias)",
+    bookings: "Marcações",
+    newPatients: "Novos pacientes",
+    reviews: "Avaliações",
+    averageRating: "Classificação média",
+    impressions: "Aparições na pesquisa",
+    profileViews: "Visualizações do perfil",
+    marketplaceBookings: "Marcações na Sorriso",
+    bookingRate: "Marcações por visualização do perfil (%)",
+    score: "Pontuação de ordenação (0-100)",
+    staffCancelRate: "Canceladas pela clínica, 180 dias (%)",
+    completeness: "Perfil completo (%)",
+  },
+
+  table: {
+    item: "Elemento",
+    visits: "Consultas",
+    noShows: "Faltas",
+    lateCancels: "Cancelamentos tardios",
+    noShowRate: "Taxa de faltas",
+    lateCancelRate: "Taxa de cancelamentos tardios",
+    sent: "Lembretes enviados",
+    confirmed: "Confirmadas",
+    rate: "Taxa",
+    count: "Número",
+    month: "Mês",
+    average: "Classificação média",
+  },
+
+  partsOfDay: {
+    morning: "Manhã (antes das 13:00)",
+    afternoon: "Tarde (13:00–18:00)",
+    evening: "Noite (a partir das 18:00)",
+  },
+
+  offsets: {
+    h3: "Até 3 horas antes",
+    h12: "3 a 12 horas antes",
+    d1: "Cerca de um dia antes",
+    d2: "Cerca de dois dias antes",
+    d3: "Três dias ou mais antes",
+  },
+
+  leadBuckets: {
+    sameDay: "Em menos de 24 horas",
+    d2: "1–2 dias",
+    d7: "3–7 dias",
+    d14: "8–14 dias",
+    d30: "15–30 dias",
+    more: "Mais de 30 dias",
+  },
+
+  sources: {
+    online: "Página de marcação online",
+    widget: "Widget do site",
+    api: "Software de parceiro",
+    staff: "Receção",
+    waitlist: "Lista de espera",
+  },
+
+  contexts: {
+    practice: "Canais da clínica",
+    marketplace: "Marketplace da Sorriso",
+  },
+
+  funnel: {
+    impressions: "Aparições na pesquisa",
+    views: "Visualizações do perfil",
+    bookings: "Marcações na Sorriso",
+    viewRate: "{value} das aparições levaram a uma visualização do perfil",
+    bookingRate: "{value} das visualizações do perfil levaram a uma marcação",
+  },
+
+  ranking: {
+    practitioner: "Profissional",
+    score: "Pontuação",
+    soonest: "Próximo horário livre",
+    noSlot: "Nenhum nos próximos 14 dias",
+    rating: "Avaliações",
+    ratingValue: p({ one: "{average} ({count} avaliação)", other: "{average} ({count} avaliações)" }),
+    noReviews: "Ainda sem avaliações",
+    cancellations: "Canceladas pela clínica",
+    cancellationsValue: "{value} (180 dias)",
+    completeness: "Perfil",
+    reasons: "Valorizado por",
+    noReasons: "Ainda nada se destaca",
+    reasonLabels: {
+      soonest: "Horários livres em breve",
+      rating: "Avaliações verificadas",
+      reliability: "Raramente cancela",
+      completeness: "Perfil completo",
+      distance: "Perto da pesquisa",
+      language: "Idioma falado",
+      fund: "Fundo de saúde",
+    },
+    globalMean: "Classificação média da plataforma usada na ponderação: {value}",
+    empty: "Ainda não há profissionais ativos.",
+  },
+
+  chart: {
+    bar: "{label}: {value}",
+    column: "{label}: {value}",
+  },
+
+  csv: {
+    filename: "estatisticas",
+    section: "Secção",
+    item: "Elemento",
+    measure: "Medida",
+    value: "Valor",
+    numerator: "Numerador",
+    denominator: "Denominador",
+    all: "Todos",
+  },
+
+  forbidden: "Não tem permissão para ver as estatísticas da clínica.",
+} satisfies DeepPartial<Messages["analytics"]>;

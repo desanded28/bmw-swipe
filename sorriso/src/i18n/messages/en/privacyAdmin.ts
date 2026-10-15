@@ -378,6 +378,23 @@ export default {
         doneKeptContact:
           "Request closed. The patient's record was erased: send the answer yourself to the contact kept on the request, which is deleted 30 days after closing.",
         doneNotSent: "Request closed, but the answer couldn't be sent to the reply contact: send it yourself.",
+        notDone: {
+          erasure:
+            "“Granted” is offered once the record is erased, and “Granted in part” once it is kept restricted. Use “Erase or restrict” first: it can close this request with your answer.",
+          restriction: "“Granted” is offered once processing of the record is restricted. Use “Restrict processing” first.",
+          objection: "“Granted” is offered once the objection is recorded in the patient's consents, or the record is restricted. Do that first.",
+          platform: "“Granted” is offered once Sorriso's own processing for this patient has been stopped or its data erased, with the button above.",
+        },
+      },
+      platformAct: {
+        title: "Carry out the request",
+        stopBody:
+          "Stops Sorriso's own processing for this patient: every Sorriso consent still standing is recorded as withdrawn and their reviews are taken down. The practice's record is not touched.",
+        eraseBody:
+          "Erases what Sorriso holds as controller about this patient: its consent records are unlinked from the record and their reviews pseudonymised. The practice's record is not touched.",
+        stop: "Stop Sorriso's processing",
+        erase: "Erase Sorriso's data",
+        done: "Done. You can now answer the request.",
       },
       oneClick: {
         title: "Act on it",
@@ -399,6 +416,10 @@ export default {
       already_extended: "The deadline has already been extended.",
       invalid_date: "Enter a valid date.",
       invalid_contact: "Enter a valid email address or mobile number to reply to.",
+      erasure_not_done:
+        "The record hasn't been erased yet, so the answer can't say it was. Erase it first (or keep it restricted and answer “Granted in part”), or refuse with your reasons.",
+      restriction_not_done: "Processing of the record isn't restricted yet. Restrict it first, or refuse with your reasons.",
+      objection_not_done: "The objection isn't recorded yet. Record it in the patient's consents (or restrict the record) first, or refuse with your reasons.",
     },
   },
 

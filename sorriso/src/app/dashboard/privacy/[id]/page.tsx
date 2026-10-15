@@ -9,7 +9,17 @@ import { fmtDay, zonedDate } from "@/i18n/datefmt";
 import { getStaffLocale, getT } from "@/i18n/server";
 import { auditStaff } from "@/lib/audit";
 import { can, requirePermission } from "@/lib/permissions";
-import { dueBadge, effectiveDueAt, getPrivacyRequest, isOpenRequest, maxExtensionUntil, requestTextAndContact, requesterLabel } from "@/lib/privacy/requests";
+import {
+  decisionsAllowed,
+  dueBadge,
+  effectiveDueAt,
+  getPrivacyRequest,
+  isEffectRequest,
+  isOpenRequest,
+  maxExtensionUntil,
+  requestTextAndContact,
+  requesterLabel,
+} from "@/lib/privacy/requests";
 import { db } from "@/db";
 import { patients } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
@@ -50,6 +60,9 @@ export default async function PrivacyRequestPage({ params }: { params: Promise<{
   // An erased patient's open request keeps the contact the record had, to answer it by hand; a
   // request linked to no record carries the requester's reply contact.
   const details = requestTextAndContact(r);
+  // "Granted" only once an erasure, restriction or objection has been carried out.
+  const decisions = open ? await decisionsAllowed(r) : [];
+  const decisionsHint = open && isEffectRequest(r.type) && !decisions.includes("granted") ? t(`requests.detail.complete.notDone.${r.type}`) : null;
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -90,6 +103,8 @@ export default async function PrivacyRequestPage({ params }: { params: Promise<{
             extendMax={zonedParts(max, tz).date}
             maxLabel={long(max)}
             languageLabel={ENDONYM[r.requesterLocale]}
+            decisions={decisions}
+            decisionsHint={decisionsHint}
           />
         </div>
         <div className="space-y-6">

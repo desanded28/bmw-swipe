@@ -12,9 +12,10 @@ import {
 } from "@/db/schema";
 import { DEFAULT_LOCALE, LOCALES, type Locale } from "@/i18n/config";
 import { appointmentLinks, getAppointmentDetails, templateData } from "./appointments";
-import { cancelAppointment, confirmAttendance } from "./booking";
+import { awaitsAdultConsent, cancelAppointment, confirmAttendance } from "./booking";
 import { APP_NAME } from "./config";
 import { markContactVerified, recipientFor } from "./contact";
+import { manageTokenOf } from "./links";
 import { newId } from "./ids";
 import { logError } from "./log";
 import { deliver } from "./messaging";
@@ -22,7 +23,9 @@ import { isMessagingServiceSid, platformSenders, practiceSender, senderKey, twil
 import { templates } from "./messaging/templates";
 import { normalizePhone } from "./phone";
 import { audit } from "./audit";
+import { confirmationUrl, declineAdultBookingByReply } from "./privacy/adult-confirmation";
 import { ConsentError, recordConsent, withdrawConsent } from "./privacy/consent";
+import { linkRebook, rebookUrl } from "./rebooking";
 import { resolveSettings } from "./settings";
 
 export type Intent = NonNullable<Message["intent"]>;
@@ -512,8 +515,11 @@ export async function handleInboundMessage(input: {
   const patientRows = phone && orgId ? await patientsTextedAt(phone, orgId, now) : [];
   const patientIds = patientRows.map((p) => p.id);
 
-  // Which visit are they answering? The one this practice most recently texted them about;
-  // otherwise the soonest upcoming one.
+  // Which visit are they answering? The one this practice's latest text to this number was about.
+  // A latest text about no visit (a waiting-list offer, a recall) or about one that is no longer
+  // upcoming (a cancellation notice, a past visit) means the reply is about none of the others:
+  // it gets the general answer and changes nothing. Only a number this practice never texted
+  // falls back to the soonest upcoming visit.
   const candidates = patientIds.length
     ? await db
         .select({ id: appointments.id, startsAt: appointments.startsAt })
@@ -528,8 +534,12 @@ export async function handleInboundMessage(input: {
         )
         .orderBy(asc(appointments.startsAt))
     : [];
-  let upcoming = candidates[0];
-  if (candidates.length > 1 && phone) {
+  let upcoming: (typeof candidates)[number] | undefined = candidates[0];
+  /** The reply answers our latest text about `upcoming` (not a guess): it may prove the number. */
+  let answersText = false;
+  /** Our latest text to this number was about none of the upcoming visits. */
+  let offTopic = false;
+  if (candidates.length && phone) {
     const [lastText] = await db
       .select({ appointmentId: messages.appointmentId })
       .from(messages)
@@ -539,15 +549,15 @@ export async function handleInboundMessage(input: {
           eq(messages.direction, "outbound"),
           eq(messages.to, phone),
           inArray(messages.channel, ["sms", "whatsapp"]),
-          inArray(
-            messages.appointmentId,
-            candidates.map((c) => c.id),
-          ),
         ),
       )
       .orderBy(desc(messages.createdAt))
       .limit(1);
-    upcoming = candidates.find((c) => c.id === lastText?.appointmentId) ?? upcoming;
+    if (lastText) {
+      upcoming = candidates.find((c) => c.id === lastText.appointmentId);
+      answersText = Boolean(upcoming);
+      offTopic = !upcoming;
+    }
   }
 
   const found = upcoming ? await getAppointmentDetails({ id: upcoming.id }) : null;
@@ -574,9 +584,13 @@ export async function handleInboundMessage(input: {
     intent,
   });
 
-  // A reply matched to a visit proves the number reaches the patient (or their guardian). The
-  // dashboard simulator (orgId given) is staff pretending, not proof.
-  if (details && phone && !input.orgId) {
+  // An understood answer (confirm, cancel, reschedule) to our latest text about this visit proves
+  // the number reaches the patient (or their guardian). Anything else proves nothing: "wrong
+  // number", STOP, or a text nobody asked for. Neither does the number of whoever booked for
+  // another adult, nor the dashboard simulator (orgId given: staff pretending).
+  const understood = intent === "confirm" || intent === "cancel" || intent === "reschedule";
+  const bookerPhone = details?.appointment.bookedByPhone ? normalizePhone(details.appointment.bookedByPhone) : null;
+  if (details && phone && !input.orgId && answersText && understood && phone !== bookerPhone) {
     await markContactVerified(details.patient.id, { kind: "phone", value: phone }, db, now).catch((err: unknown) =>
       logError("inbound", err, { step: "verify", patientId: details.patient.id }),
     );
@@ -594,7 +608,7 @@ export async function handleInboundMessage(input: {
     await recordTextChoice(affected, input.channel, intent === "start", now);
     reply = (intent === "stop" ? templates.reply.stop : templates.reply.start)(locale, clinic, { asciiFallback });
   } else if (!details) {
-    reply = templates.reply.none(locale, clinic, { asciiFallback });
+    reply = (offTopic ? templates.reply.general : templates.reply.none)(locale, clinic, { asciiFallback });
   } else {
     const data = templateData(details, now);
     // The patient changed the appointment by text: on the practice's access log (the simulator's
@@ -610,19 +624,43 @@ export async function handleInboundMessage(input: {
             metadata: { via: input.channel, intent },
             at: now,
           });
+    const a = details.appointment;
+    // A marketplace booking for another adult, held until they confirm it themselves with a code
+    // (src/lib/privacy/adult-confirmation.ts): a text can decline it, never confirm it.
+    const held = a.status === "requested" && (await awaitsAdultConsent(db, a));
+    // The practice closed and offered new times for this visit (src/lib/rebooking.ts).
+    const rebook = await linkRebook(details, now);
+    const token = manageTokenOf(a);
+    const moveUrl = rebook.open && token ? rebookUrl(token) : null;
     switch (intent) {
       case "confirm":
-        if (details.appointment.status === "requested") {
+        if (held) {
+          reply = templates.reply.confirmThroughLink(data, confirmationUrl(details, locale) ?? data.manageUrl);
+        } else if (a.status === "requested") {
+          // A request the practice reviews: noted for the front desk, nothing is confirmed yet.
           await db
             .update(appointments)
-            .set({ needsAttention: true })
-            .where(and(eq(appointments.id, details.appointment.id), eq(appointments.orgId, details.org.id)));
+            .set({ needsAttention: true, updatedAt: now })
+            .where(and(eq(appointments.id, a.id), eq(appointments.orgId, details.org.id)));
+          await auditReply("appointment.update");
+          reply = templates.reply.awaitingApproval(data);
+        } else if (moveUrl) {
+          // "OK" to "we need to move your appointment" is no confirmation of a time the practice
+          // can't keep: the offer stays open and the answer points to it.
+          reply = templates.reply.reschedule(data, moveUrl);
+        } else {
+          await confirmAttendance(a.id, input.channel, now);
+          await auditReply("appointment.update");
+          reply = templates.reply.confirmed(data);
         }
-        await confirmAttendance(details.appointment.id, input.channel, now);
-        await auditReply("appointment.update");
-        reply = templates.reply.confirmed(data);
         break;
       case "cancel":
+        if (held) {
+          // The adult said no: declined as on the confirmation page, not their own late cancellation.
+          await declineAdultBookingByReply(a, { via: input.channel, now });
+          reply = templates.reply.cancelled(data, appointmentLinks(details).rebookUrl);
+          break;
+        }
         // Only the understood intent is stored, never the patient's words (they may mention health).
         await cancelAppointment(details.appointment.id, {
           by: "patient",
@@ -635,7 +673,7 @@ export async function handleInboundMessage(input: {
         reply = templates.reply.cancelled(data, appointmentLinks(details).rebookUrl);
         break;
       case "reschedule":
-        reply = templates.reply.reschedule(data);
+        reply = moveUrl ? templates.reply.reschedule(data, moveUrl) : templates.reply.reschedule(data);
         break;
       default:
         await db

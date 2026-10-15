@@ -309,4 +309,34 @@ describe("invitations", () => {
     expect(rows[0].answers).toBe("{}");
     expect((await anamnesisStatuses(q.orgId, [a.appointment], { ...q.settings.care, anamnesisEnabled: true })).get(a.appointment.id)!.status).toBe("missing");
   });
+
+  it("visits invited earlier but not signed yet don't use up the run's budget", async () => {
+    const q = await createPractice();
+    await db
+      .update(organizations)
+      .set({ settings: { ...q.settings, care: { ...q.settings.care, anamnesisEnabled: true } } })
+      .where(eq(organizations.id, q.orgId));
+    const make = (firstName: string, hh: number) =>
+      createAppointment({
+        orgId: q.orgId,
+        serviceId: q.visit,
+        practitionerId: q.drA,
+        locationId: q.milano,
+        startsAt: zonedToUtc(MONDAY, hh * 60, TZ),
+        patient: { firstName, lastName: "Budget", phone: `+39${seq++}`, locale: "it" },
+        source: "staff",
+        online: false,
+        force: true,
+        now: NOW,
+      });
+    for (const [i, name] of ["Uno", "Due", "Tre"].entries()) await make(name, 9 + i);
+    expect(await sendFormInvites(NOW, { orgId: q.orgId, limit: 3 })).toBe(3);
+    // Nobody signed. Two more visits are booked: the next run reaches them, whatever the limit.
+    const later = [await make("Quattro", 12), await make("Cinque", 12)];
+    expect(await sendFormInvites(NOW, { orgId: q.orgId, limit: 3 })).toBe(2);
+    for (const d of later) {
+      expect(await db.select().from(formSubmissions).where(eq(formSubmissions.appointmentId, d.appointment.id))).toHaveLength(1);
+    }
+    expect(await sendFormInvites(NOW, { orgId: q.orgId, limit: 3 })).toBe(0);
+  });
 });
