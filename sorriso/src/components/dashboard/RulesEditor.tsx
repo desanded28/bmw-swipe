@@ -70,7 +70,8 @@ export function RulesEditor({
           const number = i + 1;
           return (
             <li key={r.id} className="rounded-xl bg-white p-3 ring-1 ring-slate-200">
-              <fieldset className="flex flex-wrap items-center gap-2" disabled={!canManage}>
+              {/* min-w-0: a fieldset is at least as wide as its content by default (min-inline-size: min-content). */}
+              <fieldset className="flex min-w-0 flex-wrap items-center gap-2" disabled={!canManage}>
                 <legend className="sr-only">{t("rules.rule", { number })}</legend>
                 <label className="sr-only" htmlFor={`${id}-channel`}>
                   {t("rules.channelLabel")}
