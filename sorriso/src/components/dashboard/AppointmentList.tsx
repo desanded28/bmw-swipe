@@ -136,10 +136,13 @@ export function AppointmentList({
                   <StatusBadge a={a} />
                 </div>
                 <div className="flex gap-1.5" onClick={(e) => e.stopPropagation()}>
-                  {quickActions && a.status === "requested" ? (
+                  {quickActions && a.status === "requested" && !a.awaitingAdultConfirmation ? (
                     <Button size="sm" disabled={pending} onClick={() => run(() => approve(a.id))}>
                       <Check size={14} aria-hidden /> {t("list.approve")}
                     </Button>
+                  ) : null}
+                  {quickActions && a.awaitingAdultConfirmation ? (
+                    <span className="text-xs text-slate-600">{t("drawer.awaitingAdult")}</span>
                   ) : null}
                   {quickActions && a.status === "scheduled" && a.confirmation === "pending" && upcoming && !a.restricted ? (
                     <>

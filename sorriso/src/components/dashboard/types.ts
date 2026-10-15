@@ -34,6 +34,11 @@ export type ApptListDTO = {
   redFlag: boolean | null;
   /** The patient's data is restricted (Art. 18) or erased. */
   restricted: boolean;
+  /**
+   * A Sorriso booking for another adult, held until that adult confirms with their own code:
+   * the practice can't approve it (see awaitsAdultConsent in src/lib/booking.ts).
+   */
+  awaitingAdultConfirmation: boolean;
   patient: {
     id: string;
     /** The display name, or the localised "Restricted patient" placeholder (see `masked`). */

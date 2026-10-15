@@ -149,6 +149,7 @@ export async function listAppointments(orgId: string, opts: ListOptions = {}): P
       source: appointments.source,
       isNewPatient: appointments.isNewPatient,
       processingContext: appointments.processingContext,
+      bookedFor: appointments.bookedFor,
       minorFlag: appointments.minorFlag,
       // Whether there is a note, without selecting (and decrypting) it.
       hasNotes: sql<number>`(${appointments.patientNote} is not null or ${appointments.internalNote} is not null)`,
@@ -186,6 +187,11 @@ export async function listAppointments(orgId: string, opts: ListOptions = {}): P
     perms,
   );
 
+  // Held Sorriso bookings for another adult: rare, so one consent lookup per candidate is fine.
+  const heldCandidates = rows.filter((r) => r.status === "requested" && r.processingContext === "marketplace" && r.bookedFor === "other_adult");
+  const held = new Set<string>();
+  for (const r of heldCandidates) if (await awaitsAdultConsent(db, r)) held.add(r.id);
+
   // The placeholder's language: the viewer's, else the practice's (looked up only when needed).
   let placeholderT: CalendarT | null = null;
   const placeholder = async (erased: boolean) => {
@@ -217,6 +223,7 @@ export async function listAppointments(orgId: string, opts: ListOptions = {}): P
       anamnesis: masked ? null : (f?.anamnesis ?? null),
       redFlag: masked ? null : (f?.redFlag ?? null),
       restricted,
+      awaitingAdultConfirmation: held.has(r.id),
       patient: {
         id: r.patient.id,
         name: masked ? await placeholder(Boolean(r.patient.erasedAt)) : fullName(r.patient),

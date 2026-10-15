@@ -88,6 +88,7 @@ function appt(over: Partial<ApptListDTO> = {}): ApptListDTO {
     confirmation: "pending",
     confirmedVia: null,
     needsAttention: false,
+    awaitingAdultConfirmation: false,
     source: "online",
     isNewPatient: false,
     processingContext: "practice",

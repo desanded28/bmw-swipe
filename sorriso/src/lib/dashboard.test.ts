@@ -579,6 +579,8 @@ describe("a Sorriso booking held for another adult (WP8)", () => {
     const detail = await getAppointmentDetail(held.id);
     if (!detail.ok) throw new Error(detail.error);
     expect(detail.data.awaitingAdultConfirmation).toBe(true);
+    // Lists (overview, confirmations) carry the same flag, so they don't offer Approve either.
+    expect((await listAppointments(practice.orgId, { ids: [held.id] }))[0].awaitingAdultConfirmation).toBe(true);
     // No users.locale: the request's Accept-Language (it-IT) picks the language.
     const t = getT("it", "calendar");
     expect(await approve(held.id)).toEqual({ ok: false, error: t("errors.reasons.awaiting_adult_confirmation"), code: "not_allowed" });
@@ -603,6 +605,7 @@ describe("a Sorriso booking held for another adult (WP8)", () => {
     const released = await getAppointmentDetail(held.id);
     if (!released.ok) throw new Error(released.error);
     expect(released.data.awaitingAdultConfirmation).toBe(false);
+    expect((await listAppointments(practice.orgId, { ids: [held.id] }))[0].awaitingAdultConfirmation).toBe(false);
 
     // A practice-channel request (or one the patient booked for themselves) never waits for anyone.
     const own = await addAppointment(practice, { status: "requested", processingContext: "marketplace" });
