@@ -646,9 +646,9 @@ export default {
     },
     erasureDefault: {
       label: "When a patient record reaches the end of its retention period",
-      restrict: "Restrict it (kept, not used)",
+      restrict: "Restrict it (kept, not used) for 12 months, then pseudonymise it",
       anonymise: "Pseudonymise it",
-      hint: "Records still needed for the clinical record should be restricted, not pseudonymised.",
+      hint: "Records still needed for the clinical record should be restricted, not pseudonymised. In those 12 months, copy what the clinical record needs, or set a later keep-until date on the record where the law requires it.",
     },
     notice: {
       intro: "The notice patients see, generated from these settings. Showing the saved settings.",
@@ -787,6 +787,8 @@ export default {
       websiteHint: "Starting with https://",
       websitePlaceholder: "https://",
       brandColor: "Brand colour",
+      /** {ratio}: the saved colour's contrast with white, e.g. "5.2". */
+      brandColorHint: "Your emails put white text on this colour when it reaches a contrast of 4.5:1, and dark text otherwise. With white it is {ratio}:1 now.",
       listed: "Listed in the public search",
       saved: "Profile saved.",
       savedVerify: "Profile saved. We sent a link to the new email address: online booking pauses until it is confirmed.",
@@ -948,6 +950,13 @@ export default {
       patientNotes: "The practice's notes about the patient",
       patientGuardian: "Parent or legal guardian who books for a minor",
       consents: "The consent ledger: every grant, withdrawal and objection",
+      consentsController:
+        "To whom it was given: the practice, or Sorriso as independent controller (Sorriso's rows only in the patient's own download)",
+      appointmentsBookedBy: "Who booked the appointment for the patient, when someone else did (another adult)",
+      appointmentsFund: "The health fund or insurance the patient said they would use",
+      appointmentsRiskLevel: "No-show risk computed for this visit (profiling for extra reminders; see summary.html, automated decisions)",
+      appointmentsRiskReasons: "The factors behind the no-show risk",
+      formsRedFlags: "Answers the form flags for the clinician's attention",
       reviewsRemovedReason: "Why the review was taken down: the statement of reasons sent to its author (only in the patient's own download)",
       formsAnswers: "The answers as given (JSON)",
       accessLog: "Who accessed or changed the record (the practice's audit log)",

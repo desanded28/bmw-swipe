@@ -5,8 +5,10 @@ import { saveBookingPolicy, saveProfile } from "@/app/dashboard/actions/settings
 import { ActionForm } from "@/components/dashboard/ActionForm";
 import { Card, Field, Input, PageHeader, Select, Textarea } from "@/components/ui";
 import { lhref } from "@/i18n/href";
+import { formatDecimal } from "@/i18n/number";
 import { getStaffLocale, getT } from "@/i18n/server";
 import { requireStaff } from "@/lib/auth";
+import { contrastRatio } from "@/lib/color-contrast";
 import { APP_URL } from "@/lib/config";
 import { can } from "@/lib/permissions";
 import { signPracticeRef } from "@/lib/privacy/context";
@@ -73,7 +75,10 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
               <Field label={t("settings.profile.website")} hint={t("settings.profile.websiteHint")}>
                 <Input name="website" type="url" inputMode="url" defaultValue={org.website ?? ""} placeholder={t("settings.profile.websitePlaceholder")} />
               </Field>
-              <Field label={t("settings.profile.brandColor")}>
+              <Field
+                label={t("settings.profile.brandColor")}
+                hint={t("settings.profile.brandColorHint", { ratio: formatDecimal(Math.floor(contrastRatio(org.brandColor, "#ffffff") * 10) / 10, locale) })}
+              >
                 <Input type="color" name="brandColor" defaultValue={org.brandColor} className="h-10 !p-1" />
               </Field>
             </div>

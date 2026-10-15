@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { createElement as h, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -155,6 +157,13 @@ describe("MessageThread", () => {
     }
     expect(fmtWhen(message.createdAt, TZ, "it", "short")).toContain(" alle 13:30");
   });
+
+  it("marks a message in the patient's language with lang when it isn't the dashboard's (WCAG 3.1.2)", () => {
+    const ro = { ...message, body: "Pot să vin mai târziu?", locale: "ro" };
+    expect(render(h(MessageThread, { messages: [ro], tz: TZ, headingId: "h" }), "it")).toMatch(/<p[^>]*lang="ro"[^>]*>Pot să vin/);
+    // Same language as the dashboard: no attribute.
+    expect(render(h(MessageThread, { messages: [{ ...ro, locale: "it" }], tz: TZ, headingId: "h" }), "it")).not.toContain('lang="it"');
+  });
 });
 
 describe("AppointmentList", () => {
@@ -261,6 +270,38 @@ describe("Sidebar", () => {
     const current = [...html.matchAll(/<a [^>]*aria-current="page"[^>]*>/g)].map((m) => m[0]);
     expect(current).toHaveLength(1);
     expect(current[0]).toContain('href="/dashboard/patients/duplicates"');
+  });
+
+  it("the logo link's name starts with its visible text (WCAG 2.5.3)", () => {
+    const html = sidebar("reception", false);
+    const link = [...html.matchAll(/<a [^>]*>/g)].map((m) => m[0]).find((a) => a.includes('href="/dashboard"')) ?? "";
+    const label = /aria-label="([^"]*)"/.exec(link)?.[1] ?? "";
+    expect(label.startsWith("Sorriso")).toBe(true);
+  });
+
+  it("the language and practice selects change nothing on their own: no onchange handler applies them, a button does", () => {
+    // Rendered on the server, a select's handler doesn't show; what does is that nothing is applied
+    // until submit: each select sits in a form, and the apply buttons appear only once a different
+    // value is picked (so the first paint has none).
+    const html = render(
+      h(Sidebar, {
+        user: { name: "Test", email: "t@example.org", locale: null },
+        org: { id: "o1", name: "Studio", slug: "studio", brandColor: "#0ea5e9" },
+        orgs: [
+          { id: "o1", name: "Studio" },
+          { id: "o2", name: "Altro" },
+        ],
+        role: "owner",
+        permissions: permissionsFor("owner"),
+        platformAdmin: false,
+        counts: { attention: 0, requests: 0, waitlist: 0 },
+      }),
+    );
+    expect(html.match(/<form[^>]*>(?:(?!<\/form>).)*<select/gs)).toHaveLength(2);
+    expect(html).not.toContain('type="submit"');
+    const src = readFileSync(path.join(__dirname, "Sidebar.tsx"), "utf8");
+    // The handlers only keep the pick: switchOrg and updateMyLocale run on submit.
+    for (const m of src.matchAll(/onChange=\{([^}]*)\}/g)) expect(m[1]).not.toMatch(/switchOrg|updateMyLocale|run\(|start\(/);
   });
 
   it("shows Sorriso's privacy inbox to platform admins only", () => {

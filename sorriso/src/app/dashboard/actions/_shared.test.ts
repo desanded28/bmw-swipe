@@ -126,13 +126,18 @@ describe("guard", () => {
 
   it("turns domain errors into results and lets Next.js control flow through", async () => {
     await signIn("owner");
+    // The domain's English message is never shown: the code's text in the staff member's language.
     expect(await guard(async () => Promise.reject(new BookingError("not_allowed", "Taken.")))).toEqual({
       ok: false,
-      error: "Taken.",
+      error: getT("en", "calendar")("errors.not_allowed"),
       code: "not_allowed",
     });
-    const zodFail = await guard(async () => (z.object({ a: z.string().min(1, "Enter a") }).parse({ a: "" }), ok()));
-    expect(zodFail).toEqual({ ok: false, error: "Enter a", code: undefined });
+    expect(await guard(async () => Promise.reject(new BookingError("not_found", "Appointment not found.")))).toMatchObject({
+      error: getT("en", "calendar")("errors.not_found"),
+    });
+    // Nor zod's own English ("Too big: expected number to be <=20160").
+    const zodFail = await guard(async () => (z.object({ a: z.number().max(20160) }).parse({ a: 57600 }), ok()));
+    expect(zodFail).toEqual({ ok: false, error: common("errors.invalidInput"), code: undefined });
     expect(await guard(async () => Promise.reject(new Error("boom")))).toEqual({
       ok: false,
       error: common("errors.unexpected"),
@@ -141,6 +146,18 @@ describe("guard", () => {
     expect(logError).toHaveBeenCalledWith("dashboard action", expect.objectContaining({ message: "boom" }));
     const redirect = Object.assign(new Error("NEXT_REDIRECT"), { digest: "NEXT_REDIRECT;replace;/x;307;" });
     await expect(guard(async () => Promise.reject(redirect))).rejects.toBe(redirect);
+  });
+
+  it("refuses a reminder rule out of range by naming the rule and the range, in the staff language", async () => {
+    await signIn("owner");
+    const rule = (offsetMinutes: number) => ({ id: "r", channel: "sms" as const, offsetMinutes, askConfirmation: false, fallbackToEmail: false });
+    const flags = { sendBookingConfirmation: true, requestReviews: true, autoOfferToWaitlist: true };
+    // 40 days (the editor's max=14 doesn't stop typing) and 0.1 hours (6 minutes).
+    for (const bad of [40 * 1440, 6]) {
+      const res = await saveReminderSettings({ rules: [rule(1440), rule(bad)], ...flags });
+      expect(res).toEqual({ ok: false, error: getT("en", "reminders")("rules.invalidOffset", { number: 2 }), code: "invalid" });
+    }
+    expect((await saveReminderSettings({ rules: [rule(1440)], ...flags })).ok).toBe(true);
   });
 
   it("answers step_up_required with requireStepUp's own message, which the UI acts on", async () => {

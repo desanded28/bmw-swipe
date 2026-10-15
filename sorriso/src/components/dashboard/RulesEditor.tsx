@@ -5,6 +5,7 @@ import { useId, useState } from "react";
 import { runRemindersNow, saveInboundNumber, saveReminderSettings } from "@/app/dashboard/actions/reminders";
 import type { ReminderRule } from "@/db/schema";
 import { useT } from "@/i18n/provider";
+import { isValidReminderOffset } from "@/lib/reminder-offsets";
 import { Button, Field, Input, Select } from "../ui";
 import { useRunAction } from "./useRunAction";
 
@@ -58,7 +59,19 @@ export function RulesEditor({
   });
   const { run, pending } = useRunAction();
   const baseId = useId();
+  /** The first rule whose time is out of range, after a save attempt (its number, from 1). */
+  const [invalid, setInvalid] = useState<number | null>(null);
   const set = (id: string, patch: Partial<EditableRule>) => setRules(rules.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const save = () => {
+    const bad = rules.findIndex((r) => !isValidReminderOffset(toRule(r).offsetMinutes));
+    if (bad >= 0) {
+      setInvalid(bad + 1);
+      document.getElementById(`${baseId}-${bad}-amount`)?.focus();
+      return;
+    }
+    setInvalid(null);
+    run(() => saveReminderSettings({ rules: rules.map(toRule), ...flags }));
+  };
   const hasRiskRules = rules.some((r) => r.onlyIfRisk);
 
   return (
@@ -92,6 +105,8 @@ export function RulesEditor({
                   step={r.unit === "hours" ? 0.25 : 1}
                   value={r.amount}
                   onChange={(e) => set(r.id, { amount: Number(e.target.value) })}
+                  aria-invalid={invalid === number || undefined}
+                  aria-describedby={invalid === number ? `${baseId}-invalid` : undefined}
                   className="!h-9 !w-20 !px-2"
                 />
                 <label className="sr-only" htmlFor={`${id}-unit`}>
@@ -149,6 +164,11 @@ export function RulesEditor({
           );
         })}
       </ol>
+      {invalid != null ? (
+        <p id={`${baseId}-invalid`} role="alert" className="mt-2 text-sm font-semibold text-red-700">
+          {t("rules.invalidOffset", { number: invalid })}
+        </p>
+      ) : null}
       {canManage ? (
         rules.length < 6 ? (
           <button
@@ -200,7 +220,7 @@ export function RulesEditor({
 
       <div className="mt-6 flex flex-wrap gap-2">
         {canManage ? (
-          <Button disabled={pending} onClick={() => run(() => saveReminderSettings({ rules: rules.map(toRule), ...flags }))}>
+          <Button disabled={pending} onClick={save}>
             {t("rules.save")}
           </Button>
         ) : null}

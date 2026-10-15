@@ -130,7 +130,7 @@ export function NoticeView({ title, lead, sections, version, updated, labels, it
             {rest.map((s, i) => (
               <li key={s.id}>
                 <a href={`#${s.id}`} className="inline-flex min-h-8 items-center gap-2 text-brand-700 underline-offset-2 hover:underline">
-                  <span className="w-5 text-right text-xs text-slate-400" aria-hidden>
+                  <span className="w-5 text-right text-xs text-slate-600" aria-hidden>
                     {i + 1}.
                   </span>
                   {s.title}

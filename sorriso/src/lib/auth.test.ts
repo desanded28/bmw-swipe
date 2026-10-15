@@ -382,6 +382,70 @@ describe("requireStepUp", () => {
   });
 });
 
+describe("step-up throttle (re-authentication)", () => {
+  async function signedInTwice() {
+    const u = await makeUser({ orgId: orgA });
+    await db.insert(memberships).values({ userId: u.id, orgId: orgB, role: "owner" });
+    await auth.createSession(u.id, orgA, { mfaVerifiedAt: null });
+    const s = (await auth.resolveSession(cookieToken()!))!;
+    staffState.session = { ...s, org: s.org!, role: s.role! };
+    /** Switch practice: a new session id, as the real switchOrg issues. */
+    const switchTo = async (orgId: string) => {
+      const cur = (await auth.resolveSession(cookieToken()!))!;
+      expect(await auth.switchSessionOrg(cur, orgId)).toBe(true);
+      const next = (await auth.resolveSession(cookieToken()!))!;
+      expect(next.sessionId).not.toBe(cur.sessionId);
+      staffState.session = { ...next, org: next.org!, role: next.role! };
+    };
+    return { u, switchTo };
+  }
+
+  it("password: switching practice doesn't reset the limit, which is the account's sign-in limit", async () => {
+    const { verifyStepUp } = await import("@/app/dashboard/actions/security");
+    const { u, switchTo } = await signedInTwice();
+    asClient({ "next-action": "abc" });
+    for (let i = 0; i < 5; i++) expect(await verifyStepUp({ password: `wrong password ${i}` })).toMatchObject({ ok: false, code: "invalid_code" });
+    await switchTo(orgB);
+    // A fresh session id, but five failures stand against the account: even the right password is refused.
+    expect(await verifyStepUp({ password: PASSWORD })).toMatchObject({ ok: false, code: "rate_limited" });
+    await switchTo(orgA);
+    expect(await verifyStepUp({ password: PASSWORD })).toMatchObject({ ok: false, code: "rate_limited" });
+    // The same counter as /login.
+    asClient();
+    expect((await actions.login(null, form({ email: u.email, password: PASSWORD, locale: "en" })))?.error).toBe("Too many attempts. Please wait 15 minutes and try again.");
+  });
+
+  it("password: the right one passes and clears the count, as at sign-in", async () => {
+    const { verifyStepUp } = await import("@/app/dashboard/actions/security");
+    await signedInTwice();
+    asClient({ "next-action": "abc" });
+    expect(await verifyStepUp({ password: "wrong password" })).toMatchObject({ ok: false, code: "invalid_code" });
+    expect(await verifyStepUp({ password: PASSWORD })).toMatchObject({ ok: true });
+  });
+
+  it("two-step codes: the sign-in's per-account bucket, across new session ids", async () => {
+    const { verifyStepUp } = await import("@/app/dashboard/actions/security");
+    const u = await makeUser({ orgId: orgA, mfaSecret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP" });
+    await db.insert(memberships).values({ userId: u.id, orgId: orgB, role: "owner" });
+    await auth.createSession(u.id, orgA, { mfaVerifiedAt: null });
+    const first = (await auth.resolveSession(cookieToken()!))!;
+    staffState.session = { ...first, org: first.org!, role: first.role! };
+    asClient({ "next-action": "abc" });
+    const rotate = async (orgId: string) => {
+      const cur = (await auth.resolveSession(cookieToken()!))!;
+      expect(await auth.switchSessionOrg(cur, orgId)).toBe(true);
+      const next = (await auth.resolveSession(cookieToken()!))!;
+      staffState.session = { ...next, org: next.org!, role: next.role! };
+    };
+    for (const orgId of [orgB, orgA]) {
+      for (let i = 0; i < 5; i++) expect(await verifyStepUp({ code: "000000" })).toMatchObject({ ok: false, code: "invalid_code" });
+      await rotate(orgId);
+    }
+    // Ten codes tried across two sessions: the third session is refused at once.
+    expect(await verifyStepUp({ code: "000000" })).toMatchObject({ ok: false, code: "rate_limited" });
+  });
+});
+
 describe("login protection", () => {
   it("the 6th failed login for one email within 15 minutes is rejected even with the correct password", async () => {
     const u = await makeUser({ orgId: orgA });
@@ -556,7 +620,14 @@ describe("signup, email confirmation and password reset", () => {
     const { issueAuthToken } = await import("./security/tokens");
     const { token } = await issueAuthToken({ kind: "password_reset", userId: u.id, email: u.email });
     const weak = await actions.resetPassword(null, form({ token, password: "short", confirm: "short", locale: "en" }));
-    expect(weak).toEqual({ fieldErrors: { password: "Use at least 12 characters." } });
+    // Every refusal carries the summary error, which the form announces (role="alert"); a field message alone is silent.
+    expect(weak).toEqual({ error: "Please check the highlighted fields.", fieldErrors: { password: "Use at least 12 characters." } });
+    const mismatch = await actions.resetPassword(null, form({ token, password: "a brand new long passphrase", confirm: "another long passphrase", locale: "en" }));
+    expect(mismatch).toEqual({ error: "Please check the highlighted fields.", fieldErrors: { confirm: "The two passwords don't match." } });
+    expect(await actions.requestPasswordReset(null, form({ email: "not-an-email", locale: "en" }))).toMatchObject({
+      error: "Please check the highlighted fields.",
+      fieldErrors: { email: "Enter a valid email address." },
+    });
     const next = "a brand new long passphrase";
     expect(await redirectOf(actions.resetPassword(null, form({ token, password: next, confirm: next, locale: "en" })))).toBe(
       "/en/login?notice=passwordChanged",
@@ -585,6 +656,7 @@ describe("invitations", () => {
     asClient();
     const noBox = await actions.acceptInvite(null, form({ token, name: "Piero Neri", password: PASSWORD, locale: "it" }));
     expect(noBox?.fieldErrors?.acceptInstructions).toBeTruthy();
+    expect(noBox?.error).toBeTruthy();
     expect(
       await redirectOf(actions.acceptInvite(null, form({ token, name: "Piero Neri", password: PASSWORD, acceptInstructions: "on", locale: "it" }))),
     ).toBe("/dashboard");

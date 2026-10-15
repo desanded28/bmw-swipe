@@ -1,6 +1,6 @@
-import { and, eq, gte, lt, ne } from "drizzle-orm";
+import { and, eq, gte, inArray, lt, ne } from "drizzle-orm";
 import { db } from "@/db";
-import { appointments, locations, organizations, patients, practitioners } from "@/db/schema";
+import { appointments, locations, organizations, patients, practitioners, users } from "@/db/schema";
 import { isLocale } from "@/i18n/config";
 import { getT } from "@/i18n/t";
 import { audit } from "@/lib/audit";
@@ -85,7 +85,12 @@ export async function GET(req: Request, { params }: { params: Promise<{ token: s
       ),
     );
 
-  const locale = isLocale(org.defaultLocale) ? org.defaultLocale : "it";
+  // Staff surfaces follow the staff member's language: the practitioner's own account, else
+  // whoever issued the feed, else the practice default.
+  const owners = [p.userId, p.icsIssuedByUserId].filter((id): id is string => Boolean(id));
+  const ownerLocales = owners.length ? await db.select({ id: users.id, locale: users.locale }).from(users).where(inArray(users.id, owners)) : [];
+  const ownLocale = owners.map((id) => ownerLocales.find((u) => u.id === id)?.locale).find((l) => isLocale(l));
+  const locale = ownLocale ?? (isLocale(org.defaultLocale) ? org.defaultLocale : "it");
   const t = getT(locale, "security");
   const ics = buildIcs({
     name: t("ics.calendarName", { practitioner: practitionerName(p), practice: org.name }),

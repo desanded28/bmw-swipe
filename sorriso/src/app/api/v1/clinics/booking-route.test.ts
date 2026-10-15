@@ -3,6 +3,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import { appointments, auditLog, consents, organizations, patients, waitlist } from "@/db/schema";
 import { createApiKey } from "@/lib/api";
+import * as log from "@/lib/log";
 import { newId } from "@/lib/ids";
 import { signPracticeRef } from "@/lib/privacy/context";
 import { NOTICE_VERSIONS } from "@/lib/privacy/versions";
@@ -205,6 +206,24 @@ describe("POST /api/v1/clinics/:slug/appointments", () => {
     const res = await book(bookingBody());
     expect(res.status).toBe(403);
     expect(res.json.error.code).toBe("not_accepting");
+  });
+
+  it("answers a malformed JSON body (booking or waitlist) with 422 validation_error, not a logged 500", async () => {
+    const raw = (path: string) =>
+      new Request(`https://sorriso.test${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": `198.51.100.${ipSeq++}` },
+        body: "{bad",
+      });
+    const errors = vi.spyOn(log, "logError");
+    const booked = await postAppointment(raw(`/api/v1/clinics/${slug}/appointments`), { params: Promise.resolve({ slug }) });
+    const joined = await postWaitlist(raw(`/api/v1/clinics/${slug}/waitlist`), { params: Promise.resolve({ slug }) });
+    for (const res of [booked, joined]) {
+      expect(res.status).toBe(422);
+      expect(((await res.json()) as { error: { code: string } }).error.code).toBe("validation_error");
+    }
+    expect(errors).not.toHaveBeenCalled();
+    errors.mockRestore();
   });
 });
 

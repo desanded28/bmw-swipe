@@ -6,7 +6,7 @@ import { ColumnChart } from "@/components/dashboard/charts/ColumnChart";
 import { DataTable } from "@/components/dashboard/charts/DataTable";
 import { ORDINAL } from "@/components/dashboard/charts/palette";
 import { Meter, StatTile } from "@/components/dashboard/charts/StatTile";
-import { Card, PageHeader, buttonClass, cx } from "@/components/ui";
+import { Card, PageHeader, ScrollRegion, buttonClass, cx } from "@/components/ui";
 import { CALENDAR_NAMES } from "@/i18n/calendar-names";
 import { capitalizeFirst, fmtDay, fmtWhen } from "@/i18n/datefmt";
 import { lhref } from "@/i18n/href";
@@ -70,13 +70,17 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
       label: label(r.key),
       value: r.rate.pct,
       display: pct(r.rate),
-      detail: t("kpi.confirmationHint", { confirmed: num(r.confirmed), sent: num(r.sent) }),
+      detail: t("kpi.confirmationHint", { confirmed: num(r.confirmed), sent: t("counts.reminders", { count: r.sent }) }),
     }));
   const href = (patch: { months?: number; by?: Dimension }) => `/dashboard/analytics?months=${patch.months ?? months}&by=${patch.by ?? by}`;
   const today = todayIn(tz);
   const fromDay = todayIn(tz, new Date(a.from));
   const total = a.outcomes.total;
   const closedEntries = a.waitlist.booked + a.waitlist.removed + a.waitlist.expired;
+  // Counted phrases are plurals of their own ("1 no-show in 8 visits"), joined by a pattern key.
+  const noShowHint = (r: Pick<OutcomeRow, "noShows" | "completed">) =>
+    t("kpi.noShowHint", { noShows: t("counts.noShows", { count: r.noShows }), visits: t("counts.visits", { count: r.completed + r.noShows }) });
+  const lateCancelHint = a.lateCancelHours > 0 ? t("kpi.lateCancelHint", { count: a.lateCancelHours }) : t("kpi.lateCancelHintNoDeadline");
   const monthLabel = (m: string) => CALENDAR_NAMES[locale].monthsShort[Number(m.slice(5, 7)) - 1];
   const monthLong = (m: string) => fmtDay(`${m}-01`, "monthYear", locale);
 
@@ -114,26 +118,26 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
           label={t("kpi.noShow")}
           value={pct(total.noShowRate)}
           ratio={ratio(total.noShowRate)}
-          hint={t("kpi.noShowHint", { noShows: num(total.noShows), visits: num(total.completed + total.noShows) })}
+          hint={noShowHint(total)}
         />
-        <StatTile label={t("kpi.lateCancel")} value={pct(total.lateCancelRate)} ratio={ratio(total.lateCancelRate)} hint={t("kpi.lateCancelHint", { hours: num(a.lateCancelHours) })} />
+        <StatTile label={t("kpi.lateCancel")} value={pct(total.lateCancelRate)} ratio={ratio(total.lateCancelRate)} hint={lateCancelHint} />
         <StatTile
           label={t("kpi.confirmation")}
           value={pct(a.confirmation.total.rate)}
           ratio={ratio(a.confirmation.total.rate)}
-          hint={t("kpi.confirmationHint", { confirmed: num(a.confirmation.total.confirmed), sent: num(a.confirmation.total.sent) })}
+          hint={t("kpi.confirmationHint", { confirmed: num(a.confirmation.total.confirmed), sent: t("counts.reminders", { count: a.confirmation.total.sent }) })}
         />
         <StatTile
           label={t("kpi.waitlist")}
           value={pct(a.waitlist.fillRate)}
           ratio={ratio(a.waitlist.fillRate)}
-          hint={t("kpi.waitlistHint", { booked: num(a.waitlist.booked), closed: num(closedEntries) })}
+          hint={t("kpi.waitlistHint", { booked: t("counts.booked", { count: a.waitlist.booked }), closed: t("counts.closedEntries", { count: closedEntries }) })}
         />
         <StatTile
           label={t("kpi.recalls")}
           value={pct(a.recalls.conversion)}
           ratio={ratio(a.recalls.conversion)}
-          hint={t("kpi.recallsHint", { booked: num(a.recalls.booked), contacted: num(a.recalls.contacted) })}
+          hint={t("kpi.recallsHint", { booked: t("counts.booked", { count: a.recalls.booked }), contacted: t("counts.patientsRecalled", { count: a.recalls.contacted }) })}
         />
         <StatTile
           label={t("kpi.leadTime")}
@@ -170,14 +174,14 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
             <BarChart
               id="noshow"
               caption={t("sections.noShowChart")}
-              data={outcomeBars((r) => r.noShowRate, (r) => t("kpi.noShowHint", { noShows: num(r.noShows), visits: num(r.completed + r.noShows) }))}
+              data={outcomeBars((r) => r.noShowRate, noShowHint)}
               max={Math.max(10, ...outcomeRows.map((r) => r.noShowRate.pct ?? 0))}
               empty={t("noData")}
             />
             <BarChart
               id="latecancel"
               caption={t("sections.lateCancelChart")}
-              data={outcomeBars((r) => r.lateCancelRate, () => t("kpi.lateCancelHint", { hours: num(a.lateCancelHours) }))}
+              data={outcomeBars((r) => r.lateCancelRate, () => lateCancelHint)}
               max={Math.max(10, ...outcomeRows.map((r) => r.lateCancelRate.pct ?? 0))}
               empty={t("noData")}
             />
@@ -231,11 +235,11 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
           {ratio(a.waitlist.fillRate) != null ? <Meter ratio={ratio(a.waitlist.fillRate)!} className="mt-2" /> : null}
           <p className="mt-3 text-xs text-slate-600">
             {t("sections.waitlistDetail", {
-              entries: num(a.waitlist.entries),
-              booked: num(a.waitlist.booked),
-              removed: num(a.waitlist.removed),
-              expired: num(a.waitlist.expired),
-              waiting: num(a.waitlist.waiting),
+              entries: t("counts.entries", { count: a.waitlist.entries }),
+              booked: t("counts.booked", { count: a.waitlist.booked }),
+              removed: t("counts.removed", { count: a.waitlist.removed }),
+              expired: t("counts.expired", { count: a.waitlist.expired }),
+              waiting: t("counts.waiting", { count: a.waitlist.waiting }),
             })}
           </p>
         </Card>
@@ -244,7 +248,11 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
           <p className="mt-2 text-3xl font-extrabold tracking-tight">{pct(a.recalls.conversion)}</p>
           <p className="text-sm text-slate-600">{t("kpi.recalls")}</p>
           {ratio(a.recalls.conversion) != null ? <Meter ratio={ratio(a.recalls.conversion)!} className="mt-2" /> : null}
-          <p className="mt-3 text-xs text-slate-600">{t("sections.recallsDetail", { due: num(a.recalls.due), contacted: num(a.recalls.contacted), booked: num(a.recalls.booked) })}</p>
+          <p className="mt-3 text-xs text-slate-600">{t("sections.recallsDetail", {
+              due: t("counts.recallsDue", { count: a.recalls.due }),
+              contacted: t("counts.patientsContacted", { count: a.recalls.contacted }),
+              booked: t("counts.booked", { count: a.recalls.booked }),
+            })}</p>
         </Card>
       </div>
 
@@ -390,7 +398,7 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
           {a.ranking.practitioners.length === 0 ? (
             <p className="mt-4 text-sm text-slate-600">{t("ranking.empty")}</p>
           ) : (
-            <div className="relative mt-4 overflow-x-auto">
+            <ScrollRegion label={t("sections.ranking")} className="mt-4">
               <table className="w-full min-w-[48rem] border-collapse text-left text-sm">
                 <caption className="sr-only">{t("sections.ranking")}</caption>
                 <thead>
@@ -442,7 +450,7 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
               {a.ranking.globalMeanRating ? (
                 <p className="mt-3 text-xs text-slate-600">{t("ranking.globalMean", { value: formatDecimal(a.ranking.globalMeanRating, locale, 2) })}</p>
               ) : null}
-            </div>
+            </ScrollRegion>
           )}
         </section>
       </Card>

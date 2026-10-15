@@ -248,7 +248,10 @@ export type ReviewActing = { actor: AuditEvent["actor"]; actorRelation: "self" |
  * publication consent then need the step-up: a one-time code to the patient's own contact
  * (privacy-center.ts reviewActing), the same rule as linkRecord() for the privacy page.
  */
-export function reviewLinkActing(d: Pick<AppointmentDetails, "appointment" | "patient">, now: Date = new Date()): ReviewActing | null {
+export function reviewLinkActing(
+  d: { patient: Pick<AppointmentDetails["patient"], "birthDate" | "guardianRelation">; appointment: Pick<AppointmentDetails["appointment"], "id" | "bookedFor"> },
+  now: Date = new Date(),
+): ReviewActing | null {
   const age = ageOn(d.patient.birthDate, now);
   const child = age !== null && age < GUARDIAN_ROUTING_AGE;
   const bookedFor = d.appointment.bookedFor;
@@ -408,7 +411,11 @@ export async function updateReview(token: string, input: ReviewInput & { acting?
  * `actor` is who did it: the patient through their link (patient_link) or a privacy-center
  * session (patient_session). Open reports about it are closed. Idempotent.
  */
-export async function withdrawReview(reviewId: string, actor: AuditEvent["actor"]): Promise<void> {
+export async function withdrawReview(
+  reviewId: string,
+  actor: AuditEvent["actor"],
+  actorRelation: ReviewActing["actorRelation"] = "self",
+): Promise<void> {
   const [row] = await db
     .select({ review: reviews, patientId: appointments.patientId })
     .from(reviews)
@@ -435,6 +442,7 @@ export async function withdrawReview(reviewId: string, actor: AuditEvent["actor"
         method: "web_checkbox",
         source: actor.type === "patient_session" ? "privacy_center" : "manage_link",
         actor,
+        actorRelation,
       });
     } catch (err) {
       // An erased or merged-away record can't take a ledger row; the withdrawal itself stands.

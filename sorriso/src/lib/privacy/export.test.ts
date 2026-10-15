@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { strFromU8, unzipSync } from "fflate";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
-import { appointments, auditLog, messages, patients, reviewReports, reviews, users, waitlist, type Patient } from "@/db/schema";
+import { appointments, auditLog, consents, formSubmissions, formTemplates, funds, messages, patients, reviewReports, reviews, users, waitlist, type Patient } from "@/db/schema";
 import { createPractice } from "@/test/fixtures";
 import { audit } from "../audit";
 import { encrypt } from "../crypto";
@@ -179,6 +179,105 @@ async function orgExport(orgId: string) {
   }
   return unzipSync(body);
 }
+
+describe("everything about the person (Art. 15)", () => {
+  it("carries profiling, the fund, who booked, the confirmation, form red flags, merged records' rows and, for the patient, Sorriso's consents", async () => {
+    const q = await createPractice();
+    const [lena] = await db
+      .insert(patients)
+      .values({ id: newId(), orgId: q.orgId, firstName: "Lena", lastName: "Hoffmann", phone: "+4915100000001", locale: "de" })
+      .returning();
+    // A duplicate merged into Lena's record: a tombstone that keeps its own ledger and access-log rows.
+    const [dup] = await db
+      .insert(patients)
+      .values({ id: newId(), orgId: q.orgId, firstName: "Lena", lastName: "Hofmann", phone: "+4915100000001", locale: "de", mergedIntoId: lena.id })
+      .returning();
+    const fundId = `fund_${newId()}`;
+    await db.insert(funds).values({ id: fundId, slug: fundId, name: "FASI" });
+    const id = newId();
+    const start = new Date("2030-02-12T09:00:00Z");
+    await db.insert(appointments).values({
+      id,
+      orgId: q.orgId,
+      locationId: q.milano,
+      practitionerId: q.drA,
+      serviceId: q.visit,
+      patientId: lena.id,
+      startsAt: start,
+      endsAt: new Date(start.getTime() + 30 * 60_000),
+      blockedUntil: new Date(start.getTime() + 30 * 60_000),
+      status: "scheduled",
+      confirmation: "confirmed",
+      confirmedAt: NOW,
+      confirmedVia: "web",
+      source: "online",
+      processingContext: "marketplace",
+      bookedFor: "other_adult",
+      bookedByName: "Paolo Verdi",
+      bookedByEmail: "paolo@example.com",
+      fundId,
+      riskLevel: "low",
+      riskReasons: ["new_patient"],
+      riskComputedAt: NOW,
+      manageToken: `h:${id}`,
+    });
+    const templateId = newId();
+    await db.insert(formTemplates).values({ id: templateId, orgId: q.orgId, kind: "anamnesis", version: `e${templateId}`, schema: { version: "1", sections: [] } });
+    await db.insert(formSubmissions).values({ id: newId(), orgId: q.orgId, patientId: lena.id, templateId, version: "1", locale: "de", answers: encrypt("{}", "form_submissions.answers"), redFlags: ["anticoagulants"] });
+    await db.transaction(async (tx) => {
+      await recordConsent(tx, { orgId: q.orgId, patientId: lena.id, appointmentId: id, purpose: "platform_booking_art9", granted: true, locale: "de", method: "web_checkbox", source: "booking", now: NOW });
+      await recordConsent(tx, { orgId: q.orgId, patientId: lena.id, purpose: "feedback_request", granted: true, locale: "de", method: "web_checkbox", source: "booking", now: NOW });
+    });
+    // Written on the duplicate before the merge (recordConsent itself would follow the merge).
+    await db.insert(consents).values({
+      id: newId(),
+      orgId: q.orgId,
+      patientId: dup.id,
+      purpose: "marketing",
+      granted: false,
+      textKey: "consents.marketing",
+      textVersion: "1",
+      locale: "de",
+      method: "staff_recorded",
+      source: "staff",
+      actorRelation: "self",
+      createdAt: NOW,
+    });
+    await audit({ orgId: q.orgId, actor: { type: "user", id: "u9" }, action: "patient.update", entity: { type: "patient", id: dup.id }, at: NOW });
+
+    const read = async (actor: Parameters<typeof buildPatientExport>[2]["actor"]) =>
+      JSON.parse(strFromU8((await buildPatientExport(q.orgId, lena.id, { locale: "de", format: "json", actor, now: NOW })).body));
+    const staffCopy = await read(ACTOR);
+    expect(patientExportSchema.safeParse(staffCopy).success).toBe(true);
+    expect(staffCopy.appointments[0]).toMatchObject({
+      confirmedAt: NOW.toISOString(),
+      confirmedVia: "web",
+      bookedBy: { name: "Paolo Verdi", phone: null, email: "paolo@example.com" },
+      fund: { id: fundId, name: "FASI" },
+      riskLevel: "low",
+      riskReasons: ["new_patient"],
+      riskComputedAt: NOW.toISOString(),
+    });
+    expect(staffCopy.forms[0].redFlags).toEqual(["anticoagulants"]);
+    // The merged duplicate's ledger and access-log rows; Sorriso's own consent only for the patient.
+    expect(staffCopy.consents.map((c: { purpose: string; controller: string }) => [c.purpose, c.controller]).sort()).toEqual([
+      ["feedback_request", "practice"],
+      ["marketing", "practice"],
+    ]);
+    expect(staffCopy.accessLog.some((a: { action: string; entityId: string }) => a.action === "patient.update" && a.entityId === dup.id)).toBe(true);
+
+    const own = await read({ type: "patient_session", id: "s1" });
+    expect(patientExportSchema.safeParse(own).success).toBe(true);
+    expect(own.consents.map((c: { purpose: string; controller: string }) => [c.purpose, c.controller]).sort()).toEqual([
+      ["feedback_request", "practice"],
+      ["marketing", "practice"],
+      ["platform_booking_art9", "sorriso"],
+    ]);
+    const zip = unzipSync((await buildPatientExport(q.orgId, lena.id, { locale: "de", format: "zip", actor: ACTOR, now: NOW })).body);
+    const header = strFromU8(zip["csv/appointments.csv"]).replace("\uFEFF", "").split("\r\n")[0];
+    expect(header).toContain("bookedByName,bookedByPhone,bookedByEmail,fundId,fundName,riskLevel,riskReasons,riskComputedAt");
+  });
+});
 
 describe("reviews and the access log in exports", () => {
   let q: Awaited<ReturnType<typeof createPractice>>;

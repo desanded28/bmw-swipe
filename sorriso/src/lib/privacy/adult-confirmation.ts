@@ -1,6 +1,7 @@
-import { and, eq, lt, lte, or } from "drizzle-orm";
+import { and, count, eq, lt, lte, ne, or, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { appointments, consents, type Appointment, type Locale, type Patient } from "@/db/schema";
+import { appointments, auditLog, consents, privacyRequests, waitlist, type Appointment, type Locale, type Patient } from "@/db/schema";
+import { isLocale } from "@/i18n/config";
 import { fmtWhen } from "@/i18n/datefmt";
 import { lhref } from "@/i18n/href";
 import { getT } from "@/i18n/t";
@@ -17,6 +18,7 @@ import { reopenRecallsFor } from "../recalls";
 import { cancelPendingReminders, scheduleReminders } from "../reminders";
 import { resolveSettings } from "../settings";
 import { recordConsent } from "./consent";
+import { erasePatient, ErasureError } from "./erasure";
 import { recordBookingNotices } from "./notices";
 import type { VerifiedContact } from "./patient-session";
 import { checkTicketCode, maskContact, openTicket, sealTicket } from "./privacy-center";
@@ -344,6 +346,7 @@ export async function declineAdultBooking(i: ProofInput): Promise<AdultConfirmat
     headers: i.headers,
     now,
   });
+  if (done) await dropHeldRecord(proof.d.appointment, "adult_confirmation:declined", now);
   return done ? { ok: true, status: "cancelled" } : { ok: false, reason: "not_waiting" };
 }
 
@@ -356,12 +359,21 @@ export async function declineAdultBookingByReply(
   a: Pick<Appointment, "id" | "orgId" | "patientId">,
   i: { via: "sms" | "whatsapp"; now?: Date },
 ): Promise<boolean> {
+  // The record the hold created goes once the reply is sent (inbound.ts: forgetDeclinedHold).
   return cancelHold(a, {
     action: "adult_confirmation.decline",
     actor: { type: "webhook", id: null },
     metadata: { proof: `${i.via}_reply` },
     now: i.now ?? new Date(),
   });
+}
+
+/**
+ * After a decline by reply, once the answer to it is sent (it names the visit): the record the hold
+ * created is pseudonymised as on the confirmation page (dropHeldRecord). Never throws.
+ */
+export async function forgetDeclinedHold(a: Pick<Appointment, "id" | "orgId" | "patientId">, now: Date = new Date()): Promise<boolean> {
+  return dropHeldRecord(a, "adult_confirmation:declined", now);
 }
 
 /**
@@ -413,6 +425,48 @@ async function cancelHold(
   });
 }
 
+/**
+ * The adult declined, or never confirmed: the record the held booking created from what the booker
+ * typed (createAppointment's patient.create row names the appointment) is pseudonymised at once
+ * when nothing else uses it (no other appointment, waiting-list entry or privacy request). Without
+ * the adult's consent there is no ground to keep it, and as a record of someone who never came to
+ * a visit it would otherwise wait out the never-seen retention period. A record that existed
+ * before the booking, or is used otherwise, is left to the practice's retention. Never throws.
+ */
+async function dropHeldRecord(a: Pick<Appointment, "id" | "orgId" | "patientId">, reason: string, now: Date): Promise<boolean> {
+  try {
+    const [created] = await db
+      .select({ id: auditLog.id })
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.orgId, a.orgId),
+          eq(auditLog.action, "patient.create"),
+          eq(auditLog.entityType, "patient"),
+          eq(auditLog.entityId, a.patientId),
+          sql`json_extract(${auditLog.metadata}, '$.appointmentId') = ${a.id}`,
+        ),
+      )
+      .limit(1);
+    if (!created) return false;
+    const [[other], [listed], [asked]] = await Promise.all([
+      db
+        .select({ n: count() })
+        .from(appointments)
+        .where(and(eq(appointments.orgId, a.orgId), eq(appointments.patientId, a.patientId), ne(appointments.id, a.id))),
+      db.select({ n: count() }).from(waitlist).where(and(eq(waitlist.orgId, a.orgId), eq(waitlist.patientId, a.patientId))),
+      db.select({ n: count() }).from(privacyRequests).where(and(eq(privacyRequests.orgId, a.orgId), eq(privacyRequests.patientId, a.patientId))),
+    ]);
+    if (other.n || listed.n || asked.n) return false;
+    await erasePatient(a.orgId, a.patientId, { mode: "anonymise", reason, actor: { type: "system", id: null }, now, unexportedForms: "restrict" });
+    return true;
+  } catch (err) {
+    // Already erased, merged meanwhile: nothing to do. Anything else is logged; the hold is cancelled either way.
+    if (!(err instanceof ErasureError)) logError("adult-confirmation", err, { step: "drop_held_record", appointmentId: a.id });
+    return false;
+  }
+}
+
 /** Tell whoever booked that the adult never confirmed and the booking is gone (best effort, never throws). */
 async function notifyBooker(appointmentId: string): Promise<boolean> {
   const d = await getAppointmentDetails({ id: appointmentId });
@@ -420,7 +474,9 @@ async function notifyBooker(appointmentId: string): Promise<boolean> {
   const phone = d.appointment.bookedByPhone ? normalizeContact("phone", d.appointment.bookedByPhone) : null;
   const email = d.appointment.bookedByEmail ? normalizeContact("email", d.appointment.bookedByEmail) : null;
   if (!phone && !email) return false;
-  const locale = d.patient.locale;
+  // The booker's own language (the page they booked on, kept as noticeLocale), not the language
+  // they chose for the patient's messages.
+  const locale = isLocale(d.appointment.noticeLocale) ? d.appointment.noticeLocale : d.patient.locale;
   const t = getT(locale, "privacyMessages");
   const v = { name: d.patient.firstName, practice: d.org.name, when: fmtWhen(d.appointment.startsAt, d.location.timezone, locale) };
   const base = { orgId: d.org.id, appointmentId, locale };
@@ -461,6 +517,8 @@ export async function expireAdultConfirmations(now: Date = new Date()): Promise<
     if (!(await cancelHold(a, { action: "adult_confirmation.expire", actor: { type: "system", id: null }, now }))) continue;
     n++;
     await notifyBooker(a.id);
+    // After the booker's notice, which names the patient.
+    await dropHeldRecord(a, "adult_confirmation:expired", now);
   }
   return n;
 }

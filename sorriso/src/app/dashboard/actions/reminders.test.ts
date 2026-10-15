@@ -2,6 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
+import { getT } from "@/i18n/t";
 import type { MembershipRole } from "@/db/enums";
 import { appointments, auditLog, messages, organizations, patients, reminders } from "@/db/schema";
 import type { StaffSession } from "@/lib/auth";
@@ -215,10 +216,13 @@ describe("appointmentMessages", () => {
     expect(thread.map((m) => m.body)).toEqual(["Studio: reminder. Details: [patient link]. STOP", "SI"]);
     expect(thread[0]).not.toHaveProperty("to");
     expect(thread[0]).not.toHaveProperty("html");
-    const rows = await db
-      .select()
-      .from(auditLog)
-      .where(and(eq(auditLog.orgId, A.orgId), eq(auditLog.entityType, "appointment"), eq(auditLog.entityId, id)));
+    // The booking's own appointment.create row aside (createAppointment audits it).
+    const rows = (
+      await db
+        .select()
+        .from(auditLog)
+        .where(and(eq(auditLog.orgId, A.orgId), eq(auditLog.entityType, "appointment"), eq(auditLog.entityId, id)))
+    ).filter((r) => r.action !== "appointment.create");
     expect(rows.map((r) => r.action)).toEqual(["message.view"]);
     expect(rows[0].metadata).toEqual({ view: "thread", count: 2, patientId: d.patient.id });
 
@@ -304,5 +308,21 @@ describe("the messages page", () => {
     page = await html();
     expect(page).toContain("Ottavia Restricta");
     expect(page).toContain("Details: [patient link] STOP");
+  });
+
+  it("marks a patient's text in another language with lang, and shows why a message failed in the staff language", async () => {
+    const { default: MessagesPage } = await import("../messages/page");
+    const patientId = newId();
+    await db.insert(patients).values({ id: patientId, orgId: B.orgId, firstName: "Ioana", lastName: "Pop", phone: "+40722000111", locale: "ro" });
+    const base = { orgId: B.orgId, patientId, provider: "twilio" } as const;
+    await db.insert(messages).values([
+      { ...base, id: newId(), channel: "sms", direction: "inbound", from: "+40722000111", to: "+390200000000", body: "Pot să vin mai târziu?", status: "received", intent: "unknown" },
+      { ...base, id: newId(), channel: "whatsapp", direction: "outbound", to: "+40722000111", body: "Reminder", status: "failed", error: "whatsapp: no approved template for reminder in ro" },
+    ]);
+    await signIn("owner", B.orgId);
+    const page = renderToStaticMarkup(await MessagesPage({ searchParams: Promise.resolve({ f: "all" }) }));
+    expect(page).toMatch(/<p[^>]*lang="ro"[^>]*>Pot să vin mai târziu\?<\/p>/);
+    expect(page).not.toContain("no approved template");
+    expect(page).toContain(getT("en", "reminders")("messages.errors.no_whatsapp_template").replace("'", "&#x27;"));
   });
 });

@@ -61,6 +61,27 @@ export function Card({ className, ...props }: ComponentProps<"div">) {
   return <div className={clsx("rounded-2xl bg-white shadow-card ring-1 ring-slate-200/70", className)} {...props} />;
 }
 
+/** Props that make a horizontal scroller reachable by keyboard: a named, focusable region (WCAG 2.1.1). */
+export function scrollRegionProps(label: string) {
+  return {
+    role: "region",
+    "aria-label": label,
+    tabIndex: 0,
+  } as const;
+}
+
+/** The focus ring of a scroll region (it takes focus itself, so arrow keys scroll it). */
+export const SCROLL_REGION_FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600";
+
+/**
+ * A horizontally scrolling wrapper for a wide table. It is focusable and named (usually after the
+ * table's caption), so keyboard users can reach the clipped columns with the arrow keys; it is
+ * positioned (relative) so sr-only text inside stays clipped instead of widening the page.
+ */
+export function ScrollRegion({ label, className, ...props }: ComponentProps<"div"> & { label: string }) {
+  return <div {...scrollRegionProps(label)} className={clsx("relative overflow-x-auto", SCROLL_REGION_FOCUS, className)} {...props} />;
+}
+
 type Tone = "slate" | "green" | "amber" | "red" | "blue" | "violet" | "brand";
 const tones: Record<Tone, string> = {
   slate: "bg-slate-100 text-slate-700 ring-slate-200",

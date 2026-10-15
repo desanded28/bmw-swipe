@@ -62,6 +62,8 @@ export type ThreadMessage = {
   createdAt: string;
   subject: string | null;
   body: string;
+  /** The patient's message language (patients.locale): the text is marked with it (WCAG 3.1.2). */
+  locale?: string | null;
 };
 
 /**

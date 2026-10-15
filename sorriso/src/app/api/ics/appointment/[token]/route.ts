@@ -24,7 +24,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ token: s
   const { token } = await params;
   const d = token && token.length <= 128 ? await getAppointmentDetails({ token }) : null;
   if (!d || !isManageLinkValid(d.appointment)) return new Response("Not found", { status: 404, headers: HEADERS });
-  const ics = appointmentIcs(d, d.appointment.status === "cancelled" ? "CANCELLED" : "CONFIRMED");
+  // A request the practice still has to accept, or a booking held for the adult's own
+  // confirmation, may be declined or expire: tentative until it is a firm appointment.
+  const status = d.appointment.status;
+  const ics = appointmentIcs(d, status === "cancelled" ? "CANCELLED" : status === "requested" ? "TENTATIVE" : "CONFIRMED");
   return new Response(ics, {
     headers: {
       ...HEADERS,

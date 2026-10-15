@@ -119,6 +119,16 @@ describe("search filters", () => {
     expect(ids(await searchPractitioners({ city: CITY, children: true }))).toEqual([q.drB]);
   });
 
+  it("leaves out practitioners who take no new patients (the marketplace books first visits)", async () => {
+    await db.update(practitioners).set({ acceptsNewPatients: false }).where(eq(practitioners.id, p.drB));
+    try {
+      expect(ids(await searchPractitioners({ city: CITY }))).not.toContain(p.drB);
+      expect(ids(await searchPractitioners({ city: CITY }))).toContain(p.drA);
+    } finally {
+      await db.update(practitioners).set({ acceptsNewPatients: true }).where(eq(practitioners.id, p.drB));
+    }
+  });
+
   it("returns slim public data with a rank and reasons", async () => {
     const [r] = await searchPractitioners({ city: CITY, lang: "de" });
     expect(Object.keys(r.org).sort()).toEqual(["brandColor", "id", "name", "slug", "timezone"]);

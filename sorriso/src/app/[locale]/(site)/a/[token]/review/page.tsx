@@ -1,7 +1,8 @@
-import { BadgeCheck, CalendarCheck, Heart, LinkIcon, Trash2 } from "lucide-react";
+import { BadgeCheck, CalendarCheck, Heart, KeyRound, LinkIcon, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import Link from "next/link";
+import { ActionForm } from "@/components/privacy/ActionForm";
 import { ReviewForm } from "@/components/ReviewForm";
 import { Badge, Button, Card, LinkButton, Stars } from "@/components/ui";
 import { toLocale, type Locale } from "@/i18n/config";
@@ -15,9 +16,11 @@ import { getAppointmentDetails } from "@/lib/appointments";
 import { isAutomatedRequest } from "@/lib/directory";
 import { practitionerName } from "@/lib/format";
 import { isManageLinkValid } from "@/lib/links";
+import { getPatientSession } from "@/lib/privacy/patient-session";
+import { linkStepUpContacts, maskContact, reviewActing } from "@/lib/privacy/privacy-center";
 import { editableUntil, firstInitialName, reviewForAppointment } from "@/lib/reviews";
 import { isMinor } from "@/lib/contact";
-import { deleteReviewAction, submitReviewAction, updateReviewAction } from "./actions";
+import { deleteReviewAction, reviewStepUpAction, submitReviewAction, updateReviewAction } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +53,11 @@ function Notice({ locale, icon, title, children }: { locale: Locale; icon: React
  * The author's review of a completed visit, through their visit link: write it (with the
  * publication consent), see its status, edit or delete it while the link is valid. No treatment
  * name anywhere: the page names only the practitioner and the practice.
+ *
+ * When someone else booked the visit (another adult, or a minor now 14 or older), the link may be
+ * in the booker's hands: the page shows nothing of the review and offers only the one-time code to
+ * the patient's own contact, which opens a privacy-center session and comes back here
+ * (reviewActing, the same rule as the link's privacy page).
  */
 export default async function ReviewPage({
   params,
@@ -83,9 +91,49 @@ export default async function ReviewPage({
       </Notice>
     );
   }
-  const review = await reviewForAppointment(d.appointment.id);
   const clinic = d.org.name;
   const doctor = practitionerName(d.practitioner);
+  const session = await getPatientSession();
+  if (!(await reviewActing(d, session))) {
+    const contacts = linkStepUpContacts(d).map((c) => ({ kind: c.kind, label: maskContact(c) }));
+    return (
+      <div className="mx-auto max-w-xl px-4 py-12">
+        <Card className="p-7">
+          <h1 className="text-2xl font-extrabold tracking-tight">{t("page.title", { name: doctor })}</h1>
+          <p className="mt-2 text-slate-600">{t("page.stepUp.intro", { clinic })}</p>
+          {session ? <p className="mt-2 text-sm text-slate-600">{t("page.stepUp.otherSession")}</p> : null}
+          <h2 className="mt-5 flex items-center gap-2 font-semibold">
+            <KeyRound size={18} className="text-brand-700" aria-hidden /> {t("page.stepUp.choose")}
+          </h2>
+          {contacts.length ? (
+            <ActionForm
+              action={reviewStepUpAction.bind(null, token, locale)}
+              submit={{ label: t("page.stepUp.send"), pending: t("page.stepUp.sending"), size: "sm" }}
+              className="mt-3"
+            >
+              <fieldset>
+                <legend className="sr-only">{t("page.stepUp.choose")}</legend>
+                <div className="flex flex-wrap gap-2">
+                  {contacts.map((c, i) => (
+                    <label
+                      key={c.kind}
+                      className="flex min-h-10 cursor-pointer items-center gap-2 rounded-xl bg-white px-3 text-sm font-semibold ring-1 ring-line-strong has-[input:checked]:bg-brand-50 has-[input:checked]:ring-2 has-[input:checked]:ring-brand-600 has-[input:focus-visible]:outline-2 has-[input:focus-visible]:outline-offset-2 has-[input:focus-visible]:outline-brand-600"
+                    >
+                      <input type="radio" name="kind" value={c.kind} defaultChecked={i === 0} className="h-4 w-4 accent-brand-700" />
+                      {c.label}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            </ActionForm>
+          ) : (
+            <p className="mt-3 text-sm text-slate-600">{t("page.stepUp.noContact")}</p>
+          )}
+        </Card>
+      </div>
+    );
+  }
+  const review = await reviewForAppointment(d.appointment.id);
   const nameChoice = isMinor(d.patient) ? null : firstInitialName(d.patient);
   const until = fmtDay(zonedDate(editableUntil(d), d.org.timezone), "long", locale);
   const editable = review && review.status !== "removed" && review.status !== "withdrawn";

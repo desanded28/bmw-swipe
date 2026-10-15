@@ -3,12 +3,14 @@ import { SiteFooter, SiteHeader } from "@/components/SiteChrome";
 import { LinkButton } from "@/components/ui";
 import { lhref } from "@/i18n/href";
 import { getRequestLocale, getT } from "@/i18n/server";
+import { APP_NAME } from "@/lib/config";
 import { isDemoMode } from "@/lib/demo";
 
 /**
- * 404 inside a locale (unknown page, unknown clinic…), with the site chrome: the not-found boundary
- * sits above the (site) layout, so it brings its own header and footer. Next adds robots noindex
- * to 404 responses itself.
+ * 404 inside a locale (unknown clinic, practitioner…: a page's notFound()), with the site chrome:
+ * the not-found boundary sits above the (site) layout, so it brings its own header and footer.
+ * Unmatched URLs get the same content from global-not-found.tsx. Next adds robots noindex to 404
+ * responses itself.
  */
 export default async function NotFound() {
   const locale = await getRequestLocale();
@@ -16,6 +18,8 @@ export default async function NotFound() {
   const ts = getT(locale, "site");
   return (
     <>
+      {/* React hoists it into <head>: the tab and screen readers say "Page not found", not the home title. */}
+      <title>{`${t("pages.notFoundTitle")} · ${APP_NAME}`}</title>
       <SiteHeader />
       <main id="content" tabIndex={-1} className="grid min-h-[60dvh] place-items-center px-4 py-16 text-center outline-none">
         <div className="max-w-md">

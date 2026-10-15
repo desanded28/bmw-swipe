@@ -4,7 +4,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { AuditChainStatus } from "@/components/privacy-admin/AuditChainStatus";
 import { auditActionLabel } from "@/components/privacy-admin/PrivacyPanel";
-import { Button, Card, EmptyState, Input, PageHeader, Select } from "@/components/ui";
+import { Button, Card, cx, EmptyState, Input, PageHeader, SCROLL_REGION_FOCUS, scrollRegionProps, Select } from "@/components/ui";
 import { db } from "@/db";
 import { memberships, users } from "@/db/schema";
 import { fmtWhen } from "@/i18n/datefmt";
@@ -123,7 +123,7 @@ export default async function AuditLogPage({ searchParams }: { searchParams: Pro
       {page.length === 0 ? (
         <EmptyState title={t("audit.empty")} />
       ) : (
-        <Card className="relative overflow-x-auto">
+        <Card className={cx("relative overflow-x-auto", SCROLL_REGION_FOCUS)} {...scrollRegionProps(t("audit.title"))}>
           <table className="w-full min-w-[820px] text-sm">
             <thead className="border-b border-slate-100 bg-slate-50 text-left text-xs font-bold uppercase tracking-wide text-slate-500">
               <tr>

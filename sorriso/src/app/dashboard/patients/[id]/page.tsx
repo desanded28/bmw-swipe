@@ -220,15 +220,18 @@ export default async function PatientPage({
                 {log.length === 0 ? <p className="p-4 text-sm text-slate-500">{t("patient.noMessages")}</p> : null}
                 {log.map((m) => (
                   <div key={m.id} className="p-3 text-sm">
-                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-600">
                       {m.direction === "inbound" ? t("patient.inbound") : t("patient.outbound")} · {tc(`channels.${m.channel}`)} · {when(m.createdAt)}
                     </p>
                     {m.redactedAt ? (
-                      <p className="mt-0.5 italic text-slate-400">{t("patient.redacted")}</p>
+                      <p className="mt-0.5 italic text-slate-600">{t("patient.redacted")}</p>
                     ) : (
                       // Sent texts carry the patient's personal links: staff get those only through the audited
                       // issuePatientLink(), never off the log (as on the Messages page and in the drawer).
-                      <p className="mt-0.5 line-clamp-2 text-slate-700">{redactPatientLinks(m.subject || m.body, tReminders("messages.linkRedacted"))}</p>
+                      // In the patient's language when it isn't the dashboard's (WCAG 3.1.2).
+                      <p className="mt-0.5 line-clamp-2 text-slate-700" lang={p.locale && p.locale !== locale ? p.locale : undefined}>
+                        {redactPatientLinks(m.subject || m.body, tReminders("messages.linkRedacted"))}
+                      </p>
                     )}
                     {m.intent ? <p className="mt-0.5 text-xs text-slate-500">{t("patient.understoodAs", { intent: tReminders(`messages.intent.${m.intent}`) })}</p> : null}
                   </div>

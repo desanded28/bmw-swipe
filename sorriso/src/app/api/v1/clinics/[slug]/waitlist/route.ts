@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { locations, organizations, practitioners, services } from "@/db/schema";
-import { apiError, apiKeyError, auditApiRequest, checkApiKey, handleApiError, json, limitByIp, limitByKey, preflight, requireScope } from "@/lib/api";
+import { apiError, apiKeyError, auditApiRequest, checkApiKey, handleApiError, json, limitByIp, limitByKey, preflight, readJson, requireScope } from "@/lib/api";
 import { bookingRuleMessage } from "@/lib/booking";
 import { processingContextFor } from "@/lib/privacy/context";
 import { canAcceptOnlineBookings } from "@/lib/privacy/gates";
@@ -39,7 +39,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
     }
     if (!(await canAcceptOnlineBookings(org))) return apiError(403, "not_accepting", bookingRuleMessage("not_accepting"));
 
-    const input = waitlistInputSchema.parse(await req.json());
+    const input = waitlistInputSchema.parse(await readJson(req));
     if (input.website) return apiError(422, "validation_error", "Invalid submission.");
     if (input.latestDate < input.earliestDate) return apiError(422, "validation_error", "The date range is reversed.");
     if (!partner && !input.privacy) {
@@ -102,6 +102,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
             headers: req.headers,
           }
         : undefined,
+      actor: key.ok ? { type: "api_key", id: key.auth.key.id } : undefined,
+      headers: req.headers,
     });
     if (key.ok) await auditApiRequest(req, key.auth, "clinics.waitlist", 201, { waitlistEntryId: id });
     return json({ waitlistEntry: { id } }, { status: 201 });

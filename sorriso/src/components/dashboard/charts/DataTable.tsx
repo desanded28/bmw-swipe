@@ -1,3 +1,5 @@
+import { ScrollRegion } from "../../ui";
+
 /**
  * The table view of a chart, behind a disclosure (`summary`): every value a chart draws is
  * readable here as text (screen readers, keyboard users, anyone who wants the exact numbers).
@@ -19,8 +21,9 @@ export function DataTable({
 }) {
   if (!rows.length) return !summary && empty ? <p className="text-sm text-slate-500">{empty}</p> : null;
   const table = (
-    // relative: the sr-only caption (absolutely positioned) stays inside the scroll container.
-    <div className={summary ? "relative mt-2 overflow-x-auto" : "relative overflow-x-auto"}>
+    // A named, focusable scroller (keyboard users scroll it with the arrow keys), positioned so the
+    // sr-only caption stays inside it.
+    <ScrollRegion label={caption} className={summary ? "mt-2" : undefined}>
       <table className="w-full min-w-[20rem] border-collapse text-left text-xs">
         <caption className="sr-only">{caption}</caption>
         <thead>
@@ -50,7 +53,7 @@ export function DataTable({
           ))}
         </tbody>
       </table>
-    </div>
+    </ScrollRegion>
   );
   if (!summary) return table;
   return (

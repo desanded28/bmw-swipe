@@ -45,6 +45,7 @@ export function SlotPicker({
   onSelect,
   days = 7,
   initialData,
+  availabilityPath,
 }: {
   clinicSlug: string;
   serviceId: string;
@@ -61,6 +62,8 @@ export function SlotPicker({
   days?: number;
   /** The first week (from `today`), already loaded on the server: rendered at once, not fetched again. */
   initialData?: Availability;
+  /** Where to ask for free times (default: the clinic's public availability). Moving a visit asks its own link, which doesn't count the visit itself as busy. */
+  availabilityPath?: string;
 }) {
   const t = useT("booking");
   const te = useT("errors");
@@ -102,7 +105,7 @@ export function SlotPicker({
     const params = new URLSearchParams({ serviceId, from, days: String(days) });
     if (practitionerId) params.set("practitionerId", practitionerId);
     if (locationId) params.set("locationId", locationId);
-    fetch(`/api/v1/clinics/${clinicSlug}/availability?${params}`, { signal: controller.signal })
+    fetch(`${availabilityPath ?? `/api/v1/clinics/${clinicSlug}/availability`}?${params}`, { signal: controller.signal })
       .then(async (res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json() as Promise<Availability>;
@@ -112,7 +115,7 @@ export function SlotPicker({
         if (err.name !== "AbortError") setResult({ key: requestKey, error: true });
       });
     return () => controller.abort();
-  }, [clinicSlug, serviceId, practitionerId, locationId, from, days, requestKey]);
+  }, [clinicSlug, serviceId, practitionerId, locationId, from, days, requestKey, availabilityPath]);
 
   useEffect(() => {
     if (!focusTarget) return;

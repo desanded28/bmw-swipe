@@ -23,7 +23,7 @@ import { isMessagingServiceSid, platformSenders, practiceSender, senderKey, twil
 import { templates } from "./messaging/templates";
 import { normalizePhone } from "./phone";
 import { audit } from "./audit";
-import { confirmationUrl, declineAdultBookingByReply } from "./privacy/adult-confirmation";
+import { confirmationUrl, declineAdultBookingByReply, forgetDeclinedHold } from "./privacy/adult-confirmation";
 import { ConsentError, recordConsent, withdrawConsent } from "./privacy/consent";
 import { linkRebook, rebookUrl } from "./rebooking";
 import { resolveSettings } from "./settings";
@@ -599,6 +599,8 @@ export async function handleInboundMessage(input: {
   const clinic = org?.name ?? APP_NAME;
   const asciiFallback = org ? resolveSettings(org.settings).reminders.smsAsciiFallback : false;
   let reply: string | null = null;
+  /** A hold the adult declined by this reply: its record goes once the answer is sent. */
+  let declinedHold: { id: string; orgId: string; patientId: string } | null = null;
 
   if (intent === "stop" || intent === "start") {
     // STOP on the shared sender covers every practice texting this number; START only the
@@ -657,7 +659,7 @@ export async function handleInboundMessage(input: {
       case "cancel":
         if (held) {
           // The adult said no: declined as on the confirmation page, not their own late cancellation.
-          await declineAdultBookingByReply(a, { via: input.channel, now });
+          if (await declineAdultBookingByReply(a, { via: input.channel, now })) declinedHold = a;
           reply = templates.reply.cancelled(data, appointmentLinks(details).rebookUrl);
           break;
         }
@@ -703,6 +705,7 @@ export async function handleInboundMessage(input: {
       sender,
     });
   }
+  if (declinedHold) await forgetDeclinedHold(declinedHold, now);
 
   return { intent, reply, appointmentId: details?.appointment.id ?? null, orgId };
 }

@@ -135,6 +135,8 @@ export default {
     mfaExpired: "Your sign-in timed out. Please log in again.",
     termsRequired: "Please accept the terms of service and the data processing agreement to continue.",
     invalidForm: "Please check the highlighted fields.",
+    invalidEmail: "Enter a valid email address.",
+    nameLength: "Enter a name of 2 to 120 characters.",
     generic: "Something went wrong. Please try again.",
   },
 } as const;

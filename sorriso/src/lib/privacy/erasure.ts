@@ -642,7 +642,15 @@ export async function erasePlatformData(
 
 // ---------------------------------------------------------------- restriction (Art. 18)
 
-type RestrictionInput = { reason: string; retainUntil?: string | null; actor: ErasureActor; headers?: Headers; now?: Date };
+type RestrictionInput = {
+  reason: string;
+  retainUntil?: string | null;
+  /** Erase it once retainUntil has passed (the retention job's deferred erasure, isDeferredErasure). */
+  deferErasure?: boolean;
+  actor: ErasureActor;
+  headers?: Headers;
+  now?: Date;
+};
 
 async function loadPatient(tx: Tx, orgId: string, patientId: string): Promise<Patient> {
   const [p] = await tx
@@ -669,7 +677,7 @@ export async function restrictPatient(orgId: string, patientId: string, i: Restr
     const p = await loadPatient(tx, orgId, patientId);
     if (p.erasedAt) throw new ErasureError("erased");
     // A record still marked the old way (prefix only) keeps its deferred erasure in the column.
-    const deferredSince = p.erasureRequestedAt ?? (isDeferredErasure(p) ? (p.restrictedAt ?? now) : null);
+    const deferredSince = p.erasureRequestedAt ?? (isDeferredErasure(p) ? (p.restrictedAt ?? now) : i.deferErasure ? now : null);
     await tx
       .update(patients)
       .set({ restrictedAt: p.restrictedAt ?? now, restrictionReason: reason.slice(0, 500), retainUntil: i.retainUntil ?? p.retainUntil, erasureRequestedAt: deferredSince })
@@ -683,7 +691,7 @@ export async function restrictPatient(orgId: string, patientId: string, i: Restr
         action: "patient.restrict",
         entity: { type: "patient", id: patientId },
         reason,
-        metadata: { retainUntil: i.retainUntil ?? null, update: Boolean(p.restrictedAt), risksCleared },
+        metadata: { retainUntil: i.retainUntil ?? null, update: Boolean(p.restrictedAt), risksCleared, erasureDeferred: Boolean(deferredSince) },
         headers: i.headers,
         at: now,
       },
@@ -772,8 +780,16 @@ export async function grantRestrictedAccess(
 
 /** Did this person give a reason for this record within the access window? */
 export async function hasRestrictedAccess(s: Viewer, patientId: string, now: Date = new Date()): Promise<boolean> {
+  return (await restrictedAccessReason(s, patientId, now)) !== null;
+}
+
+/**
+ * The reason this person last gave for this record within the access window (null: none), so a
+ * change made under it can carry it in its own audit row.
+ */
+export async function restrictedAccessReason(s: Viewer, patientId: string, now: Date = new Date()): Promise<string | null> {
   const [row] = await db
-    .select({ id: auditLog.id })
+    .select({ reason: auditLog.reason })
     .from(auditLog)
     .where(
       and(
@@ -788,7 +804,7 @@ export async function hasRestrictedAccess(s: Viewer, patientId: string, now: Dat
     )
     .orderBy(desc(auditLog.at))
     .limit(1);
-  return Boolean(row);
+  return row?.reason ?? null;
 }
 
 /**

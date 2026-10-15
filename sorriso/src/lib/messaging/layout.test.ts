@@ -43,6 +43,16 @@ describe("renderEmailLayout", () => {
     expect(renderEmailLayout({ ...input, brandColor: "red;x:url(y)" }).html).toContain("background:#0d9488");
   });
 
+  it("puts text the reader can see on the brand colour (WCAG 1.4.3): dark on a light colour, white on a dark one", () => {
+    for (const light of ["#a7f3d0", "#fde047"]) {
+      const html = renderEmailLayout({ ...input, brandColor: light, buttons: [{ label: "Manage appointment", url: "https://x.test" }] }).html;
+      expect(html).toContain(`background:${light};padding:20px 28px;color:#0f172a`);
+      expect(html).toContain(`background:${light};color:#0f172a`);
+      expect(html).not.toContain(`background:${light};color:#fff`);
+    }
+    expect(renderEmailLayout({ ...input, brandColor: "#123abc" }).html).toContain("background:#123abc;padding:20px 28px;color:#fff;");
+  });
+
   it("shows Sorriso in the header unless a sender name is given", () => {
     expect(renderEmailLayout(input).html).toContain("font-weight:700\">Praxis &lt;Müller&gt;</td>");
     const { brandName, ...noName } = input;

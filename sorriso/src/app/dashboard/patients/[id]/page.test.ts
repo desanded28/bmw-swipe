@@ -59,3 +59,22 @@ describe("patient record: message log", () => {
     expect(out).not.toContain("SECRETtoken1234567890");
   });
 });
+
+describe("patient record: language of parts", () => {
+  it("marks the logged texts with the patient's language when it isn't the dashboard's (WCAG 3.1.2)", async () => {
+    // The dashboard is in the practice's language here (no cookie, no Accept-Language): Italian.
+    await db.update(patients).set({ locale: "de" }).where(eq(patients.id, patientId));
+    const tree = await PatientPage({ params: Promise.resolve({ id: patientId }), searchParams: Promise.resolve({}) });
+    await db.update(patients).set({ locale: "it" }).where(eq(patients.id, patientId));
+    const langs: string[] = [];
+    const walk = (node: ReactNode) => {
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (!isValidElement(node)) return;
+      const props = node.props as { lang?: string; children?: ReactNode };
+      if (props.lang && texts(props.children).join("").includes("fill in the form")) langs.push(props.lang);
+      walk(props.children);
+    };
+    walk(tree);
+    expect(langs).toEqual(["de"]);
+  });
+});

@@ -73,8 +73,11 @@ async function actionLocale(s: StaffSession | null): Promise<Locale> {
  * - "forbidden": the role lacks the permission (message from common.errors.forbidden);
  * - "step_up_required": requireStepUp() wants a fresh second factor; send the user to
  *   /dashboard/account/security/verify?next=<this page> (useSecureAction does);
- * - a BookingError's code, with its (already localised) message.
- * Its own messages are in the staff member's language (common namespace).
+ * - a BookingError's code, with calendar.errors.<code> (or .reasons.<reason>) as the message: the
+ *   domain's own messages are English fallbacks, never shown to staff;
+ * - a ZodError: common.errors.invalidInput (zod's default texts are English and technical; an
+ *   action that wants to name the field validates it itself and returns fail()).
+ * Its own messages are in the staff member's language.
  */
 export async function guard(fn: (s: StaffSession) => Promise<ActionResult>, opts: GuardOptions = {}): Promise<ActionResult> {
   let s: StaffSession | null = null;
@@ -92,8 +95,14 @@ export async function guard(fn: (s: StaffSession) => Promise<ActionResult>, opts
     if (err instanceof PermissionError) return fail((await t())("errors.forbidden"), "forbidden");
     // Before BookingError, which it extends: its message comes from requireStepUp(), localised.
     if (isStepUpRequired(err)) return fail(err.message || (await t())("errors.stepUp"), STEP_UP_REQUIRED);
-    if (err instanceof BookingError) return fail(err.message, err.code);
-    if (err instanceof z.ZodError) return fail(err.issues[0]?.message ?? (await t())("errors.invalidInput"));
+    if (err instanceof BookingError) {
+      const tc = getT(await actionLocale(s), "calendar");
+      const reasonKey = `errors.reasons.${err.reason ?? ""}` as const;
+      const codeKey = `errors.${err.code}` as const;
+      const message = err.reason && tc.has(reasonKey) ? tc(reasonKey) : tc.has(codeKey) ? tc(codeKey) : (await t())("errors.unexpected");
+      return fail(message, err.code);
+    }
+    if (err instanceof z.ZodError) return fail((await t())("errors.invalidInput"));
     // Let Next.js redirects / notFound propagate.
     if (err && typeof err === "object" && "digest" in err) throw err;
     logError("dashboard action", err);

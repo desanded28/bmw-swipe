@@ -2,7 +2,7 @@ import { and, asc, eq, gte, lt, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { APPOINTMENT_STATUSES, appointments } from "@/db/schema";
-import { auditPartnerRead, json, partnerRoute } from "@/lib/api";
+import { auditPartnerRead, json, partnerRoute, readJson } from "@/lib/api";
 import { getAppointmentDetails } from "@/lib/appointments";
 import { createAppointment } from "@/lib/booking";
 import { partnerAppointment } from "@/lib/serializers";
@@ -67,7 +67,7 @@ const partnerBookingSchema = z.object({
 /** POST /api/v1/partner/appointments — create an appointment with front-desk powers. Scope appointments:write. */
 export function POST(req: Request) {
   return partnerRoute(req, "appointments:write", "appointments.create", async ({ org, key }) => {
-    const input = partnerBookingSchema.parse(await req.json());
+    const input = partnerBookingSchema.parse(await readJson(req));
     const details = await createAppointment({
       orgId: org.id,
       serviceId: input.serviceId,
@@ -85,6 +85,8 @@ export function POST(req: Request) {
       online: false,
       force: input.force,
       notifyPatient: input.notifyPatient ?? true,
+      actor: { type: "api_key", id: key.id },
+      headers: req.headers,
     });
     await auditPartnerRead(req, { org, key }, "appointments.create", [details.patient.id]);
     return json({ appointment: partnerAppointment(details, key.scopes) }, { status: 201 });

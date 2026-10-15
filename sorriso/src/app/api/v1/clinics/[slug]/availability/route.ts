@@ -2,8 +2,8 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { organizations } from "@/db/schema";
 import { apiError, handleApiError, json, limitByIp, preflight } from "@/lib/api";
-import { collapseAnyPractitioner, getAvailability, type Slot } from "@/lib/availability";
-import { addDays, isDateString, todayIn, zonedParts, minutesToHHMM } from "@/lib/time";
+import { collapseAnyPractitioner, getAvailability, slotsByDate } from "@/lib/availability";
+import { addDays, isDateString, todayIn } from "@/lib/time";
 
 export const OPTIONS = preflight;
 
@@ -45,21 +45,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
     if (!result) return apiError(404, "not_found", "Service not found.");
 
     const slots = practitionerId ? result.slots : collapseAnyPractitioner(result.ctx, result.slots);
-    const tzOf = (s: Slot) => result.ctx.locations.get(s.locationId)?.timezone ?? org.timezone;
-
-    const dates = Array.from({ length: days }, (_, i) => ({ date: addDays(from, i), slots: [] as unknown[] }));
-    for (const s of slots) {
-      const local = zonedParts(s.start, tzOf(s));
-      dates
-        .find((d) => d.date === local.date)
-        ?.slots.push({
-          start: s.start.toISOString(),
-          end: s.end.toISOString(),
-          time: minutesToHHMM(local.minutes),
-          practitionerId: s.practitionerId,
-          locationId: s.locationId,
-        });
-    }
+    const dates = slotsByDate(result.ctx, slots, from, days, org.timezone);
 
     // Nothing in this window? Tell the patient when the next opening is.
     let nextAvailable: string | null = null;

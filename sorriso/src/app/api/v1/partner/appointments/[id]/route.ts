@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { apiError, auditPartnerRead, json, partnerRoute } from "@/lib/api";
+import { apiError, auditPartnerRead, json, partnerRoute, readJson } from "@/lib/api";
 import { getOrgAppointmentDetails } from "@/lib/appointments";
 import { cancelAppointment, confirmAttendance, rescheduleAppointment, setOutcome } from "@/lib/booking";
 import { partnerAppointment } from "@/lib/serializers";
@@ -40,7 +40,7 @@ export function PATCH(req: Request, { params }: Ctx) {
     const { id } = await params;
     const d = await getOrgAppointmentDetails(org.id, id);
     if (!d) return apiError(404, "not_found", "Appointment not found.");
-    const input = patchSchema.parse(await req.json());
+    const input = patchSchema.parse(await readJson(req));
 
     if (input.start || input.practitionerId || input.locationId) {
       await rescheduleAppointment(id, {

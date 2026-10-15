@@ -604,6 +604,11 @@ describe("what a reply is about", () => {
     expect(after).toMatchObject({ status: "cancelled", cancelledBy: null, confirmation: "declined", confirmedVia: "adult_declined" });
     const actions = (await db.select({ action: auditLog.action }).from(auditLog).where(eq(auditLog.entityId, a.id))).map((r) => r.action);
     expect(actions).toContain("adult_confirmation.decline");
+    // Answered first, then the record the hold created is pseudonymised (adult-confirmation.ts).
+    expect(no.reply).toBeTruthy();
+    const [declined] = await db.select().from(patients).where(eq(patients.id, d.patient.id));
+    expect(declined).toMatchObject({ phone: null });
+    expect(declined.erasedAt).not.toBeNull();
   });
 
   it("YES to a request the practice still has to accept says so, and flags it for the front desk", async () => {

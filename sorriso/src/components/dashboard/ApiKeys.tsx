@@ -64,7 +64,7 @@ export function ApiKeys({ keys }: { keys: ApiKeyRow[] }) {
                 ))}
                 {k.allowedIps ? <Badge tone="blue">{t("api.ipRestricted", { count: k.allowedIps })}</Badge> : null}
               </p>
-              {k.createdBy ? <p className="mt-1 text-xs text-slate-400">{t("api.createdBy", { name: k.createdBy })}</p> : null}
+              {k.createdBy ? <p className="mt-1 text-xs text-slate-600">{t("api.createdBy", { name: k.createdBy })}</p> : null}
             </div>
             {k.status === "active" ? (
               <Button size="sm" variant="ghost" disabled={pending} onClick={() => window.confirm(t("api.revokeConfirm")) && run(() => revokeApiKey(k.id))}>
@@ -132,7 +132,7 @@ export function ApiKeys({ keys }: { keys: ApiKeyRow[] }) {
               <label key={s} className="flex items-start gap-2 rounded-lg bg-white p-2.5 text-sm ring-1 ring-slate-200">
                 <input type="checkbox" checked={scopes.includes(s)} onChange={() => toggle(s)} className="mt-0.5 h-4 w-4 shrink-0 accent-brand-700" />
                 <span>
-                  {t(`api.scopes.${s}`)} <code className="block text-[11px] text-slate-400">{s}</code>
+                  {t(`api.scopes.${s}`)} <code className="block text-[11px] text-slate-600">{s}</code>
                 </span>
               </label>
             ))}

@@ -1,5 +1,6 @@
 import { and, count, eq, gt, inArray } from "drizzle-orm";
 import type { Metadata } from "next";
+import { SessionTimeout } from "@/components/dashboard/SessionTimeout";
 import { Sidebar } from "@/components/dashboard/Sidebar";
 import { ToastProvider } from "@/components/dashboard/Toast";
 import { ComplianceBanner } from "@/components/privacy-admin/ComplianceBanner";
@@ -9,7 +10,7 @@ import { DIR } from "@/i18n/config";
 import { ClientMessages } from "@/i18n/ClientMessages";
 import { CLIENT_NAMESPACES } from "@/i18n/namespaces";
 import { getStaffLocale, getT } from "@/i18n/server";
-import { requireStaff } from "@/lib/auth";
+import { IDLE_TIMEOUT_MS, requireStaff } from "@/lib/auth";
 import { APP_NAME } from "@/lib/config";
 import { permissionsFor } from "@/lib/permissions";
 import { gatePage } from "@/lib/privacy/gates";
@@ -87,6 +88,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
               </main>
             </div>
           </ToastProvider>
+          <SessionTimeout idleMs={IDLE_TIMEOUT_MS} />
         </ClientMessages>
       </body>
     </html>

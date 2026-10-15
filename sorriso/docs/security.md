@@ -327,7 +327,9 @@ except through the proxy (a direct client could write `X-Forwarded-For` itself).
 - **Keys**: `DATA_ENCRYPTION_KEYS="k2:<base64 32 bytes>,k1:<…>"`. The first key encrypts; all
   decrypt. Generate one with `openssl rand -base64 32`. Keep them in the hosting provider's
   secret store, never in the repository or the database. The app refuses to start in production
-  without keys and `HMAC_SECRET`.
+  without keys and `HMAC_SECRET`. The one exception is a local demo of a production build:
+  `SORRISO_ALLOW_DEV_KEY=1` is honoured only together with `DEMO_MODE=1`, a local `file:` database
+  and outside Vercel (`insecureDemoKeysAllowed`, src/lib/crypto.ts), and is logged at startup.
 - **Rotation**:
   1. Add the new key in front (`k3:<new>,k2:<old>`) and deploy.
   2. `npm run db:encrypt -- --dry-run` shows how many values are not yet under `k3`;

@@ -2,7 +2,7 @@ import { ArrowRight, Clock, Download, Eraser, FileCheck2, Lock, UserPen } from "
 import Link from "next/link";
 import { PRIVACY_REQUEST_TYPES } from "@/db/enums";
 import type { Translator } from "@/i18n/types";
-import { Badge, Button, Card, EmptyState, Select } from "../ui";
+import { Badge, Button, Card, cx, EmptyState, SCROLL_REGION_FOCUS, scrollRegionProps, Select } from "../ui";
 
 /**
  * Server-rendered views of the privacy requests inbox, shared by the practice inbox
@@ -65,7 +65,7 @@ export function RequestInbox({ t, rows, filter, base }: { t: T; rows: InboxRow[]
       {rows.length === 0 ? (
         <EmptyState title={t("requests.empty")} />
       ) : (
-        <Card className="relative overflow-x-auto">
+        <Card className={cx("relative overflow-x-auto", SCROLL_REGION_FOCUS)} {...scrollRegionProps(t("requests.title"))}>
           <table className="w-full min-w-[680px] text-sm">
             <thead className="border-b border-slate-100 bg-slate-50 text-left text-xs font-bold uppercase tracking-wide text-slate-500">
               <tr>
@@ -96,7 +96,7 @@ export function RequestInbox({ t, rows, filter, base }: { t: T; rows: InboxRow[]
                     <span className="font-semibold">{label(t, "types", r.type)}</span>
                     <span className="block text-xs text-slate-500">{label(t, "channels", r.channel)}</span>
                   </td>
-                  <td className="px-4 py-2.5 text-slate-700">{r.requester ?? <span className="text-slate-400">{t("requests.unlinked")}</span>}</td>
+                  <td className="px-4 py-2.5 text-slate-700">{r.requester ?? <span className="text-slate-600">{t("requests.unlinked")}</span>}</td>
                   <td className="px-4 py-2.5 text-slate-600">{r.received}</td>
                   <td className="px-4 py-2.5">
                     <Badge tone={r.due.tone}>

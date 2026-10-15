@@ -154,3 +154,36 @@ describe("coverage", () => {
     process.stdout.write(`\ni18n coverage (non-strict):\n${lines.join("\n")}\n`);
   });
 });
+
+describe("counted phrases", () => {
+  /**
+   * A placeholder followed by a noun whose form depends on the number (Polish has three plural
+   * forms). Not a count: "{channel} messages", "{threshold} a year".
+   */
+  const COUNTED =
+    /\{(?!channel\})(\w+)\}\s+(?:(?!a\s|an\s|per\s)[a-z-]+\s+)?(no-shows?|visits?|hours?|days?|minutes?|weeks?|months?|years?|entries|entry|reminders?|patients?|recalls?|attempts?|activities|activity|characters?|appointments?|bookings?|reviews?|messages?|sessions?|times)\b/i;
+  /**
+   * Texts whose number is a fixed constant of the code, not a count that varies: the translator
+   * writes the one form that number takes. Anything that can vary must be a p() plural.
+   */
+  const FIXED = new Set([
+    "privacyMessages.confirmBooking.body", // ADULT_CONFIRMATION_HOURS (48)
+    "privacyAdmin.settingsPrivacy.sessionHours.hint", // the allowed range, 1 to 24
+    "privacyAdmin.register.add.limit", // MAX_CUSTOM_ENTRIES
+    "privacyAdmin.closure.steps.retrieve", // CLOSURE_TRANSITION_DAYS + CLOSURE_RETRIEVAL_DAYS
+    "reviews.errors.tooLong", // COMMENT_MAX, REPORT_TEXT_MAX
+  ]);
+
+  it("are p() plurals, not plain strings ('1 no-shows in 8 visits', '1 hours')", () => {
+    const offenders: string[] = [];
+    for (const [ns, map] of Object.entries(EN)) {
+      for (const [key, leaf] of map) {
+        const id = `${ns}.${key}`;
+        if (typeof leaf !== "string" || FIXED.has(id)) continue;
+        const m = COUNTED.exec(leaf);
+        if (m) offenders.push(`${id}: {${m[1]}} ${m[2]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});

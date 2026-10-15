@@ -51,11 +51,11 @@ export function MessagePreview({
 
   const bubble = (sms: SmsPreview, label: string) => (
     <figure className="space-y-1.5">
-      <figcaption className="text-xs font-semibold text-slate-500">{label}</figcaption>
+      <figcaption className="text-xs font-semibold text-slate-600">{label}</figcaption>
       <div className="max-w-[92%] rounded-2xl rounded-bl-sm bg-white p-3 text-[13px] leading-snug shadow-sm [overflow-wrap:anywhere]" lang={locale}>
         {sms.text}
       </div>
-      <p className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+      <p className="flex flex-wrap items-center gap-1.5 text-xs text-slate-600">
         <Badge tone={sms.withinBudget ? "slate" : "amber"}>{t("preview.segments", { count: sms.segments })}</Badge>
         <span>{t("preview.characters", { count: sms.units, encoding: sms.encoding })}</span>
         {sms.ascii ? <span>· {t("preview.asciiOn")}</span> : null}
@@ -85,16 +85,17 @@ export function MessagePreview({
         <span>{t(level === "detailed" ? "preview.detailed" : "preview.discreet")}</span>
       </p>
 
+      {/* On this slate-100 panel, captions are slate-600: slate-500 is only 4.34:1 there. */}
       <div className="space-y-4 rounded-2xl bg-slate-100 p-4">
         {bubble(p.smsAsk, t("preview.reminderAsk"))}
         <figure className="space-y-1.5">
-          <figcaption className="text-right text-xs font-semibold text-slate-500">{t("preview.patientReply")}</figcaption>
+          <figcaption className="text-right text-xs font-semibold text-slate-600">{t("preview.patientReply")}</figcaption>
           <div className="ml-auto w-fit rounded-2xl rounded-br-sm bg-brand-700 px-3 py-2 text-[13px] text-white" lang={locale}>
             {p.reply.patient}
           </div>
         </figure>
         <figure className="space-y-1.5">
-          <figcaption className="text-xs font-semibold text-slate-500">{t("preview.automaticAnswer")}</figcaption>
+          <figcaption className="text-xs font-semibold text-slate-600">{t("preview.automaticAnswer")}</figcaption>
           <div className="max-w-[92%] rounded-2xl rounded-bl-sm bg-white p-3 text-[13px] leading-snug shadow-sm [overflow-wrap:anywhere]" lang={locale}>
             {p.reply.answer}
           </div>

@@ -14,8 +14,10 @@ const g = globalThis as unknown as { __sorrisoJobs?: { stop: () => void } };
 export async function registerNode() {
   const { assertCryptoConfigured } = await import("./lib/crypto");
   const { assertSubprocessorsConfigured } = await import("./lib/privacy/subprocessors");
+  const { assertPlatformIdentityConfigured } = await import("./lib/privacy/platform-identity");
   assertCryptoConfigured();
   assertSubprocessorsConfigured();
+  assertPlatformIdentityConfigured();
 
   if (process.env.REMINDER_WORKER === "off" || process.env.VERCEL) return;
   if (g.__sorrisoJobs) return; // dev: register() can run again in the same process

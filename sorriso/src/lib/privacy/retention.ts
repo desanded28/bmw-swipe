@@ -97,7 +97,16 @@ export const PLATFORM_RETENTION = {
   supersededNoticeYears: 10,
   /** Certificates of deletion of closed practices are kept for the limitation period. */
   certificateYears: 10,
+  /**
+   * A record restricted at the end of its retention period (erasureDefault 'restrict', or signed
+   * forms not yet in the clinical record) is pseudonymised this long after: the practice copies
+   * what it must keep, or sets a later keep-until date for a legal hold.
+   */
+  restrictedBeforeErasureMonths: 12,
 } as const;
+
+/** A restriction the retention job made (RETENTION_REASONS), not one staff decided. */
+const isRetentionRestriction = (reason: string | null) => Object.values(RETENTION_REASONS).some((r) => r === reason);
 
 /** The same instant `n` calendar months earlier (UTC calendar, clamped to the month's end). */
 export function monthsAgo(now: Date, n: number): Date {
@@ -236,7 +245,12 @@ async function retainLedgers(orgId: string | null, r: RetentionSettings, now: Da
  */
 const PATIENT_ID = sql.raw(`"patients"."id"`);
 
-/** Patients with their last appointment start (null = never booked). */
+/**
+ * Patients with the start of their last visit that was not cancelled (null = never came and has
+ * nothing booked): attended, missed or still booked. A record whose appointments were all
+ * cancelled (a hold the other adult declined, a booking withdrawn) is one of someone who never
+ * came to a visit (neverSeenPatientMonths), not an inactive patient's.
+ */
 async function patientActivity(orgId: string) {
   return db
     .select({
@@ -247,7 +261,7 @@ async function patientActivity(orgId: string) {
       erasureRequestedAt: patients.erasureRequestedAt,
       retainUntil: patients.retainUntil,
       locale: patients.locale,
-      lastStart: sql<number | null>`(select max(a.starts_at) from appointments a where a.patient_id = ${PATIENT_ID} and a.org_id = ${orgId})`,
+      lastStart: sql<number | null>`(select max(a.starts_at) from appointments a where a.patient_id = ${PATIENT_ID} and a.org_id = ${orgId} and a.status <> 'cancelled')`,
       activeWaitlist: sql<number>`(select count(*) from waitlist w where w.patient_id = ${PATIENT_ID} and w.status = 'active')`,
       // Signed forms not yet copied to the clinical record (an unsigned row is only an invitation).
       unexportedForms: sql<number>`(select count(*) from form_submissions f where f.patient_id = ${PATIENT_ID} and f.signed_at is not null and f.exported_at is null)`,
@@ -284,9 +298,14 @@ async function retainPatients(orgId: string, tz: string, settings: ReturnType<ty
       if (anonymise && p.unexportedForms === 0) {
         await erasePatient(orgId, p.id, { mode: "anonymise", reason: code, actor: SYSTEM, now, unexportedForms: "restrict" });
         bump(c, neverSeen ? "neverSeenPseudonymised" : "inactivePseudonymised", 1);
-      } else if (!p.restrictedAt) {
+      } else if (!p.restrictedAt || (isRetentionRestriction(p.restrictionReason) && !p.erasureRequestedAt)) {
         // Restrict instead: the practice's default, or forms that belong in the clinical record.
-        await restrictPatient(orgId, p.id, { reason: code, actor: SYSTEM, now });
+        // Not for ever: the erasure is deferred to the end of a grace period (time to copy what
+        // the clinical record needs, or to set a later keep-until date where the law requires
+        // it), after which the deferred-erasure path above pseudonymises the record. A record a
+        // run before this rule restricted without an end date gets one now.
+        const retainUntil = todayIn(tz, monthsAgo(now, -PLATFORM_RETENTION.restrictedBeforeErasureMonths));
+        await restrictPatient(orgId, p.id, { reason: code, retainUntil, deferErasure: true, actor: SYSTEM, now });
         bump(c, "inactiveRestricted", 1);
       }
     } catch (err) {

@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { getTableColumns } from "drizzle-orm";
 import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 import { strToU8, Zip, ZipDeflate, zipSync } from "fflate";
@@ -10,6 +10,7 @@ import {
   auditLog,
   consents,
   formSubmissions,
+  funds,
   formTemplates,
   legalAcceptances,
   locations,
@@ -33,6 +34,7 @@ import {
   users,
   waitlist,
   LOCALES,
+  RISK_LEVELS,
   type Locale,
   type Organization,
 } from "@/db/schema";
@@ -64,7 +66,8 @@ import { activeSubprocessors } from "./subprocessors";
  * Free text is decrypted. Callers audit the export (patient.export, privacy_center.export).
  */
 
-export const EXPORT_SCHEMA_VERSION = "1.0";
+/** 1.1: appointments gained confirmedAt/Via, bookedBy, fund and the no-show risk; forms redFlags; consents controller. */
+export const EXPORT_SCHEMA_VERSION = "1.1";
 export const EXPORT_SCHEMA_PATH = "/developers/export-schema";
 
 // The .describe() texts are for the machine-readable JSON Schema (English); the documentation page
@@ -139,6 +142,19 @@ export const patientExportSchema = z
         cancelledBy: z.enum(["patient", "staff"]).nullable(),
         cancelReason: text,
         noticeVersion: text,
+        confirmedAt: iso.nullable(),
+        confirmedVia: text,
+        bookedBy: z
+          .object({ name: text, phone: text, email: text })
+          .nullable()
+          .describe("Who booked the appointment for the patient, when someone else did (another adult)"),
+        fund: z.object({ id: z.string(), name: z.string() }).nullable().describe("The health fund or insurance the patient said they would use"),
+        riskLevel: z
+          .enum(RISK_LEVELS)
+          .nullable()
+          .describe("No-show risk computed for this visit (profiling for extra reminders; see summary.html, automated decisions)"),
+        riskReasons: z.array(z.string()).describe("The factors behind the no-show risk"),
+        riskComputedAt: iso.nullable(),
         createdAt: iso,
       }),
     ),
@@ -154,6 +170,9 @@ export const patientExportSchema = z
         source: z.string(),
         actorRelation: z.string(),
         appointmentId: text,
+        controller: z
+          .enum(["practice", "sorriso"])
+          .describe("To whom it was given: the practice, or Sorriso as independent controller (Sorriso's rows only in the patient's own download)"),
         createdAt: iso,
       }),
     ).describe("The consent ledger: every grant, withdrawal and objection"),
@@ -203,6 +222,7 @@ export const patientExportSchema = z
         version: z.string(),
         locale: z.enum(LOCALES),
         answers: z.unknown().describe("The answers as given (JSON)"),
+        redFlags: z.array(z.string()).describe("Answers the form flags for the clinician's attention"),
         signerName: text,
         signedAt: iso.nullable(),
         signedVia: text,
@@ -347,6 +367,21 @@ type Collected = {
   appointmentRows: (typeof appointments.$inferSelect & { service: typeof services.$inferSelect })[];
 };
 
+/** The record and every duplicate of the practice's merged into it (tombstones), as erasure.ts lineage(). */
+async function mergeLineage(orgId: string, patientId: string): Promise<string[]> {
+  const ids = [patientId];
+  let frontier = [patientId];
+  for (let hop = 0; frontier.length && hop < 5; hop++) {
+    const rows = await db
+      .select({ id: patients.id })
+      .from(patients)
+      .where(and(eq(patients.orgId, orgId), inArray(patients.mergedIntoId, frontier)));
+    frontier = rows.map((r) => r.id).filter((id) => !ids.includes(id));
+    ids.push(...frontier);
+  }
+  return ids;
+}
+
 /**
  * Everything about one patient of `orgId` (org-scoped; throws when the patient isn't the org's).
  * `forPatient`: the patient downloads it themselves (privacy center), so their reviews carry
@@ -364,18 +399,25 @@ export async function collectPatientData(orgId: string, patientId: string, opts:
   const { p, org } = row;
 
   const apptRows = await db
-    .select({ a: appointments, service: services, practitioner: practitioners, location: locations })
+    .select({ a: appointments, service: services, practitioner: practitioners, location: locations, fund: { id: funds.id, name: funds.name } })
     .from(appointments)
     .innerJoin(services, eq(services.id, appointments.serviceId))
     .innerJoin(practitioners, eq(practitioners.id, appointments.practitionerId))
     .innerJoin(locations, eq(locations.id, appointments.locationId))
+    .leftJoin(funds, eq(funds.id, appointments.fundId))
     .where(and(eq(appointments.orgId, orgId), eq(appointments.patientId, patientId)))
     .orderBy(asc(appointments.startsAt));
   const apptIds = apptRows.map((r) => r.a.id);
   const byAppt = (col: Parameters<typeof inArray>[0]) => (apptIds.length ? inArray(col, apptIds) : undefined);
+  // Duplicates merged into this record are tombstones that keep their own ledger and access-log
+  // rows (consent.ts and erasure.ts follow the same lineage): they are part of this person's data.
+  const ids = await mergeLineage(orgId, patientId);
+  // Sorriso's own consent rows (org_id NULL) are the patient's data too, but not the practice's:
+  // only in the patient's own download (privacy center or appointment link).
+  const ledgerScope = opts.forPatient ? or(eq(consents.orgId, orgId), isNull(consents.orgId)) : eq(consents.orgId, orgId);
 
   const [consentRows, msgRows, waitRows, reviewRows, recallRows, formRows, requestRows, logRows] = await Promise.all([
-    db.select().from(consents).where(and(eq(consents.orgId, orgId), eq(consents.patientId, patientId))).orderBy(asc(consents.createdAt)),
+    db.select().from(consents).where(and(ledgerScope, inArray(consents.patientId, ids))).orderBy(asc(consents.createdAt)),
     db
       .select()
       .from(messages)
@@ -394,7 +436,7 @@ export async function collectPatientData(orgId: string, patientId: string, opts:
       .select({ log: auditLog, role: memberships.role })
       .from(auditLog)
       .leftJoin(memberships, and(eq(memberships.userId, auditLog.actorId), eq(memberships.orgId, orgId), eq(auditLog.actorType, "user")))
-      .where(and(eq(auditLog.orgId, orgId), patientAccessFilter(patientId, apptIds)))
+      .where(and(eq(auditLog.orgId, orgId), or(...ids.map((id) => patientAccessFilter(id, apptIds)))))
       .orderBy(asc(auditLog.seq)),
   ]);
 
@@ -438,7 +480,7 @@ export async function collectPatientData(orgId: string, patientId: string, opts:
       erasedAt: isoOrNull(p.erasedAt),
       createdAt: p.createdAt.toISOString(),
     },
-    appointments: apptRows.map(({ a, service, practitioner, location }) => ({
+    appointments: apptRows.map(({ a, service, practitioner, location, fund }) => ({
       id: a.id,
       start: a.startsAt.toISOString(),
       end: a.endsAt.toISOString(),
@@ -456,6 +498,13 @@ export async function collectPatientData(orgId: string, patientId: string, opts:
       cancelledBy: a.cancelledBy,
       cancelReason: a.cancelReason,
       noticeVersion: a.noticeVersion,
+      confirmedAt: isoOrNull(a.confirmedAt),
+      confirmedVia: a.confirmedVia,
+      bookedBy: a.bookedByName || a.bookedByPhone || a.bookedByEmail ? { name: a.bookedByName, phone: a.bookedByPhone, email: a.bookedByEmail } : null,
+      fund: fund?.id ? { id: fund.id, name: fund.name } : null,
+      riskLevel: a.riskLevel,
+      riskReasons: a.riskReasons,
+      riskComputedAt: isoOrNull(a.riskComputedAt),
       createdAt: a.createdAt.toISOString(),
     })),
     consents: consentRows.map((c) => ({
@@ -469,6 +518,7 @@ export async function collectPatientData(orgId: string, patientId: string, opts:
       source: c.source,
       actorRelation: c.actorRelation,
       appointmentId: c.appointmentId,
+      controller: c.orgId === null ? ("sorriso" as const) : ("practice" as const),
       createdAt: c.createdAt.toISOString(),
     })),
     messages: msgRows.map((m) => ({
@@ -517,6 +567,7 @@ export async function collectPatientData(orgId: string, patientId: string, opts:
       version: f.version,
       locale: f.locale,
       answers: parseAnswers(f.answers),
+      redFlags: f.redFlags,
       signerName: f.signerName,
       signedAt: isoOrNull(f.signedAt),
       signedVia: f.signedVia,
@@ -569,9 +620,47 @@ export function patientCsvFiles(d: PatientExportData): Record<string, string> {
   return {
     "csv/patient.csv": table("patient", [d.patient]),
     "csv/appointments.csv": toCsv(
-      ["id", "start", "end", "status", "confirmation", "source", "processingContext", "bookedFor", "serviceId", "serviceName", "practitionerId", "practitionerName", "locationId", "locationName", "patientNote", "internalNote", "cancelledAt", "cancelledBy", "cancelReason", "noticeVersion", "createdAt"],
+      [
+        "id",
+        "start",
+        "end",
+        "status",
+        "confirmation",
+        "source",
+        "processingContext",
+        "bookedFor",
+        "serviceId",
+        "serviceName",
+        "practitionerId",
+        "practitionerName",
+        "locationId",
+        "locationName",
+        "patientNote",
+        "internalNote",
+        "cancelledAt",
+        "cancelledBy",
+        "cancelReason",
+        "noticeVersion",
+        "confirmedAt",
+        "confirmedVia",
+        "bookedByName",
+        "bookedByPhone",
+        "bookedByEmail",
+        "fundId",
+        "fundName",
+        "riskLevel",
+        "riskReasons",
+        "riskComputedAt",
+        "createdAt",
+      ],
       d.appointments.map((a) => ({
         ...a,
+        bookedByName: a.bookedBy?.name ?? null,
+        bookedByPhone: a.bookedBy?.phone ?? null,
+        bookedByEmail: a.bookedBy?.email ?? null,
+        fundId: a.fund?.id ?? null,
+        fundName: a.fund?.name ?? null,
+        riskReasons: a.riskReasons.join(" "),
         serviceId: a.service.id,
         serviceName: a.service.name,
         practitionerId: a.practitioner.id,

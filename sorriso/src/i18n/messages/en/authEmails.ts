@@ -3,6 +3,8 @@
  * never sent to the browser. Emails to staff about their own account (src/lib/security/emails.ts):
  * each kind has subject, body and, when it carries a link, cta.
  */
+import { p } from "../../plural";
+
 export default {
   greeting: "Hi {name},",
   footer: {
@@ -46,7 +48,11 @@ export default {
   },
   failedLogins: {
     subject: "Unsuccessful sign-in attempts on your account",
-    body: "There were {count} unsuccessful attempts to sign in to your Sorriso account in the last 15 minutes, so further attempts are blocked for a while. If this wasn't you, consider changing your password and turning on two-step verification.",
+    body: p({
+      one: "There was {count} unsuccessful attempt to sign in to your Sorriso account in the last 15 minutes, so further attempts are blocked for a while. If this wasn't you, consider changing your password and turning on two-step verification.",
+      other:
+        "There were {count} unsuccessful attempts to sign in to your Sorriso account in the last 15 minutes, so further attempts are blocked for a while. If this wasn't you, consider changing your password and turning on two-step verification.",
+    }),
     cta: "Review my security",
   },
   newDevice: {

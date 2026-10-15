@@ -56,7 +56,9 @@ describe("WP1 page metadata", () => {
       expect(meta.alternates?.canonical).toBe(`/${locale}/c/${org.slug}`);
       const languages = meta.alternates?.languages as Record<string, string>;
       expect(Object.keys(languages)).toHaveLength(9);
-      expect(languages["x-default"]).toBe(`/book/${org.slug}`);
+      // hreflang points at canonical URLs only: the practice page in each language.
+      expect(languages["x-default"]).toBe(`/c/${org.slug}`);
+      expect(languages.de).toBe(`/de/c/${org.slug}`);
       expect(meta.title).toBe("Book an appointment at Studio Test");
     }
   });

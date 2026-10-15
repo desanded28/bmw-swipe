@@ -229,6 +229,10 @@ export async function recordConsent(tx: Tx, i: RecordConsentInput): Promise<stri
   } else if (i.purpose === "whatsapp_channel" && !i.granted && patient.preferredChannel === "whatsapp") {
     const fallback = patient.phone && patient.smsOptIn ? "sms" : patient.email ? "email" : "sms";
     await tx.update(patients).set({ preferredChannel: fallback }).where(eq(patients.id, patient.id));
+  } else if (i.purpose === "no_show_tracking" && !i.granted) {
+    // An objection to no-show tracking (Art. 21) takes effect at once: no count is kept, shown or
+    // sent (dashboard badge, partner API), rather than waiting for the nightly recount.
+    await tx.update(patients).set({ noShowCount: 0 }).where(eq(patients.id, patient.id));
   }
 
   await audit(

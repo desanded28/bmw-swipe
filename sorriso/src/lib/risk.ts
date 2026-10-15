@@ -1,6 +1,6 @@
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
-import { appointments, locations, organizations, type Appointment, type RiskLevel } from "@/db/schema";
+import { appointments, locations, organizations, patients, type Appointment, type RiskLevel } from "@/db/schema";
 import { NO_CARE_FLAGS, type CareFlags } from "@/components/dashboard/slots/contracts";
 import { anamnesisStatuses } from "./forms";
 import { logError } from "./log";
@@ -144,7 +144,8 @@ async function attendance(tx: Tx, a: RiskAppointment, cancelUntilHours: number, 
 
 /**
  * The risk of one visit, or null when it must not be computed: the practice hasn't turned on
- * risk-based reminders, or the patient objected to adaptive reminders.
+ * risk-based reminders, the patient objected to adaptive reminders, or the record is restricted
+ * or erased (a restricted record may only be stored, Art. 18(2): no profiling).
  */
 export async function riskFor(
   tx: Tx,
@@ -154,6 +155,11 @@ export async function riskFor(
   now: Date = new Date(),
 ): Promise<RiskResult | null> {
   if (!getPrivacy(org).riskBasedReminders) return null;
+  const [p] = await tx
+    .select({ restrictedAt: patients.restrictedAt, erasedAt: patients.erasedAt })
+    .from(patients)
+    .where(and(eq(patients.orgId, a.orgId), eq(patients.id, a.patientId)));
+  if (!p || p.restrictedAt || p.erasedAt) return null;
   if (!(await isAllowed(a.patientId, "adaptive_reminders", tx))) return null;
   const settings = resolveSettings(org.settings as Parameters<typeof resolveSettings>[0]);
   // An objection to no-show tracking keeps the attendance history out of the score.

@@ -51,6 +51,8 @@ export default {
     rule: "Reminder {number}",
     add: "Add reminder",
     max: "Up to 6 reminders.",
+    /** A rule's time is out of range (or not a number): the editor and the server both say which. */
+    invalidOffset: "Reminder {number}: choose a time between 15 minutes (0.25 hours) and 14 days before the appointment.",
     flagsTitle: "Other messages",
     sendBookingConfirmation: "Send a booking confirmation with a calendar invite right after booking",
     autoOfferToWaitlist: "Offer freed-up slots to matching waitlist patients automatically",
@@ -159,6 +161,14 @@ export default {
     /** Instead of the name and the text of a restricted (GDPR Art. 18) or erased patient's message. */
     restrictedPatient: "Restricted patient",
     restrictedBody: "This patient's data is restricted (GDPR Art. 18). Open their appointment in the calendar and give a reason to see these messages.",
+    /** Why a message failed (src/lib/messaging/delivery-error.ts); the provider's own text stays in the logs. */
+    errors: {
+      no_whatsapp_template: "Not sent on WhatsApp: there is no approved message template in the patient's language.",
+      whatsapp_not_configured: "Not sent: WhatsApp isn't set up for sending.",
+      not_configured: "Not sent: this channel isn't set up for sending.",
+      invalid_number: "Not sent: the provider says the mobile number isn't valid.",
+      provider_error: "Not sent: the messaging provider couldn't deliver it.",
+    },
     status: {
       sent: "Sent",
       delivered: "Delivered",

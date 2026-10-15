@@ -2,7 +2,7 @@ import { and, count, eq, isNull } from "drizzle-orm";
 import { Download } from "lucide-react";
 import type { Metadata } from "next";
 import { PrintButton, RegisterEntryForm, RemoveRegisterEntry } from "@/components/privacy-admin/SettingsForms";
-import { Badge, Button, Card, PageHeader, Select } from "@/components/ui";
+import { Badge, Button, Card, cx, PageHeader, SCROLL_REGION_FOCUS, scrollRegionProps, Select } from "@/components/ui";
 import { db } from "@/db";
 import { apiKeys, organizations } from "@/db/schema";
 import { ENDONYM, isLocale, LOCALES } from "@/i18n/config";
@@ -86,7 +86,7 @@ export default async function RegisterPage({ searchParams }: { searchParams: Pro
         <p className="mt-2 text-xs text-slate-500">{lt("register.generated", { date: fmtDay(zonedDate(register.generatedAt, s.org.timezone), "long", locale) })}</p>
       </Card>
 
-      <Card className="relative overflow-x-auto" lang={locale}>
+      <Card className={cx("relative overflow-x-auto", SCROLL_REGION_FOCUS)} lang={locale} {...scrollRegionProps(lt("register.title"))}>
         <table className="w-full min-w-[1100px] text-left text-xs">
           <thead className="bg-slate-50 font-bold uppercase tracking-wide text-slate-500">
             <tr>

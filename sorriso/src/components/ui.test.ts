@@ -3,7 +3,7 @@ import path from "node:path";
 import { createElement as h } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { Field, Input, Select, Stars, Textarea } from "./ui";
+import { Field, Input, ScrollRegion, Select, Stars, Textarea } from "./ui";
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el);
 const attr = (html: string, tag: string, name: string) => new RegExp(`<${tag}[^>]*\\s${name}="([^"]*)"`).exec(html)?.[1];
@@ -147,5 +147,71 @@ describe("horizontal scrollers", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+describe("buttons hidden on small screens", () => {
+  it("are hidden through a wrapper, never a display class on the button: buttonClass's inline-flex would win", () => {
+    // clsx doesn't resolve conflicts: "hidden sm:inline-flex" on a LinkButton kept it visible on
+    // phones, and the header's "Book now" made every public page scroll sideways at 320-375 px.
+    const root = path.join(__dirname, "..");
+    const walk = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith(".tsx") ? [path.join(dir, e.name)] : [],
+      );
+    const display = /(^|\s)(hidden|block|inline|inline-block|flex|grid|contents)(\s|$)/;
+    const offenders: string[] = [];
+    for (const file of walk(root)) {
+      const src = readFileSync(file, "utf8");
+      for (const m of src.matchAll(/<(?:Button|LinkButton)\b[^>]*?className="([^"]*)"/g)) {
+        if (display.test(m[1])) offenders.push(`${path.relative(root, file)}: ${m[1]}`);
+      }
+      for (const m of src.matchAll(/buttonClass\([^)]*?"([^"]*)"\s*\)/g)) {
+        if (display.test(m[1])) offenders.push(`${path.relative(root, file)}: ${m[1]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe("text contrast (WCAG 1.4.3)", () => {
+  it("no text in slate-400 on the public site or the dashboard (2.63:1 on white)", () => {
+    // Icons hidden from assistive technology may be light (non-text decoration); text may not.
+    // (slate-300 stays allowed: it is used only on the dark bg-ink panels, where it reads well.)
+    expect(contrast("#90a1b9", "#ffffff")).toBeLessThan(4.5); // slate-400
+    expect(contrast("#45556c", "#f1f5f9")).toBeGreaterThanOrEqual(4.5); // slate-600 on slate-100
+    const root = path.join(__dirname, "..");
+    const walk = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith(".tsx") ? [path.join(dir, e.name)] : [],
+      );
+    const offenders: string[] = [];
+    for (const file of walk(root)) {
+      for (const m of readFileSync(file, "utf8").matchAll(/<([A-Za-z][\w.]*)\b[^>]*?className="([^"]*)"[^>]*>/g)) {
+        const isIcon = /^[A-Z]/.test(m[1]) && /\baria-hidden\b/.test(m[0]) && /\/>$/.test(m[0]);
+        if (!isIcon && /(^|\s)text-slate-400(\s|$)/.test(m[2])) offenders.push(`${path.relative(root, file)}: <${m[1]} ${m[2]}>`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe("wide tables", () => {
+  it("scroll in a named, focusable region (WCAG 2.1.1): keyboard users reach the clipped columns", () => {
+    // Every overflow-x-auto wrapper whose content is a table uses ScrollRegion or scrollRegionProps.
+    const root = path.join(__dirname, "..");
+    const walk = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith(".tsx") ? [path.join(dir, e.name)] : [],
+      );
+    const offenders: string[] = [];
+    for (const file of walk(root)) {
+      for (const m of readFileSync(file, "utf8").matchAll(/<[A-Za-z]+\b[^>]*overflow-x-auto[^>]*>\s*<table\b/g)) {
+        if (!m[0].includes("scrollRegionProps")) offenders.push(`${path.relative(root, file)}: ${m[0].slice(0, 80)}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+    const html = render(h(ScrollRegion, { label: "Keywords", children: h("table") }));
+    expect(html).toMatch(/^<div role="region" aria-label="Keywords" tabindex="0"/i);
   });
 });

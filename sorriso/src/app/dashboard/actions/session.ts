@@ -16,6 +16,15 @@ import { fail, guard, ok, staff, type ActionResult } from "./_shared";
 /** Staff session actions (WP2): switching practice and the dashboard language. */
 
 /**
+ * "Stay signed in" (the idle warning, SessionTimeout): resolving the session slides its idle
+ * timeout. An already ended session redirects to the login page, as any dashboard request does.
+ */
+export async function keepSessionAlive(): Promise<ActionResult> {
+  await staff();
+  return ok();
+}
+
+/**
  * Make another of the user's practices the active one. The session moves with a fresh id
  * (switchSessionOrg, WP6): the old row is deleted, sign-in time and second-step state carry over.
  * Not a member of `orgId`: nothing happens.

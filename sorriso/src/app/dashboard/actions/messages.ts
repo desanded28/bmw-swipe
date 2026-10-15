@@ -42,7 +42,7 @@ async function staffT(s: StaffSession) {
 export async function appointmentMessages(id: string) {
   const s = await staff("messages.read");
   const [appt] = await db
-    .select({ patientId: patients.id, restrictedAt: patients.restrictedAt, erasedAt: patients.erasedAt })
+    .select({ patientId: patients.id, restrictedAt: patients.restrictedAt, erasedAt: patients.erasedAt, locale: patients.locale })
     .from(appointments)
     .innerJoin(patients, and(eq(patients.id, appointments.patientId), eq(patients.orgId, s.org.id)))
     .where(and(eq(appointments.id, id), eq(appointments.orgId, s.org.id)));
@@ -77,6 +77,7 @@ export async function appointmentMessages(id: string) {
     ...m,
     subject: m.subject === null ? null : redactPatientLinks(m.subject, linkLabel),
     body: redactPatientLinks(m.body, linkLabel),
+    locale: appt.locale ?? null,
   }));
 }
 

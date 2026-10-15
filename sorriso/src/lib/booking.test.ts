@@ -205,6 +205,20 @@ describe("cancel, reschedule and waitlist", () => {
     const undone = await setOutcome(d.appointment.id, "completed", started);
     expect(undone.patient.noShowCount).toBe(0);
   });
+
+  it("an objection to no-show tracking clears the count at once, and later no-shows aren't counted", async () => {
+    const first = await createAppointment({ orgId: p.orgId, serviceId: p.visit, practitionerId: p.drB, locationId: p.milano, startsAt: at(16), patient: patient(), source: "staff", online: false, force: true, now: NOW });
+    const started = new Date(at(16).getTime() + 15 * 60_000);
+    expect((await setOutcome(first.appointment.id, "no_show", started)).patient.noShowCount).toBe(1);
+    await db.transaction((tx) =>
+      recordConsent(tx, { orgId: p.orgId, patientId: first.patient.id, purpose: "no_show_tracking", granted: false, locale: "it", method: "web_checkbox", source: "privacy_center", now: NOW }),
+    );
+    const count = async () => (await db.select({ n: patients.noShowCount }).from(patients).where(eq(patients.id, first.patient.id)))[0].n;
+    expect(await count()).toBe(0);
+    const second = await createAppointment({ orgId: p.orgId, serviceId: p.visit, practitionerId: p.drB, locationId: p.milano, startsAt: at(17), patient: { id: first.patient.id }, source: "staff", online: false, force: true, now: NOW });
+    await setOutcome(second.appointment.id, "no_show", new Date(at(17).getTime() + 15 * 60_000));
+    expect(await count()).toBe(0);
+  });
 });
 
 describe("reminders", () => {
@@ -569,5 +583,46 @@ describe("booking rules found in review", () => {
       now: NOW,
     });
     expect(staff.appointment.startsAt).toEqual(at(11, 7));
+  });
+});
+
+describe("the access log of bookings (F9.4)", () => {
+  const rowsFor = (entityId: string) => db.select().from(auditLog).where(eq(auditLog.entityId, entityId));
+
+  it("an online booking logs the new record and the visit, by the patient through the public pages", async () => {
+    const d = await createAppointment({
+      orgId: p.orgId,
+      serviceId: p.visit,
+      practitionerId: p.drC,
+      locationId: p.milano,
+      startsAt: at(10, 30),
+      patient: patient({ firstName: "Giada" }),
+      source: "widget",
+      online: true,
+      now: NOW,
+    });
+    expect((await rowsFor(d.patient.id)).map((r) => [r.action, r.actorType, r.metadata])).toEqual([
+      ["patient.create", "patient_link", { source: "widget", appointmentId: d.appointment.id }],
+    ]);
+    const [created] = await rowsFor(d.appointment.id);
+    expect(created).toMatchObject({ action: "appointment.create", actorType: "patient_link", actorId: d.appointment.id, orgId: p.orgId });
+    expect(created.metadata).toMatchObject({ source: "widget", patientId: d.patient.id });
+
+    // Booking again with the same details reuses the record: no second patient.create.
+    const again = await createAppointment({
+      orgId: p.orgId,
+      serviceId: p.visit,
+      practitionerId: p.drC,
+      locationId: p.milano,
+      startsAt: at(16),
+      patient: { id: d.patient.id },
+      source: "staff",
+      online: false,
+      force: true,
+      actor: { type: "user", id: "staff-user-1" },
+      now: NOW,
+    });
+    expect((await rowsFor(d.patient.id)).filter((r) => r.action === "patient.create")).toHaveLength(1);
+    expect((await rowsFor(again.appointment.id)).map((r) => [r.action, r.actorType, r.actorId])).toEqual([["appointment.create", "user", "staff-user-1"]]);
   });
 });

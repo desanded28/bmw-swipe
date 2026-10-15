@@ -455,6 +455,8 @@ describe("runRetention: each category at its boundary", () => {
     const restricted = await get(ids.inactiveGone);
     expect(restricted.restrictedAt?.getTime()).toBe(NOW.getTime());
     expect(restricted.erasedAt).toBeNull();
+    // Not for ever: pseudonymised once the grace period has passed (see "over several runs").
+    expect(restricted).toMatchObject({ retainUntil: "2027-06-15", erasureRequestedAt: NOW });
     expect((await get(ids.inactiveHeld)).restrictedAt).toBeNull(); // kept on a legal ground until 2030
     const anon = await get(ids.anonInactive);
     expect(anon.erasedAt?.getTime()).toBe(NOW.getTime());
@@ -616,5 +618,54 @@ describe("runRetention: accountability and idempotency", () => {
     expect(Object.values(second.counts).reduce((a, b) => a + b, 0)).toBe(0);
     expect(await snapshot()).toBe(snapshotAfterFirst);
     expect((await db.select({ id: auditLog.id }).from(auditLog)).length).toBe(auditRowsAfterFirst);
+  });
+});
+
+describe("runRetention over several runs (default erasureDefault 'restrict')", () => {
+  it("restricts an inactive record with an end date, keeps it unchanged meanwhile, then pseudonymises it", async () => {
+    const q = await createPractice();
+    const inactive = await addPatient({ firstName: "Inattivo", phone: "+390000123401" }, q.orgId);
+    await addAppointment(inactive.id, monthsAgo(NOW, 121), {}, q.orgId);
+    // Restricted by an earlier run without an end date (before this rule): it gets one too.
+    const legacy = await addPatient({ firstName: "Vecchio", phone: "+390000123402", restrictedAt: monthsAgo(NOW, 30), restrictionReason: "retention:inactive" }, q.orgId);
+    await addAppointment(legacy.id, monthsAgo(NOW, 150), {}, q.orgId);
+    // Restricted by staff for a reason of their own: their decision stands.
+    const staffHold = await addPatient({ firstName: "Contesa", phone: "+390000123403", restrictedAt: monthsAgo(NOW, 30), restrictionReason: "Contesta l'esattezza" }, q.orgId);
+    await addAppointment(staffHold.id, monthsAgo(NOW, 150), {}, q.orgId);
+    const get = async (id: string) => (await db.select().from(patients).where(eq(patients.id, id)))[0];
+
+    await runRetention(NOW);
+    for (const id of [inactive.id, legacy.id]) {
+      expect(await get(id)).toMatchObject({ erasedAt: null, retainUntil: "2027-06-15", erasureRequestedAt: NOW });
+    }
+    expect(await get(staffHold.id)).toMatchObject({ erasedAt: null, retainUntil: null, erasureRequestedAt: null });
+
+    const before = JSON.stringify(await get(inactive.id));
+    await runRetention(NOW);
+    await runRetention(new Date("2027-06-15T10:00:00Z"));
+    expect(JSON.stringify(await get(inactive.id))).toBe(before);
+
+    await runRetention(new Date("2027-06-16T10:00:00Z"));
+    for (const id of [inactive.id, legacy.id]) {
+      const row = await get(id);
+      expect(row.erasedAt).not.toBeNull();
+      expect(row).toMatchObject({ firstName: ERASED_FIRST_NAME, lastName: ERASED_LAST_NAME, phone: null });
+    }
+    expect((await get(staffHold.id)).erasedAt).toBeNull();
+  });
+
+  it("cancelled appointments aren't visits: a record whose bookings were all cancelled is one of someone never seen", async () => {
+    const q = await createPractice();
+    const at = new Date("2027-08-01T10:00:00Z");
+    const created = monthsAgo(at, 13);
+    const heldOnly = await addPatient({ firstName: "Anna", phone: "+390000123404", createdAt: created }, q.orgId);
+    await addAppointment(heldOnly.id, monthsAgo(at, 12), { status: "cancelled", bookedFor: "other_adult" }, q.orgId);
+    // Still booked far ahead: not "never seen".
+    const bookedAhead = await addPatient({ firstName: "Futura", phone: "+390000123405", createdAt: created }, q.orgId);
+    await addAppointment(bookedAhead.id, new Date(at.getTime() + 30 * 86_400_000), { status: "scheduled" }, q.orgId);
+    await runRetention(at);
+    const get = async (id: string) => (await db.select().from(patients).where(eq(patients.id, id)))[0];
+    expect((await get(heldOnly.id)).erasedAt?.getTime()).toBe(at.getTime());
+    expect(await get(bookedAhead.id)).toMatchObject({ erasedAt: null, restrictedAt: null, firstName: "Futura" });
   });
 });

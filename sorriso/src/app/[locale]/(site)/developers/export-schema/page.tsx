@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { Card } from "@/components/ui";
+import { Card, cx, SCROLL_REGION_FOCUS, scrollRegionProps } from "@/components/ui";
 import { isLocale } from "@/i18n/config";
 import { alternatesFor } from "@/i18n/seo";
 import type privacyAdmin from "@/i18n/messages/en/privacyAdmin";
@@ -53,7 +53,7 @@ export default async function ExportSchemaPage({ params }: { params: Params }) {
       <p className="mt-1 text-sm text-slate-600">{t("exportSchema.versioning")}</p>
 
       <h2 className="mb-2 mt-8 text-lg font-bold">{t("exportSchema.fields")}</h2>
-      <Card className="relative overflow-x-auto">
+      <Card className={cx("relative overflow-x-auto", SCROLL_REGION_FOCUS)} {...scrollRegionProps(t("exportSchema.fields"))}>
         <table className="w-full min-w-[640px] text-left text-sm">
           <thead className="bg-slate-50 text-xs font-bold uppercase tracking-wide text-slate-500">
             <tr>

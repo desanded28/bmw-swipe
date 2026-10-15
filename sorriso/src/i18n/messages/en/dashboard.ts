@@ -48,13 +48,18 @@ export default {
   },
 
   sidebar: {
-    home: "Dashboard overview",
+    /** The logo link's name: it starts with the visible logo text ({app}, "Sorriso"). */
+    home: "{app}: dashboard overview",
     publicPage: "Public page",
     publicPageNewTab: "Your public page (opens in a new tab)",
     switchPractice: "Switch practice",
+    /** The button that applies the practice picked in the switcher. */
+    switchTo: "Switch to {name}",
     logout: "Log out",
     language: "Dashboard language",
     languageAuto: "Automatic ({language})",
+    /** The button that saves the language picked in the select (nothing changes on picking alone). */
+    languageApply: "Apply",
   },
 
   language: {
@@ -65,6 +70,16 @@ export default {
   toast: {
     region: "Notifications",
     dismiss: "Dismiss",
+  },
+
+  /** The warning before the 30-minute idle sign-out (WCAG 2.2.1): it can be extended with one click. */
+  session: {
+    idleTitle: "Still there?",
+    idleBody: p({
+      one: "You'll be signed out in about {count} minute because nothing has reached the server for a while. Anything you haven't saved yet would be lost.",
+      other: "You'll be signed out in about {count} minutes because nothing has reached the server for a while. Anything you haven't saved yet would be lost.",
+    }),
+    stay: "Stay signed in",
   },
 
   form: {

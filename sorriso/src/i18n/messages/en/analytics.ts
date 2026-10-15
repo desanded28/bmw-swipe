@@ -27,18 +27,40 @@ export default {
 
   kpi: {
     noShow: "No-show rate",
-    noShowHint: "{noShows} no-shows in {visits} visits",
+    /** {noShows} is counts.noShows, {visits} counts.visits: "1 no-show in 8 visits". */
+    noShowHint: "{noShows} in {visits}",
     lateCancel: "Late cancellations",
-    lateCancelHint: "Cancelled by the patient less than {hours} hours before",
+    lateCancelHint: p({ one: "Cancelled by the patient less than {count} hour before", other: "Cancelled by the patient less than {count} hours before" }),
+    /** The practice set no cancellation deadline (0 hours): no cancellation counts as late. */
+    lateCancelHintNoDeadline: "No cancellation deadline is set, so no cancellation counts as late",
     confirmation: "Confirmed after a reminder",
-    confirmationHint: "{confirmed} of {sent} reminders asking to confirm",
+    /** {confirmed} is a number, {sent} counts.reminders: "3 of 10 reminders asking to confirm". */
+    confirmationHint: "{confirmed} of {sent}",
     waitlist: "Waitlist fill rate",
-    waitlistHint: "{booked} booked of {closed} closed entries",
+    /** {booked} is counts.booked, {closed} counts.closedEntries: "1 booked of 2 closed entries". */
+    waitlistHint: "{booked} of {closed}",
     recalls: "Recall conversion",
-    recallsHint: "{booked} booked of {contacted} patients recalled",
+    /** {booked} is counts.booked, {contacted} counts.patientsRecalled. */
+    recallsHint: "{booked} of {contacted}",
     leadTime: "Median booking lead time",
     leadTimeValue: p({ one: "{count} day", other: "{count} days" }),
     leadTimeHint: p({ one: "Over {count} booking", other: "Over {count} bookings" }),
+  },
+
+  /** Counted phrases the hints and details above are built from (each a plural of its own). */
+  counts: {
+    noShows: p({ one: "{count} no-show", other: "{count} no-shows" }),
+    visits: p({ one: "{count} visit", other: "{count} visits" }),
+    reminders: p({ one: "{count} reminder asking to confirm", other: "{count} reminders asking to confirm" }),
+    booked: p({ one: "{count} booked", other: "{count} booked" }),
+    closedEntries: p({ one: "{count} closed entry", other: "{count} closed entries" }),
+    patientsRecalled: p({ one: "{count} patient recalled", other: "{count} patients recalled" }),
+    entries: p({ one: "{count} entry", other: "{count} entries" }),
+    removed: p({ one: "{count} removed", other: "{count} removed" }),
+    expired: p({ one: "{count} expired", other: "{count} expired" }),
+    waiting: p({ one: "{count} still waiting", other: "{count} still waiting" }),
+    recallsDue: p({ one: "{count} recall came due", other: "{count} recalls came due" }),
+    patientsContacted: p({ one: "{count} patient contacted", other: "{count} patients contacted" }),
   },
 
   sections: {
@@ -58,9 +80,11 @@ export default {
     confirmationByChannel: "Confirmation rate by channel",
     confirmationByOffset: "Confirmation rate by reminder timing",
     waitlist: "Waitlist",
-    waitlistDetail: "{entries} entries · {booked} booked · {removed} removed · {expired} expired · {waiting} still waiting",
+    /** Each part is its counts.* text: entries, booked, removed, expired, waiting. */
+    waitlistDetail: "{entries} · {booked} · {removed} · {expired} · {waiting}",
     recalls: "Recalls",
-    recallsDetail: "{due} recalls came due · {contacted} patients contacted · {booked} booked",
+    /** Each part is its counts.* text: recallsDue, patientsContacted, booked. */
+    recallsDetail: "{due} · {contacted} · {booked}",
     bookings: "Bookings",
     leadTime: "How far ahead patients book",
     newBySource: "New patients by booking channel",

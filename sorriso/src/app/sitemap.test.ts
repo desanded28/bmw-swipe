@@ -67,7 +67,18 @@ describe("/robots.txt", () => {
     const r = robots();
     const rules = Array.isArray(r.rules) ? r.rules : [r.rules];
     const disallow = rules.flatMap((rule) => (Array.isArray(rule.disallow) ? rule.disallow : [rule.disallow]));
-    for (const path of ["/dashboard", "/api/", "/a/", "/*/a/", "/*/book/", "/*/privacy/"]) expect(disallow).toContain(path);
+    for (const path of ["/dashboard", "/api/", "/a/", "/*/a/", "/*/book/", "/it/privacy/", "/pl/privacy/"]) expect(disallow).toContain(path);
     expect(r.sitemap).toBe(`${APP}/sitemap.xml`);
+  });
+
+  it("blocks the privacy center but not the practices' indexable privacy notices", () => {
+    const r = robots();
+    const rules = Array.isArray(r.rules) ? r.rules : [r.rules];
+    const disallow = rules.flatMap((rule) => (Array.isArray(rule.disallow) ? rule.disallow : [rule.disallow])).filter((d): d is string => Boolean(d));
+    // Robots matching: a prefix, "*" any characters, "$" the end.
+    const blocked = (url: string) =>
+      disallow.some((d) => new RegExp(`^${d.replace(/[.+?^{}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}`).test(url));
+    for (const url of ["/it/privacy/me", "/de/privacy/verify", "/it/book/studio-bianchi", "/it/a/tok"]) expect(blocked(url), url).toBe(true);
+    for (const url of ["/it/c/studio-bianchi/privacy/minors", "/it/c/studio-bianchi/privacy", "/it/c/studio-bianchi"]) expect(blocked(url), url).toBe(false);
   });
 });

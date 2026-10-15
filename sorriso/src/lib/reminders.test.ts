@@ -187,6 +187,19 @@ describe("review requests", () => {
     await processDueReminders({ appointmentId: withConsent.appointment.id, now: NOW });
     expect(await sentTo(withConsent.appointment.id)).toHaveLength(1);
   });
+
+  it("for a marketplace booking, stop once the patient withdrew Sorriso's booking consent (Sorriso's own invitation)", async () => {
+    const d = await book(A, person());
+    await db.update(appointments).set({ status: "completed", processingContext: "marketplace" }).where(eq(appointments.id, d.appointment.id));
+    for (const [purpose, granted] of [["feedback_request", true], ["platform_booking_art9", true], ["platform_booking_art9", false]] as const) {
+      await recordConsent(db, { orgId: A.orgId, patientId: d.patient.id, purpose, granted, locale: "it", method: "web_checkbox", source: "privacy_center" });
+    }
+    await enqueueNow(db, d.appointment.id, "review_request", "email", NOW);
+    await processDueReminders({ appointmentId: d.appointment.id, now: NOW });
+    const [skipped] = (await reminderRows(d.appointment.id)).filter((r) => r.kind === "review_request");
+    expect(skipped).toMatchObject({ status: "skipped", error: "Sorriso's booking consent withdrawn" });
+    expect(await sentTo(d.appointment.id)).toHaveLength(0);
+  });
 });
 
 describe("risk-gated rules (onlyIfRisk)", () => {

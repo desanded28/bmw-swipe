@@ -4,7 +4,7 @@ import { memberships, organizations, users, type Organization, type User } from 
 import { DEFAULT_LOCALE, isLocale, type Locale } from "@/i18n/config";
 import { fmtDay, fmtWhen, zonedDate } from "@/i18n/datefmt";
 import { getT } from "@/i18n/t";
-import type { SourceMessages, Vars } from "@/i18n/types";
+import type { Plural, SourceMessages, Vars } from "@/i18n/types";
 import { absoluteUrl, DEFAULT_TIMEZONE } from "../config";
 import { logError } from "../log";
 import { deliver } from "../messaging";
@@ -20,7 +20,7 @@ import { issueAuthToken } from "./tokens";
 
 type Texts = SourceMessages["authEmails"];
 export type AuthEmailKind = {
-  [K in keyof Texts]: Texts[K] extends { subject: string; body: string } ? K : never;
+  [K in keyof Texts]: Texts[K] extends { subject: string; body: string | Plural } ? K : never;
 }[keyof Texts];
 type KindVars<K extends AuthEmailKind> = [Vars<Texts[K][keyof Texts[K]]>] extends [never]
   ? Record<string, never>

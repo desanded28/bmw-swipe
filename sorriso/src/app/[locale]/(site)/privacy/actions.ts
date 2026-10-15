@@ -17,6 +17,7 @@ import {
   checkTicketCode,
   confirmContactChange,
   fileRequest,
+  isReviewReturnPath,
   openTicket,
   parseContact,
   recordStepUpVerification,
@@ -75,7 +76,7 @@ export async function requestCodeAction(_prev: PrivacyFormState, fd: FormData): 
 /**
  * Step 2: check the code and open the 30-minute session. A ticket from the appointment link's
  * step-up also records the contact as verified for that patient (an explicit act through it),
- * audited as the new session.
+ * audited as the new session, and one from a visit's review page leads back to it.
  */
 export async function verifyCodeAction(_prev: PrivacyFormState, fd: FormData): Promise<PrivacyFormState> {
   const locale = localeOf(fd);
@@ -89,7 +90,8 @@ export async function verifyCodeAction(_prev: PrivacyFormState, fd: FormData): P
   const h = await headers();
   const session = await startPatientSession(res.contact, { headers: h });
   if (res.ticket.pid) await recordStepUpVerification(session, { patientId: res.ticket.pid, contact: res.contact, headers: h });
-  redirect(lhref(locale, "/privacy/me"));
+  // A step-up from a visit's review page goes back there (the path is sealed in the ticket).
+  redirect(lhref(locale, res.ticket.r && isReviewReturnPath(res.ticket.r) ? res.ticket.r : "/privacy/me"));
 }
 
 export async function signOutAction(fd: FormData): Promise<void> {

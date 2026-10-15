@@ -284,6 +284,7 @@ export async function loadAppointmentDetail(s: StaffSession, id: string, locale:
       guardianRelation: patients.guardianRelation,
       guardianPhone: patients.guardianPhone,
       guardianEmail: patients.guardianEmail,
+      patientLocale: patients.locale,
     })
     .from(appointments)
     .innerJoin(patients, eq(patients.id, appointments.patientId))
@@ -328,6 +329,7 @@ export async function loadAppointmentDetail(s: StaffSession, id: string, locale:
       subject: m.subject === null ? null : redactPatientLinks(m.subject, linkLabel),
       body: redactPatientLinks(m.body, linkLabel),
       createdAt: m.createdAt.toISOString(),
+      locale: full?.patientLocale ?? null,
     }));
   }
 

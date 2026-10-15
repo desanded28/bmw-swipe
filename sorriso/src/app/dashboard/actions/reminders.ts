@@ -6,10 +6,12 @@ import { db } from "@/db";
 import { CHANNELS, organizations, type ReminderRule } from "@/db/schema";
 import { DEFAULT_LOCALE, isLocale, type Locale } from "@/i18n/config";
 import { getStaffLocale, getT } from "@/i18n/server";
+import { zodErrorMap } from "@/i18n/zod";
 import { auditStaff } from "@/lib/audit";
 import type { StaffSession } from "@/lib/auth";
 import { isMessagingServiceSid, isPlatformSender, senderKey } from "@/lib/messaging/providers";
 import { normalizePhone } from "@/lib/phone";
+import { REMINDER_OFFSET_MAX_MINUTES, REMINDER_OFFSET_MIN_MINUTES, isValidReminderOffset } from "@/lib/reminder-offsets";
 import { processDueReminders } from "@/lib/reminders";
 import { fail, guard, ok, updateSettings, type ActionResult } from "./_shared";
 
@@ -20,7 +22,7 @@ const rulesSchema = z
     z.object({
       id: z.string().max(40),
       channel: z.enum(CHANNELS),
-      offsetMinutes: z.number().int().min(15).max(14 * 24 * 60),
+      offsetMinutes: z.number().int().min(REMINDER_OFFSET_MIN_MINUTES).max(REMINDER_OFFSET_MAX_MINUTES),
       askConfirmation: z.boolean(),
       fallbackToEmail: z.boolean(),
       onlyIfRisk: z.enum(["medium", "high"]).optional(),
@@ -29,15 +31,17 @@ const rulesSchema = z
   .max(6);
 
 /** The staff member's dashboard language (their choice, then the request, then the practice's). */
-async function staffT(s: StaffSession) {
-  let locale: Locale;
+async function staffLocale(s: StaffSession): Promise<Locale> {
   try {
-    locale = await getStaffLocale();
+    return await getStaffLocale();
   } catch {
     // Outside a request (tests, scripts): the session's own preference.
-    locale = isLocale(s.user.locale) ? s.user.locale : isLocale(s.org.defaultLocale) ? s.org.defaultLocale : DEFAULT_LOCALE;
+    return isLocale(s.user.locale) ? s.user.locale : isLocale(s.org.defaultLocale) ? s.org.defaultLocale : DEFAULT_LOCALE;
   }
-  return getT(locale, "reminders");
+}
+
+async function staffT(s: StaffSession) {
+  return getT(await staffLocale(s), "reminders");
 }
 
 export async function saveReminderSettings(input: {
@@ -49,8 +53,12 @@ export async function saveReminderSettings(input: {
 }): Promise<ActionResult> {
   return guard(
     async (s) => {
+      const locale = await staffLocale(s);
+      // The editor checks this too: name the rule and the allowed range, not zod's "Too big: <=20160".
+      const bad = (Array.isArray(input.rules) ? input.rules : []).findIndex((r) => !isValidReminderOffset(Number(r?.offsetMinutes)));
+      if (bad >= 0) return fail(getT(locale, "reminders")("rules.invalidOffset", { number: bad + 1 }), "invalid");
       const rules = rulesSchema
-        .parse(input.rules)
+        .parse(input.rules, { error: zodErrorMap(locale) })
         // Rule ids are kept only as letters, digits and dashes (reminder rows derive from them).
         .map((r) => ({ ...r, id: r.id.replace(/[^A-Za-z0-9-]/g, "").slice(0, 24) || `r${r.offsetMinutes}` }))
         .sort((a, b) => b.offsetMinutes - a.offsetMinutes);

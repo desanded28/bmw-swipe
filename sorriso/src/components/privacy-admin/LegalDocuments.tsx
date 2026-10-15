@@ -1,7 +1,7 @@
 import { ExternalLink } from "lucide-react";
 import type { ReactNode } from "react";
 import type { Translator } from "@/i18n/types";
-import { Badge } from "../ui";
+import { Badge, cx, SCROLL_REGION_FOCUS, scrollRegionProps } from "../ui";
 
 /**
  * The practice-facing legal documents, rendered on the server for both the public pages
@@ -177,7 +177,7 @@ export function TermsDocument({ t }: { t: T }) {
 
 export function SubprocessorTable({ t, rows }: { t: T; rows: SubprocessorRow[] }) {
   return (
-    <div className="relative overflow-x-auto rounded-2xl ring-1 ring-slate-200">
+    <div className={cx("relative overflow-x-auto rounded-2xl ring-1 ring-slate-200", SCROLL_REGION_FOCUS)} {...scrollRegionProps(t("subprocessors.title"))}>
       <table className="w-full min-w-[760px] text-left text-sm">
         <thead className="bg-slate-50 text-xs font-bold uppercase tracking-wide text-slate-500">
           <tr>

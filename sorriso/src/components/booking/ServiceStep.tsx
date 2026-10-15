@@ -54,11 +54,12 @@ export function ServiceStep({
                     selected === s.id ? "ring-2 ring-brand-600" : "ring-slate-300",
                   )}
                 >
-                  <span>
+                  <span className="min-w-0">
                     <span className="block font-semibold text-slate-900">{s.name}</span>
                     {s.description ? <span className="mt-0.5 block text-sm text-slate-600">{s.description}</span> : null}
                   </span>
-                  <span className="shrink-0 text-right">
+                  {/* The price may be a phrase ("Price after an assessment"): it wraps instead of widening the page. */}
+                  <span className="max-w-[45%] text-right">
                     <span className="block font-bold text-slate-900">{labels[s.id]?.price}</span>
                     <span className="block text-xs text-slate-600">{labels[s.id]?.duration}</span>
                   </span>

@@ -1,7 +1,7 @@
 import { AlertTriangle, FileJson } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Badge, Card } from "@/components/ui";
+import { Badge, Card, ScrollRegion } from "@/components/ui";
 import { API_SCOPES } from "@/db/enums";
 import { ENDONYM, LOCALES, OG_LOCALE, toLocale, type Locale } from "@/i18n/config";
 import { lhref } from "@/i18n/href";
@@ -146,7 +146,7 @@ export default async function DevelopersPage({ params }: { params: Params }) {
         <Code label={t("developers.codeSample")}>{`<div id="booking"></div>
 <script src="${APP_URL}/widget.js" data-clinic="studio-bianchi" data-lang="de"
         data-target="#booking" data-practitioner="PRACTITIONER_ID" async></script>`}</Code>
-        <div className="relative overflow-x-auto">
+        <ScrollRegion label={t("developers.widget.attributesCaption")}>
           <table className="w-full text-left text-sm">
             <caption className="sr-only">{t("developers.widget.attributesCaption")}</caption>
             <thead className="text-xs uppercase tracking-wide text-slate-600">
@@ -170,7 +170,7 @@ export default async function DevelopersPage({ params }: { params: Params }) {
               ))}
             </tbody>
           </table>
-        </div>
+        </ScrollRegion>
         <p className="text-sm text-slate-600">{rich(t("developers.widget.languages"), { code })}</p>
         <ul className="flex flex-wrap gap-2 text-sm">
           {LOCALES.map((l) => (
@@ -217,7 +217,7 @@ curl -X POST "${APP_URL}/api/v1/clinics/studio-bianchi/appointments" \\
     "relation": { "bookedFor": "self" },
     "fundId": null
   }'`}</Code>
-        <div className="relative overflow-x-auto">
+        <ScrollRegion label={t("developers.booking.fieldsCaption")}>
           <table className="w-full text-left text-sm">
             <caption className="sr-only">{t("developers.booking.fieldsCaption")}</caption>
             <thead className="text-xs uppercase tracking-wide text-slate-600">
@@ -241,7 +241,7 @@ curl -X POST "${APP_URL}/api/v1/clinics/studio-bianchi/appointments" \\
               ))}
             </tbody>
           </table>
-        </div>
+        </ScrollRegion>
         <p className="text-sm text-slate-600">{t("developers.booking.context")}</p>
         <p className="text-sm text-slate-600">{rich(t("developers.booking.errors"), { code })}</p>
       </Card>

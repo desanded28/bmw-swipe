@@ -118,6 +118,28 @@ describe("risk in the booking flow", () => {
     expect(row.riskLevel).toBeNull();
   });
 
+  it("is never computed for a restricted or erased record (Art. 18(2)): the scheduled refresh writes no risk", async () => {
+    const d = await createAppointment({
+      orgId: p.orgId,
+      serviceId: p.visit,
+      practitionerId: p.drA,
+      locationId: p.milano,
+      startsAt: at(11),
+      patient: who("Valentina"),
+      source: "staff",
+      online: false,
+      now: NOW,
+    });
+    expect(d.appointment.riskLevel).not.toBeNull();
+    // Restricted without going through restrictPatient (which clears it at once): the refresh must not profile it again.
+    await db.update(patients).set({ restrictedAt: NOW }).where(eq(patients.id, d.patient.id));
+    expect(await refreshAppointmentRisk(db, d.appointment.id, NOW)).toBeNull();
+    const [row] = await db.select().from(appointments).where(eq(appointments.id, d.appointment.id));
+    expect(row).toMatchObject({ riskLevel: null, riskReasons: [] });
+    await db.update(patients).set({ restrictedAt: null, erasedAt: NOW }).where(eq(patients.id, d.patient.id));
+    expect(await refreshAppointmentRisk(db, d.appointment.id, NOW)).toBeNull();
+  });
+
   it("is not computed where the practice hasn't turned on risk-based reminders", async () => {
     const q = await createPractice();
     const d = await createAppointment({

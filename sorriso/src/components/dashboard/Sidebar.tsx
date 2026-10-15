@@ -32,11 +32,12 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useTransition } from "react";
+import { useState, useTransition } from "react";
 import { logout } from "@/app/auth-actions";
 import { switchOrg, updateMyLocale } from "@/app/dashboard/actions/session";
 import { ENDONYM, LOCALES, isLocale, type Locale } from "@/i18n/config";
 import { lhref } from "@/i18n/href";
+import { APP_NAME } from "@/lib/config";
 import { useLocale, useT } from "@/i18n/provider";
 import type { Permission } from "@/lib/permissions";
 import { Avatar, Logo, cx } from "../ui";
@@ -144,6 +145,11 @@ export function Sidebar({
   const [switching, start] = useTransition();
   const { run, pending: savingLocale } = useRunAction();
   const choice: Locale | typeof AUTO = isLocale(user.locale) ? user.locale : AUTO;
+  // Picked but not applied yet; a new saved value (after a save or a switch) starts over from it.
+  const [langDraft, setLangDraft] = useState<{ base: string; value: string }>({ base: choice, value: choice });
+  const langValue = langDraft.base === choice ? langDraft.value : choice;
+  const [orgDraft, setOrgDraft] = useState<{ base: string; value: string }>({ base: org.id, value: org.id });
+  const orgValue = orgDraft.base === org.id ? orgDraft.value : org.id;
   const visible = (items: NavItem[]) =>
     items.filter((i) => (!i.perm || permissions.includes(i.perm)) && (!i.platformOnly || platformAdmin));
   const groups = { nav: visible(NAV), setup: visible(SETUP), privacy: visible(PRIVACY), account: visible(ACCOUNT) };
@@ -185,7 +191,8 @@ export function Sidebar({
   return (
     <aside className="flex w-full shrink-0 flex-col border-b border-slate-200 bg-slate-50 lg:sticky lg:top-0 lg:h-dvh lg:w-64 lg:border-b-0 lg:border-r">
       <div className="flex items-center justify-between px-4 py-4">
-        <Link href="/dashboard" aria-label={t("sidebar.home")}>
+        {/* The name starts with the visible "Sorriso" (speech input: "click Sorriso"). */}
+        <Link href="/dashboard" aria-label={t("sidebar.home", { app: APP_NAME })}>
           <Logo />
         </Link>
         <a
@@ -199,18 +206,26 @@ export function Sidebar({
         </a>
       </div>
 
-      <div className="px-3">
+      {/* Choosing in a select changes nothing yet (WCAG 3.2.2: an arrow key on a closed select
+          changes its value): the explicit button below applies the choice. */}
+      <form
+        className="px-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (orgValue !== org.id) start(() => switchOrg(orgValue));
+        }}
+      >
         <label className="relative flex items-center gap-2 rounded-xl bg-white px-3 py-2 ring-1 ring-slate-200 focus-within:ring-2 focus-within:ring-brand-600">
           <Avatar name={org.name} color={org.brandColor} size={26} />
-          <span className="min-w-0 flex-1 truncate text-sm font-bold">{org.name}</span>
+          <span className="min-w-0 flex-1 truncate text-sm font-bold">{orgs.find((o) => o.id === orgValue)?.name ?? org.name}</span>
           {orgs.length > 1 ? <ChevronDown size={15} className="text-slate-500" aria-hidden /> : null}
           {orgs.length > 1 ? (
             <select
               aria-label={t("sidebar.switchPractice")}
               className="absolute inset-0 cursor-pointer opacity-0"
-              value={org.id}
+              value={orgValue}
               disabled={switching}
-              onChange={(e) => start(() => switchOrg(e.target.value))}
+              onChange={(e) => setOrgDraft({ base: org.id, value: e.target.value })}
             >
               {orgs.map((o) => (
                 <option key={o.id} value={o.id}>
@@ -220,7 +235,16 @@ export function Sidebar({
             </select>
           ) : null}
         </label>
-      </div>
+        {orgValue !== org.id ? (
+          <button
+            type="submit"
+            disabled={switching}
+            className="mt-2 w-full rounded-lg bg-brand-700 px-3 py-1.5 text-[13px] font-semibold text-white hover:bg-brand-800 disabled:opacity-60"
+          >
+            {t("sidebar.switchTo", { name: orgs.find((o) => o.id === orgValue)?.name ?? "" })}
+          </button>
+        ) : null}
+      </form>
 
       <nav aria-label={t("nav.label")} className="scrollbar-thin relative flex gap-1 overflow-x-auto px-3 py-3 lg:flex-1 lg:flex-col lg:overflow-y-auto">
         {groups.nav.map(link)}
@@ -243,26 +267,44 @@ export function Sidebar({
             <LogOut size={17} aria-hidden />
           </button>
         </form>
-        <label className="flex w-full items-center gap-2 text-xs font-semibold text-slate-700">
-          <Languages size={15} className="shrink-0 text-slate-500" aria-hidden />
-          <span className="sr-only">{t("sidebar.language")}</span>
-          <select
-            className="h-8 min-w-0 flex-1 rounded-lg bg-white px-2 text-[13px] font-medium ring-1 ring-slate-300 focus:outline-none focus:ring-2 focus:ring-brand-600"
-            value={choice}
-            disabled={savingLocale}
-            onChange={(e) => {
-              const next = e.target.value === AUTO ? null : (e.target.value as Locale);
-              run(() => updateMyLocale(next));
-            }}
-          >
-            <option value={AUTO}>{t("sidebar.languageAuto", { language: ENDONYM[locale] })}</option>
-            {LOCALES.map((l) => (
-              <option key={l} value={l} lang={l}>
-                {ENDONYM[l]}
-              </option>
-            ))}
-          </select>
-        </label>
+        {/* Saved with the button, not on change (WCAG 3.2.2): arrowing through the list must not
+            save and re-render the dashboard in each language on the way. */}
+        <form
+          className="flex w-full items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (langValue === choice) return;
+            const next = langValue === AUTO ? null : (langValue as Locale);
+            run(() => updateMyLocale(next));
+          }}
+        >
+          <label className="flex min-w-0 flex-1 items-center gap-2 text-xs font-semibold text-slate-700">
+            <Languages size={15} className="shrink-0 text-slate-500" aria-hidden />
+            <span className="sr-only">{t("sidebar.language")}</span>
+            <select
+              className="h-8 min-w-0 flex-1 rounded-lg bg-white px-2 text-[13px] font-medium ring-1 ring-slate-300 focus:outline-none focus:ring-2 focus:ring-brand-600"
+              value={langValue}
+              disabled={savingLocale}
+              onChange={(e) => setLangDraft({ base: choice, value: e.target.value })}
+            >
+              <option value={AUTO}>{t("sidebar.languageAuto", { language: ENDONYM[locale] })}</option>
+              {LOCALES.map((l) => (
+                <option key={l} value={l} lang={l}>
+                  {ENDONYM[l]}
+                </option>
+              ))}
+            </select>
+          </label>
+          {langValue !== choice ? (
+            <button
+              type="submit"
+              disabled={savingLocale}
+              className="h-8 shrink-0 rounded-lg bg-brand-700 px-3 text-[13px] font-semibold text-white hover:bg-brand-800 disabled:opacity-60"
+            >
+              {t("sidebar.languageApply")}
+            </button>
+          ) : null}
+        </form>
       </div>
     </aside>
   );

@@ -40,32 +40,55 @@ export function ReviewForm({
   const [rating, setRating] = useState(initial?.rating ?? 0);
   const [hover, setHover] = useState(0);
   const [comment, setComment] = useState(initial?.comment ?? "");
+  /** A send was tried without a rating: the form says so instead of keeping the button disabled. */
+  const [missingRating, setMissingRating] = useState(false);
   const id = useId();
   const findings = scanHealthTerms(comment);
   const holds = findings.filter((f) => f.severity === "hold");
   const shown = hover || rating;
 
   return (
-    <form action={formAction} className="space-y-5">
-      <fieldset>
+    <form
+      action={formAction}
+      className="space-y-5"
+      onSubmit={(e) => {
+        if (rating > 0) return;
+        e.preventDefault();
+        setMissingRating(true);
+        document.getElementById(`${id}rating1`)?.focus();
+      }}
+    >
+      <fieldset aria-describedby={`${id}ratingValue${missingRating && rating === 0 ? ` ${id}ratingError` : ""}`}>
         <legend className="mb-1.5 text-[13px] font-semibold text-slate-700">{t("form.ratingLegend")}</legend>
-        <div className="flex gap-1" onMouseLeave={() => setHover(0)}>
+        <div className="flex flex-wrap items-center gap-1" onMouseLeave={() => setHover(0)}>
           {[1, 2, 3, 4, 5].map((i) => (
             <label key={i} className="cursor-pointer rounded-lg p-1 focus-within:ring-2 focus-within:ring-brand-600" onMouseEnter={() => setHover(i)}>
               <input
+                id={`${id}rating${i}`}
                 type="radio"
                 name="rating"
                 value={i}
-                required
                 checked={rating === i}
-                onChange={() => setRating(i)}
+                onChange={() => {
+                  setRating(i);
+                  setMissingRating(false);
+                }}
                 className="sr-only"
               />
               <span className="sr-only">{t("form.ratingOption", { count: i })}</span>
-              <Star size={34} aria-hidden className={cx("transition", shown >= i ? "fill-amber-400 text-amber-500" : "text-slate-300")} />
+              {/* Unselected outlines in slate-500: at least 3:1 against white (WCAG 1.4.11). */}
+              <Star size={34} aria-hidden className={cx("transition", shown >= i ? "fill-amber-400 text-amber-600" : "text-slate-500")} />
             </label>
           ))}
+          <span id={`${id}ratingValue`} className="ml-2 text-sm font-medium text-slate-700">
+            {rating ? t("form.ratingChosen", { count: rating }) : t("form.ratingNone")}
+          </span>
         </div>
+        {missingRating && rating === 0 ? (
+          <p id={`${id}ratingError`} role="alert" className="mt-1.5 text-sm font-medium text-red-700">
+            {t("form.ratingRequired")}
+          </p>
+        ) : null}
       </fieldset>
 
       <div>
@@ -133,7 +156,7 @@ export function ReviewForm({
           {state.error}
         </p>
       ) : null}
-      <Button type="submit" disabled={pending || rating === 0}>
+      <Button type="submit" disabled={pending}>
         {pending ? <LoaderCircle size={16} className="animate-spin" aria-hidden /> : null}
         {mode === "create" ? t("form.submit") : t("form.update")}
       </Button>

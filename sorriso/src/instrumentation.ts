@@ -3,8 +3,10 @@
  * (next start / next dev).
  *
  * Checks (Node.js runtime, every host): production refuses to start without DATA_ENCRYPTION_KEYS
- * and HMAC_SECRET, or with SMTP_URL but no SMTP_PROVIDER_NAME/ENTITY/REGION. Development and
- * tests fall back to built-in values, so they need no extra environment.
+ * and HMAC_SECRET, with SMTP_URL but no SMTP_PROVIDER_NAME/ENTITY/REGION, or without Sorriso's
+ * controller identity for its notices (PLATFORM_LEGAL_NAME, PLATFORM_ADDRESS,
+ * PLATFORM_PRIVACY_EMAIL). Development and tests fall back to built-in values, so they need no
+ * extra environment.
  *
  * Jobs, each never overlapping itself (a tick is skipped while the previous run is in flight):
  *   reminders     every minute, then expires bookings held for another adult's confirmation

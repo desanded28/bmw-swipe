@@ -88,7 +88,8 @@ export default async function ClinicPage({ params, searchParams }: { params: Par
           <div className="flex flex-wrap items-start justify-between gap-6">
             <div className="flex items-start gap-5">
               <Avatar name={clinic.org.name} color={color} size={76} className="ring-4 ring-white" />
-              <div>
+              {/* min-w-0 and anywhere-wrapping: a long email address or name wraps on a 320 px screen. */}
+              <div className="min-w-0 [overflow-wrap:anywhere]">
                 <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">{clinic.org.name}</h1>
                 {average ? (
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
@@ -189,7 +190,7 @@ export default async function ClinicPage({ params, searchParams }: { params: Par
                   const description = s.description ? localizedText(s.description, s.descriptionI18n, locale, contentLocale) : null;
                   return (
                     <li key={s.id} className="flex items-start justify-between gap-4 py-3 first:pt-0">
-                      <div>
+                      <div className="min-w-0">
                         <p className="font-semibold" lang={lang(name.lang)}>
                           {name.text}
                         </p>
@@ -205,7 +206,8 @@ export default async function ClinicPage({ params, searchParams }: { params: Par
                         ) : null}
                         <Badge className="mt-1.5">{tc(`categories.${s.category}`)}</Badge>
                       </div>
-                      <div className="shrink-0 text-right">
+                      {/* The price may be a phrase ("Price after an assessment"): it wraps instead of widening the page. */}
+                      <div className="max-w-[45%] text-right">
                         <p className="font-bold">{price(s)}</p>
                         <p className="text-xs text-slate-600">{tc("units.minutesShort", { count: s.durationMinutes })}</p>
                         <Link

@@ -100,8 +100,10 @@ the SMTP provider. In short:
 | SMS / WhatsApp | `TWILIO_*` (EU region: `TWILIO_REGION=ie1`, `TWILIO_EDGE=dublin`, `TWILIO_IE1_*`), `TWILIO_SHARED_SENDERS`, `TWILIO_WHATSAPP_CONTENT_SIDS` |
 | Background jobs and backups | `CRON_SECRET`, `REMINDER_WORKER`, `BACKUP_RETENTION_DAYS` |
 
-Production refuses to start (`src/instrumentation.ts`) without `DATA_ENCRYPTION_KEYS` and `HMAC_SECRET`, or with
-`SMTP_URL` but no `SMTP_PROVIDER_NAME`/`ENTITY`/`REGION`. Real messages go out only on the live deployment
+Production refuses to start (`src/instrumentation.ts`) without `DATA_ENCRYPTION_KEYS` and `HMAC_SECRET`, without
+`PLATFORM_LEGAL_NAME`, `PLATFORM_ADDRESS` and `PLATFORM_PRIVACY_EMAIL` (Sorriso's identity in its privacy notices), or with
+`SMTP_URL` but no `SMTP_PROVIDER_NAME`/`ENTITY`/`REGION`. `SORRISO_ALLOW_DEV_KEY=1` lets a local demo of `next start`
+use the built-in keys only together with `DEMO_MODE=1`, a local `file:` database and outside Vercel. Real messages go out only on the live deployment
 (`MESSAGING_LIVE=1`); everywhere else only to `MESSAGING_ALLOWLIST`, and the rest is captured.
 
 ## Production

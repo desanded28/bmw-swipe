@@ -6,6 +6,7 @@ import { ReplySimulator } from "@/components/dashboard/ReplySimulator";
 import { Badge, Card, EmptyState, PageHeader, cx } from "@/components/ui";
 import { db } from "@/db";
 import { appointments, messages, patients, type Locale } from "@/db/schema";
+import { isLocale } from "@/i18n/config";
 import { fmtDay, fmtWhen, zonedDate, zonedTime } from "@/i18n/datefmt";
 import { getStaffLocale, getT } from "@/i18n/server";
 import { auditStaff } from "@/lib/audit";
@@ -13,6 +14,7 @@ import { redactPatientLinks } from "@/lib/dashboard";
 import { isDemoMode } from "@/lib/demo";
 import { fullName } from "@/lib/format";
 import { SAMPLE_REPLIES } from "@/lib/inbound";
+import { deliveryErrorCode } from "@/lib/messaging/delivery-error";
 import { can, requirePermission } from "@/lib/permissions";
 import { formatPhone } from "@/lib/phone";
 import { hasRestrictedAccess } from "@/lib/privacy/erasure";
@@ -133,6 +135,9 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
                   const inbound = m.direction === "inbound";
                   const masked = hidden(patient);
                   const expanded = opened?.m.id === m.id;
+                  // The patient's own language, when it isn't the page's: read with the right voice (WCAG 3.1.2).
+                  const textLang = patient && isLocale(patient.locale) && patient.locale !== locale ? patient.locale : undefined;
+                  const failure = deliveryErrorCode(m.error);
                   const who = masked
                     ? t("messages.restrictedPatient")
                     : patient
@@ -165,7 +170,9 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
                         <p className="mt-1.5 text-sm italic text-slate-500">{t("messages.restrictedBody")}</p>
                       ) : m.subject ? (
                         <div className="mt-1.5">
-                          <p className="text-sm font-semibold [overflow-wrap:anywhere]">{clean(m.subject)}</p>
+                          <p className="text-sm font-semibold [overflow-wrap:anywhere]" lang={textLang}>
+                            {clean(m.subject)}
+                          </p>
                           {m.html ? (
                             <Link
                               href={href(expanded ? { f } : { f, open: m.id })}
@@ -186,9 +193,11 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
                           ) : null}
                         </div>
                       ) : (
-                        <p className={cx("mt-1.5 text-sm [overflow-wrap:anywhere]", inbound ? "font-medium text-slate-900" : "text-slate-600")}>{clean(m.body)}</p>
+                        <p className={cx("mt-1.5 text-sm [overflow-wrap:anywhere]", inbound ? "font-medium text-slate-900" : "text-slate-600")} lang={textLang}>
+                          {clean(m.body)}
+                        </p>
                       )}
-                      {m.error ? <p className="mt-1 text-xs text-red-700">{m.error}</p> : null}
+                      {failure ? <p className="mt-1 text-xs text-red-700">{t(`messages.errors.${failure}`)}</p> : null}
                     </li>
                   );
                 })}

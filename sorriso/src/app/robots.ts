@@ -1,4 +1,5 @@
 import type { MetadataRoute } from "next";
+import { LOCALES } from "@/i18n/config";
 import { APP_URL } from "@/lib/config";
 
 /**
@@ -12,7 +13,9 @@ export default function robots(): MetadataRoute.Robots {
       {
         userAgent: "*",
         allow: "/",
-        disallow: ["/dashboard", "/api/", "/a/", "/*/a/", "/*/book/", "/*/privacy/"],
+        // The privacy center's pages, per locale: "/*/privacy/" would also block every practice's
+        // privacy notices (/{locale}/c/{org}/privacy/minors), which listed practices want indexed.
+        disallow: ["/dashboard", "/api/", "/a/", "/*/a/", "/*/book/", ...LOCALES.map((l) => `/${l}/privacy/`)],
       },
     ],
     sitemap: `${APP_URL}/sitemap.xml`,

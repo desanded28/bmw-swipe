@@ -1,4 +1,5 @@
 import type { Locale } from "@/i18n/config";
+import { readableTextOn } from "../color-contrast";
 import { APP_NAME } from "../config";
 
 /**
@@ -66,13 +67,15 @@ export function renderEmailLayout(opts: EmailLayoutInput): { html: string; text:
   const buttons = opts.buttons ?? [];
   const links = opts.footerLinks ?? [];
   const color = /^#[0-9a-f]{6}$/i.test(opts.brandColor) ? opts.brandColor : DEFAULT_BRAND_COLOR;
+  // A light brand colour (saved before the settings checked it) gets dark text, never white at 1.5:1.
+  const onColor = readableTextOn(color);
 
   const btnStyle = (v: EmailButton["variant"]) =>
     v === "danger"
       ? "background:#fff;color:#b91c1c;border:1px solid #fecaca;"
       : v === "secondary"
         ? "background:#fff;color:#0f172a;border:1px solid #e2e8f0;"
-        : `background:${color};color:#fff;border:1px solid ${color};`;
+        : `background:${color};color:${onColor};border:1px solid ${color};`;
 
   const preheader = opts.preheader
     ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all">${esc(opts.preheader)}</div>\n`
@@ -89,7 +92,7 @@ export function renderEmailLayout(opts: EmailLayoutInput): { html: string; text:
   const html = `<!doctype html><html lang="${esc(opts.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"></head><body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
 ${preheader}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px"><tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
-<tr><td style="background:${color};padding:20px 28px;color:#fff;font-size:18px;font-weight:700">${esc(opts.brandName ?? APP_NAME)}</td></tr>
+<tr><td style="background:${color};padding:20px 28px;color:${onColor};font-size:18px;font-weight:700">${esc(opts.brandName ?? APP_NAME)}</td></tr>
 <tr><td style="padding:28px">
 ${greeting}<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#334155">${esc(opts.intro)}</p>
 ${

@@ -20,7 +20,7 @@ import { notFound, redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import { ActionForm } from "@/components/privacy/ActionForm";
 import { ContactChangeForm, PreferencesForm } from "@/components/privacy/RecordForms";
-import { Badge, buttonClass, Card, EmptyState, Field, Input, Select, Textarea } from "@/components/ui";
+import { Badge, buttonClass, Card, EmptyState, Field, Input, ScrollRegion, Select, Textarea } from "@/components/ui";
 import type { Locale } from "@/db/enums";
 import { ENDONYM, isLocale } from "@/i18n/config";
 import { ClientMessages } from "@/i18n/ClientMessages";
@@ -385,7 +385,7 @@ function RecordCard({ rec, d, others, ctx }: { rec: CenterRecord; d: RecordDetai
         <Section id={sid("access")} icon={<History size={16} />} title={t("me.sections.accessLog")} count={t("me.counts.entries", { count: d.accessLog.length })}>
           <p className="text-slate-600">{t("me.accessLog.intro")}</p>
           {d.accessLog.length ? (
-            <div className="relative overflow-x-auto">
+            <ScrollRegion label={t("me.sections.accessLog")}>
               <table className="w-full text-left text-sm">
                 <caption className="sr-only">{t("me.sections.accessLog")}</caption>
                 <thead className="text-xs uppercase tracking-wide text-slate-500">
@@ -405,7 +405,7 @@ function RecordCard({ rec, d, others, ctx }: { rec: CenterRecord; d: RecordDetai
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollRegion>
           ) : (
             <p className="text-slate-500">{t("me.accessLog.empty")}</p>
           )}

@@ -3,7 +3,7 @@ import { Mail, MessageCircle, Smartphone } from "lucide-react";
 import type { Metadata } from "next";
 import { MessagePreview, type MessagePreviewData, type SmsPreview } from "@/components/dashboard/MessagePreview";
 import { InboundNumberEditor, RulesEditor } from "@/components/dashboard/RulesEditor";
-import { Badge, Card, PageHeader } from "@/components/ui";
+import { Badge, Card, PageHeader, ScrollRegion } from "@/components/ui";
 import { db } from "@/db";
 import { appointments, locations, practitioners, reminders, services, type ReminderRule } from "@/db/schema";
 import { LOCALES, type Locale } from "@/i18n/config";
@@ -214,7 +214,7 @@ export default async function RemindersPage() {
           <Card className="p-4 sm:p-6">
             <h2 className="mb-1 text-lg font-bold">{t("replies.title")}</h2>
             <p className="mb-4 text-sm text-slate-500">{t("replies.description")}</p>
-            <div className="relative -mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+            <ScrollRegion label={t("replies.title")} className="-mx-4 px-4 sm:mx-0 sm:px-0">
               <table className="w-full min-w-[640px] text-left text-xs">
                 <caption className="sr-only">{t("replies.title")}</caption>
                 <thead className="border-b border-slate-200 text-slate-500">
@@ -241,7 +241,7 @@ export default async function RemindersPage() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollRegion>
             <p className="mt-3 text-xs text-slate-500">{t("replies.emoji")}</p>
           </Card>
 

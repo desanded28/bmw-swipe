@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { organizations } from "@/db/schema";
-import { apiError, apiKeyError, auditApiRequest, checkApiKey, handleApiError, json, limitByIp, limitByKey, preflight, requireScope } from "@/lib/api";
+import { apiError, apiKeyError, auditApiRequest, checkApiKey, handleApiError, json, limitByIp, limitByKey, preflight, readJson, requireScope } from "@/lib/api";
 import { bookingRuleMessage, createAppointment } from "@/lib/booking";
 import { processingContextFor } from "@/lib/privacy/context";
 import { canAcceptOnlineBookings } from "@/lib/privacy/gates";
@@ -44,7 +44,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
     }
     if (!(await canAcceptOnlineBookings(org))) return apiError(403, "not_accepting", bookingRuleMessage("not_accepting"));
 
-    const input = bookingInputSchema.parse(await req.json());
+    const input = bookingInputSchema.parse(await readJson(req));
     if (input.website) return apiError(422, "validation_error", "Invalid submission.");
     if (!partner && !input.privacy) {
       return apiError(422, "privacy_required", bookingRuleMessage("privacy_required"), { field: "privacy" });
@@ -94,6 +94,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
         : undefined,
       relation: input.relation,
       fundId: input.fundId,
+      // Audited in the booking: the partner's key, or the patient through the public pages.
+      actor: key.ok ? { type: "api_key", id: key.auth.key.id } : undefined,
+      headers: req.headers,
     });
     if (key.ok) await auditApiRequest(req, key.auth, "clinics.appointments", 201, { appointmentId: details.appointment.id });
     return json({ appointment: publicAppointment(details) }, { status: 201 });

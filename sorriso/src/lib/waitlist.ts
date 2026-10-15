@@ -27,6 +27,7 @@ import {
   type BookingRelation,
   type NewPatientInput,
 } from "./booking";
+import { audit, type AuditEvent } from "./audit";
 import { absoluteUrl } from "./config";
 import { practitionerName } from "./format";
 import { newId } from "./ids";
@@ -86,6 +87,10 @@ export type JoinWaitlistInput = {
   relation?: BookingRelation;
   /** The form's privacy choices; required by the route for calls without an API key. */
   privacy?: BookingPrivacy;
+  /** Who joins, for the audit log: the partner's API key; default the patient through the public pages. */
+  actor?: AuditEvent["actor"];
+  /** Request headers for the audit rows; default privacy.headers. */
+  headers?: Headers;
   now?: Date;
 };
 
@@ -116,7 +121,7 @@ export async function joinWaitlist(input: JoinWaitlistInput): Promise<{ id: stri
       preferredChannel: input.patient.preferredChannel ?? (input.patient.phone ? "sms" : "email"),
       org: getPrivacy(org),
     });
-    const { patient } = await upsertPatient(tx, input.orgId, patientForBooking(input.patient, relation, plan, true), "public");
+    const { patient, created } = await upsertPatient(tx, input.orgId, patientForBooking(input.patient, relation, plan, true), "public");
     checkBookingRelation(relation, patient.birthDate || input.patient.birthDate, at, context, now);
     await tx.insert(waitlist).values({
       id,
@@ -136,6 +141,19 @@ export async function joinWaitlist(input: JoinWaitlistInput): Promise<{ id: stri
     if (input.privacy) {
       await recordBookingChoices(tx, { orgId: input.orgId, patientId: patient.id, waitlistId: id, plan, privacy: input.privacy, now });
     }
+    // The access log (F9.4): the record (when this created it) and the entry, with who made them.
+    const actor = input.actor ?? { type: "patient_link", id: null };
+    const headers = input.headers ?? input.privacy?.headers;
+    if (created) {
+      await audit(
+        { orgId: input.orgId, actor, action: "patient.create", entity: { type: "patient", id: patient.id }, metadata: { source: "waitlist", waitlistEntryId: id }, headers, at: now },
+        tx,
+      );
+    }
+    await audit(
+      { orgId: input.orgId, actor, action: "waitlist.update", entity: { type: "waitlist", id }, metadata: { change: "join", processingContext: context, patientId: patient.id }, headers, at: now },
+      tx,
+    );
     return patient.id;
   });
   // Patient-facing: the notices the form showed are on record as of now, as for a booking (never throws).

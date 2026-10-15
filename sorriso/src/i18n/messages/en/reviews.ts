@@ -80,6 +80,11 @@ export default {
   form: {
     ratingLegend: "Your rating",
     ratingOption: p({ one: "{count} star", other: "{count} stars" }),
+    /** The chosen rating, shown as text next to the stars. */
+    ratingChosen: p({ one: "{count} of 5 stars", other: "{count} of 5 stars" }),
+    ratingNone: "No rating chosen yet",
+    /** Sending without a rating: the form says so (the button is never silently disabled). */
+    ratingRequired: "Choose a rating from 1 to 5 stars.",
     comment: "Your review (optional)",
     commentHint: "Describe the service: welcome, punctuality, clarity of explanations. Leave out health details, names and contact details.",
     commentPlaceholder: "What went well? What could be better?",
@@ -113,6 +118,17 @@ export default {
     editUntil: "You can edit or delete it here until {date}. After that, use the <link>privacy center</link> at any time.",
     removedNote: "This review was removed after moderation. You received the reasons by message.",
     back: "Back to {clinic}",
+    /** Someone else booked this visit (another adult, or a minor now 14 or older): only the patient reviews it. */
+    stepUp: {
+      intro:
+        "This visit at {clinic} was booked for the patient by someone else. Only the patient can write, see, change or delete its review, so we first send a one-time code to the patient's own contact on file.",
+      choose: "Send the code to",
+      send: "Send code",
+      sending: "Sending…",
+      noContact: "There is no contact of the patient's own on file to send a code to. The patient can contact the practice.",
+      otherSession:
+        "You're signed in to the privacy center, but not with this patient's own contact. Ask for a code to the patient's contact below.",
+    },
   },
   respond: {
     metaTitle: "Your review: moderation",
@@ -305,6 +321,7 @@ export default {
     tooLong: "The text can be at most {max} characters.",
     alreadyReviewed: "This visit has already been reviewed.",
     closed: "This review can no longer be changed.",
+    notPatient: "This visit was booked by someone else: only the patient can review it, after confirming with a one-time code.",
     generic: "Something went wrong. Please try again.",
   },
 } as const;

@@ -88,7 +88,10 @@ export default {
   },
   sessions: {
     title: "Signed-in devices",
-    description: "A session ends after {hours} hours, or after 30 minutes without activity.",
+    description: p({
+      one: "A session ends after {count} hour, or after 30 minutes without activity.",
+      other: "A session ends after {count} hours, or after 30 minutes without activity.",
+    }),
     current: "This device",
     device: "{browser} on {os}",
     unknownBrowser: "Unknown browser",

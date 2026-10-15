@@ -275,6 +275,11 @@ async function sendForReminder(r: Reminder, d: AppointmentDetails, now: Date): P
       if (a.status !== "completed") return { status: "skipped", reason: `appointment ${a.status}` };
       // An invitation to review is optional processing: only with a current feedback_request consent.
       if (!(await isAllowed(patient.id, "feedback_request"))) return { status: "skipped", reason: "no feedback_request consent" };
+      // For a marketplace booking the invitation is Sorriso's own message, under its Art. 9(2)(a)
+      // consent: none once the patient withdrew it (Sorriso's notice, "If you withdraw your consent").
+      if (a.processingContext === "marketplace" && !(await isAllowed(patient.id, "platform_booking_art9"))) {
+        return { status: "skipped", reason: "Sorriso's booking consent withdrawn" };
+      }
       const [existing] = await db.select({ id: reviews.id }).from(reviews).where(eq(reviews.appointmentId, a.id));
       if (existing) return { status: "skipped", reason: "already reviewed" };
       if (!canReachByEmail(patient, now)) return { status: "skipped", reason: "review requests are email-only" };

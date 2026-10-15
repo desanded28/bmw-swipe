@@ -588,7 +588,16 @@ export function MessageThread({ messages, tz, headingId }: { messages: ThreadMes
                   )}
                 >
                   <p className="mb-0.5 text-[11px] font-semibold text-slate-600">{meta}</p>
-                  {m.subject ? <p className="font-semibold">{m.subject}</p> : <p className="whitespace-pre-line">{m.body}</p>}
+                  {/* In the patient's language when it isn't the dashboard's (WCAG 3.1.2). */}
+                  {m.subject ? (
+                    <p className="font-semibold" lang={m.locale && m.locale !== locale ? m.locale : undefined}>
+                      {m.subject}
+                    </p>
+                  ) : (
+                    <p className="whitespace-pre-line" lang={m.locale && m.locale !== locale ? m.locale : undefined}>
+                      {m.body}
+                    </p>
+                  )}
                 </div>
               </li>
             );

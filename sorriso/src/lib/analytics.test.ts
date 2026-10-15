@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import type { MembershipRole } from "@/db/enums";
-import { appointments, organizations, patients, profileStats, recalls, reminders, reviews, waitlist } from "@/db/schema";
+import { appointments, messages, organizations, patients, profileStats, recalls, reminders, reviews, waitlist } from "@/db/schema";
 import { getT } from "@/i18n/t";
 import { createPractice, TZ } from "@/test/fixtures";
 import type { StaffSession } from "./auth";
@@ -244,6 +244,31 @@ describe("loadAnalytics", () => {
     expect(a.confirmation.byOffset.find((r) => r.key === "d2")).toMatchObject({ sent: 3, confirmed: 1 });
   });
 
+  it("counts each reminder on the channel it actually went out on, not its rule's", async () => {
+    // An "sms" rule sends on WhatsApp to a patient who chose it, and by email (fallbackToEmail) to
+    // one without a mobile: both used to be credited to SMS, and WhatsApp never showed.
+    const q = await createPractice();
+    const [qOrg] = await db.select().from(organizations).where(eq(organizations.id, q.orgId));
+    const pid = newId();
+    await db.insert(patients).values({ id: pid, orgId: q.orgId, firstName: "Wa", lastName: "Channel", phone: "+393330009999" });
+    const start = new Date(Date.now() + 20 * HOUR);
+    const sentAt = new Date(start.getTime() - 24 * HOUR);
+    for (const [channel, confirmed] of [["whatsapp", true], ["email", false]] as const) {
+      const id = await appt(
+        { startsAt: start, status: "scheduled", confirmation: confirmed ? "confirmed" : "pending", confirmedAt: confirmed ? new Date(sentAt.getTime() + HOUR) : null, confirmedVia: confirmed ? channel : null },
+        q,
+        pid,
+      );
+      const messageId = newId();
+      await db.insert(messages).values({ id: messageId, orgId: q.orgId, appointmentId: id, patientId: pid, channel, direction: "outbound", to: "x", body: "Reminder", status: "sent", provider: "dev" });
+      await db.insert(reminders).values({ id: newId(), appointmentId: id, kind: "reminder", channel: "sms", askConfirmation: true, sendAt: sentAt, sentAt, status: "sent", messageId });
+    }
+    const a = await loadAnalytics(qOrg, { months: 24 });
+    expect(a.confirmation.byChannel.find((r) => r.key === "whatsapp")).toMatchObject({ sent: 1, confirmed: 1 });
+    expect(a.confirmation.byChannel.find((r) => r.key === "email")).toMatchObject({ sent: 1, confirmed: 0 });
+    expect(a.confirmation.byChannel.find((r) => r.key === "sms")?.sent ?? 0).toBe(0);
+  });
+
   it("computes the waitlist fill rate over entries with an outcome", async () => {
     const a = await loadAnalytics(org, { months: 24 });
     expect(a.waitlist).toMatchObject({ entries: 5, booked: 2, removed: 1, expired: 1, waiting: 1 });
@@ -388,11 +413,18 @@ describe("/dashboard/analytics", () => {
       const t = getT("de", "analytics");
       expect(json).toContain(t("kpi.leadTimeValue", { count: 3.5 }));
       expect(t("kpi.leadTimeValue", { count: 3.5 })).toContain("3,5");
-      expect(json).toContain(t("kpi.noShowHint", { noShows: "1.250", visits: "12.000" }));
+      expect(json).toContain(t("kpi.noShowHint", { noShows: t("counts.noShows", { count: 1250 }), visits: t("counts.visits", { count: 12000 }) }));
+      expect(t("counts.visits", { count: 12000 })).toContain("12.000");
       expect(json).toContain(t("chart.bar", { label: t("funnel.impressions"), value: "12.500" }));
       const w = real.waitlist;
       expect(json).toContain(
-        t("sections.waitlistDetail", { entries: "1.234", booked: w.booked, removed: w.removed, expired: w.expired, waiting: w.waiting }),
+        t("sections.waitlistDetail", {
+          entries: t("counts.entries", { count: 1234 }),
+          booked: t("counts.booked", { count: w.booked }),
+          removed: t("counts.removed", { count: w.removed }),
+          expired: t("counts.expired", { count: w.expired }),
+          waiting: t("counts.waiting", { count: w.waiting }),
+        }),
       );
       expect(json).not.toMatch(/"(12500|1234|1250 )/);
     } finally {

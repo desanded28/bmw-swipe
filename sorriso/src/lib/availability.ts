@@ -20,7 +20,7 @@ import {
   type TimeOff,
 } from "@/db/schema";
 import { resolveSettings } from "./settings";
-import { addDays, addMinutes, weekdayOf, zonedParts, zonedToUtc } from "./time";
+import { addDays, addMinutes, minutesToHHMM, weekdayOf, zonedParts, zonedToUtc } from "./time";
 
 /**
  * Availability engine.
@@ -400,6 +400,9 @@ export async function getAvailability(
     locationId?: string;
     timezone: string;
     now?: Date;
+    /** Moving an existing visit (the patient's manage link): its own length, and its own time not busy. */
+    durationMinutes?: number;
+    ignoreAppointmentId?: string;
   },
   tx: Tx = db,
 ): Promise<{ ctx: AvailabilityContext; slots: Slot[] } | null> {
@@ -416,7 +419,41 @@ export async function getAvailability(
   );
   if (!ctx) return null;
   if (!ctx.service.onlineBookable || !ctx.service.active) return { ctx, slots: [] };
-  return { ctx, slots: findSlots(ctx, { fromDate: params.fromDate, days, now: params.now, enforcePolicy: true }) };
+  return {
+    ctx,
+    slots: findSlots(ctx, {
+      fromDate: params.fromDate,
+      days,
+      now: params.now,
+      enforcePolicy: true,
+      durationMinutes: params.durationMinutes,
+      ignoreAppointmentId: params.ignoreAppointmentId,
+    }),
+  };
+}
+
+/** One day of the public availability answer: its free times, read in the office's own time zone. */
+export type AvailabilityDay = {
+  date: string;
+  slots: { start: string; end: string; time: string; practitionerId: string; locationId: string }[];
+};
+
+/** Group slots by local date for the `days` days from `from` (GET …/availability). */
+export function slotsByDate(ctx: AvailabilityContext, slots: readonly Slot[], from: string, days: number, timezone: string): AvailabilityDay[] {
+  const dates: AvailabilityDay[] = Array.from({ length: days }, (_, i) => ({ date: addDays(from, i), slots: [] }));
+  for (const s of slots) {
+    const local = zonedParts(s.start, ctx.locations.get(s.locationId)?.timezone ?? timezone);
+    dates
+      .find((d) => d.date === local.date)
+      ?.slots.push({
+        start: s.start.toISOString(),
+        end: s.end.toISOString(),
+        time: minutesToHHMM(local.minutes),
+        practitionerId: s.practitionerId,
+        locationId: s.locationId,
+      });
+  }
+  return dates;
 }
 
 /**

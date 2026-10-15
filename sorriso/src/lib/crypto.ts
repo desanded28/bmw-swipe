@@ -10,7 +10,8 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes }
  * An optional AAD (e.g. "patients.notes") binds a ciphertext to its column.
  *
  * Development and tests fall back to a fixed key (with one warning). In production a
- * missing key is a hard error (assertCryptoConfigured, called at startup).
+ * missing key is a hard error (assertCryptoConfigured, called at startup), except for a local
+ * demo of a production build (insecureDemoKeysAllowed).
  */
 
 type Key = { kid: string; key: Buffer };
@@ -18,6 +19,18 @@ type Key = { kid: string; key: Buffer };
 const DEV_KEY: Key = { kid: "dev", key: createHash("sha256").update("sorriso-development-only-key").digest() };
 let cached: { keys: Key[]; source: string } | null = null;
 let warned = false;
+
+/**
+ * May a production build run with the built-in development key and HMAC secret? Only a local demo
+ * of `next start`: SORRISO_ALLOW_DEV_KEY=1 together with DEMO_MODE=1 (demo logins without
+ * two-step verification, never a real deployment), on a local SQLite file, not on Vercel. With the
+ * development key, health free text is readable and every pseudonym reproducible by anyone with
+ * the source, so a single flag must never be enough; assertCryptoConfigured says so loudly at startup.
+ */
+export function insecureDemoKeysAllowed(env: Record<string, string | undefined> = process.env): boolean {
+  if (env.SORRISO_ALLOW_DEV_KEY !== "1" || env.DEMO_MODE !== "1" || env.VERCEL) return false;
+  return (env.DATABASE_URL ?? "file:./data/sorriso.db").startsWith("file:");
+}
 
 function loadKeys(): Key[] {
   const raw = process.env.DATA_ENCRYPTION_KEYS ?? "";
@@ -33,7 +46,7 @@ function loadKeys(): Key[] {
     keys.push({ kid, key });
   }
   if (!keys.length) {
-    if (process.env.NODE_ENV === "production" && !process.env.SORRISO_ALLOW_DEV_KEY) {
+    if (process.env.NODE_ENV === "production" && !insecureDemoKeysAllowed()) {
       throw new Error("DATA_ENCRYPTION_KEYS is required in production");
     }
     if (!warned && process.env.NODE_ENV !== "test") {
@@ -50,9 +63,14 @@ function loadKeys(): Key[] {
 }
 
 export function assertCryptoConfigured(): void {
-  loadKeys();
-  if (process.env.NODE_ENV === "production" && !process.env.HMAC_SECRET && !process.env.SORRISO_ALLOW_DEV_KEY) {
-    throw new Error("HMAC_SECRET is required in production");
+  const keys = loadKeys();
+  if (process.env.NODE_ENV !== "production") return;
+  if (!process.env.HMAC_SECRET && !insecureDemoKeysAllowed()) throw new Error("HMAC_SECRET is required in production");
+  if (keys[0] === DEV_KEY || !process.env.HMAC_SECRET) {
+    process.stderr.write(
+      "[crypto] INSECURE DEMO: this production build runs with the built-in development key and/or HMAC secret " +
+        "(SORRISO_ALLOW_DEV_KEY=1, DEMO_MODE=1, local database). Never use it for real patient data.\n",
+    );
   }
 }
 

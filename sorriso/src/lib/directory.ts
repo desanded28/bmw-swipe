@@ -477,6 +477,9 @@ export async function searchPractitioners(params: SearchParams): Promise<SearchR
     .where(and(listedPractitioner(), eq(organizations.listed, true), isNull(organizations.closureRequestedAt)));
 
   const people = rows.filter(({ practitioner: p }) => {
+    // The marketplace finds a dentist for a first visit: someone who takes no new patients can't
+    // be booked from here (createAppointment refuses it). Their own patients book on the practice page.
+    if (!p.acceptsNewPatients) return false;
     if (params.lang && !(p.spokenLanguages ?? []).includes(params.lang)) return false;
     if (params.anxiety && !p.careOptions?.anxiousPatients) return false;
     if (params.sedation && !p.careOptions?.sedation) return false;

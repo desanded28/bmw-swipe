@@ -51,6 +51,7 @@ import { adultContacts, requestAdultConfirmation, sendBookedForYouNotice } from 
 import { effectiveBookingChoices, noticeVersionFor, validateBookingPrivacy } from "./privacy/booking-rules";
 import {
   ConsentError,
+  isAllowed,
   recordBookingConsents,
   type BookingPrivacyChoices,
   type BookingRelationInput,
@@ -514,8 +515,14 @@ export type CreateAppointmentInput = {
    * fails with BookingError "restricted"; with it the access is audited (patient.restricted_access).
    */
   restrictedAccessReason?: string | null;
-  /** Who is booking, for the audit log (default: an unidentified staff user). */
+  /**
+   * Who is booking, for the audit log: the staff user, the partner's API key. Default: the patient
+   * through the public pages (patient_link, the new appointment's id) for an online booking, an
+   * unidentified staff user otherwise.
+   */
   actor?: AuditEvent["actor"];
+  /** Request headers for the audit rows (HMACs of IP and user agent only); default privacy.headers. */
+  headers?: Headers;
   now?: Date;
 };
 
@@ -736,6 +743,36 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
     // booker also gave as theirs doesn't count (adultContacts). Without one it could never be confirmed.
     const ownContact = plan.bookedFor === "other_adult" && adultContacts({ patient, appointment }).length > 0;
     if (held && !ownContact) throw ruleError("other_adult_contact_required", "phone");
+    // The access log (F9.4): who created the record and the visit, and through which channel. In
+    // the booking's transaction, so a booking is never without its rows.
+    const actor: AuditEvent["actor"] = input.actor ?? (input.online ? { type: "patient_link", id } : { type: "user", id: null });
+    const auditHeaders = input.headers ?? input.privacy?.headers;
+    if (createdPatient) {
+      await audit(
+        {
+          orgId: input.orgId,
+          actor,
+          action: "patient.create",
+          entity: { type: "patient", id: patient.id },
+          metadata: { source: input.source, appointmentId: id },
+          headers: auditHeaders,
+          at: now,
+        },
+        tx,
+      );
+    }
+    await audit(
+      {
+        orgId: input.orgId,
+        actor,
+        action: "appointment.create",
+        entity: { type: "appointment", id },
+        metadata: { source: input.source, status, processingContext: context, patientId: patient.id },
+        headers: auditHeaders,
+        at: now,
+      },
+      tx,
+    );
     if (input.privacy) {
       await recordBookingChoices(tx, { orgId: input.orgId, patientId: patient.id, appointmentId: id, plan, privacy: input.privacy, now });
     }
@@ -1134,7 +1171,8 @@ export async function setOutcome(appointmentId: string, outcome: "completed" | "
       .returning();
     if (!row) return;
     const delta = (outcome === "no_show" ? 1 : 0) - (before.appointment.status === "no_show" ? 1 : 0);
-    if (delta !== 0) {
+    // A patient who objected to no-show tracking (Art. 21) has no count: it stays 0.
+    if (delta !== 0 && (await isAllowed(before.patient.id, "no_show_tracking", tx))) {
       await tx
         .update(patients)
         .set({ noShowCount: sql`max(0, ${patients.noShowCount} + ${delta})` })

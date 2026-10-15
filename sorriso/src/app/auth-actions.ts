@@ -371,7 +371,8 @@ export async function requestPasswordReset(_prev: FormState, fd: FormData): Prom
   const t = getT(locale, "auth");
   const h = await requestHeaders();
   const email = normalizeEmail(field(fd, "email"));
-  if (!z.email().safeParse(email).success) return { fieldErrors: { email: t("errors.invalidForm") }, values: { email } };
+  // Every failure carries the summary `error` (FormError, role="alert"): a field message alone is silent.
+  if (!z.email().safeParse(email).success) return { error: t("errors.invalidForm"), fieldErrors: { email: t("errors.invalidEmail") }, values: { email } };
   const [byNetwork, byEmail] = await Promise.all([
     rateLimitByIp(h, "password-reset", 5, 15 * 60_000),
     rateLimit(`password-reset:${loginEmailHash(email).slice(0, 32)}`, 3, 60 * 60_000),
@@ -408,9 +409,9 @@ export async function resetPassword(_prev: FormState, fd: FormData): Promise<For
   const [user] = await db.select().from(users).where(eq(users.id, row.userId));
   if (!user) return { error: t("reset.invalid") };
   const password = String(fd.get("password") ?? "");
-  if (password !== String(fd.get("confirm") ?? "")) return { fieldErrors: { confirm: t("password.mismatch") } };
+  if (password !== String(fd.get("confirm") ?? "")) return { error: t("errors.invalidForm"), fieldErrors: { confirm: t("password.mismatch") } };
   const problem = checkPasswordPolicy(password, { email: user.email, name: user.name });
-  if (problem) return { fieldErrors: { password: t(`password.${problem}`) } };
+  if (problem) return { error: t("errors.invalidForm"), fieldErrors: { password: t(`password.${problem}`) } };
   if (!(await consumeAuthToken(row.id))) return { error: t("reset.invalid") };
 
   const now = new Date();
@@ -446,7 +447,8 @@ export async function acceptInvite(_prev: FormState, fd: FormData): Promise<Form
   const row = await findAuthToken(field(fd, "token"), "invite");
   if (!row?.orgId || !row.role || !row.email) return { error: t("invite.invalid") };
   const values = { name: field(fd, "name") };
-  if (fd.get("acceptInstructions") !== "on") return { fieldErrors: { acceptInstructions: t("invite.instructionsRequired") }, values };
+  if (fd.get("acceptInstructions") !== "on")
+    return { error: t("errors.invalidForm"), fieldErrors: { acceptInstructions: t("invite.instructionsRequired") }, values };
 
   const session = await getSession();
   const [existing] = await db.select().from(users).where(eq(users.email, row.email));
@@ -457,10 +459,10 @@ export async function acceptInvite(_prev: FormState, fd: FormData): Promise<Form
   let passwordHash: string | null = null;
   if (!existing) {
     const name = values.name;
-    if (name.length < 2 || name.length > 120) return { fieldErrors: { name: t("errors.invalidForm") }, values };
+    if (name.length < 2 || name.length > 120) return { error: t("errors.invalidForm"), fieldErrors: { name: t("errors.nameLength") }, values };
     const password = String(fd.get("password") ?? "");
     const problem = checkPasswordPolicy(password, { email: row.email, name });
-    if (problem) return { fieldErrors: { password: t(`password.${problem}`) }, values };
+    if (problem) return { error: t("errors.invalidForm"), fieldErrors: { password: t(`password.${problem}`) }, values };
     passwordHash = await hashPassword(password);
   }
 

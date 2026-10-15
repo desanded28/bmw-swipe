@@ -6,9 +6,10 @@ import { absoluteUrl } from "../config";
 import { hmac } from "../crypto";
 import { newId } from "../ids";
 import { verifyAgainstDummy, verifyPassword } from "../password";
-import { clientNetworkHash } from "../rate-limit";
+import { clientNetworkHash, rateLimit } from "../rate-limit";
 import { defaultOrgFor } from "../auth";
 import { emailWhen, sendAuthEmail, staffEmailLocale } from "./emails";
+import { verifyMfaCode } from "./mfa";
 import { describeUserAgent } from "./user-agent";
 
 /**
@@ -193,6 +194,45 @@ export async function authenticate(i: { email: string; password: string; headers
   }
   return { ok: true, user };
 }
+
+/**
+ * Re-authentication of a signed-in user (the dashboard's step-up), with the same account-wide
+ * limits as signing in, so they can't be reset by anything the session controls (switching
+ * practice issues a new session id):
+ * - password: an attempt in login_attempts, counted with /login's (5 failures per email, 20 per
+ *   network, in 15 minutes), counted before the password is checked as authenticate() does;
+ * - TOTP or recovery code: the per-account bucket of the sign-in's second step (mfa-user:…, 10 per
+ *   15 minutes).
+ * Returns "throttled" without checking anything once a limit is reached.
+ */
+export async function checkStepUp(i: {
+  user: Pick<User, "id" | "email" | "passwordHash" | "totpEnabledAt">;
+  code?: string;
+  password?: string;
+  headers: Headers;
+  now?: Date;
+}): Promise<"ok" | "invalid" | "throttled"> {
+  const now = i.now ?? new Date();
+  const emailHash = loginEmailHash(i.user.email);
+  if (i.user.totpEnabledAt) {
+    if (!(await rateLimit(`${MFA_USER_BUCKET}${emailHash.slice(0, 32)}`, MFA_USER_LIMIT, LOGIN_WINDOW_MS)).ok) return "throttled";
+    return (await verifyMfaCode(i.user.id, String(i.code ?? ""))).ok ? "ok" : "invalid";
+  }
+  const networkHash = clientNetworkHash(i.headers);
+  const attemptId = await recordLoginAttempt({ emailHash, networkHash, success: false, now });
+  if ((await loginThrottle(emailHash, networkHash, now, attemptId)).blocked) {
+    // As at /login: a refused attempt isn't a failure and doesn't extend the lock.
+    await db.delete(loginAttempts).where(eq(loginAttempts.id, attemptId));
+    return "throttled";
+  }
+  if (!(await verifyPassword(String(i.password ?? ""), i.user.passwordHash))) return "invalid";
+  await db.update(loginAttempts).set({ success: true }).where(eq(loginAttempts.id, attemptId));
+  return "ok";
+}
+
+/** The sign-in's per-account bucket for second-step codes (src/app/auth-actions.ts verifyMfaLogin), shared by the step-up. */
+export const MFA_USER_BUCKET = "mfa-user:";
+export const MFA_USER_LIMIT = 10;
 
 /** Record a sign-in that didn't go through authenticate() (signup, accepted invitation), so the device is known. */
 export async function recordTrustedSignIn(email: string, h: Headers, now: Date = new Date()): Promise<void> {

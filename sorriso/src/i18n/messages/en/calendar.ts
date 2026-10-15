@@ -47,6 +47,8 @@ export default {
     noPhone: "The patient has no mobile number, or has opted out of text messages.",
     restrictedNoMessages: "This patient's data is restricted (GDPR Art. 18 or erased): no messages are sent to them.",
     restrictedOpenRecord: "This patient's data is restricted. Open the appointment and give a reason to see their contact details.",
+    restrictedChange:
+      "This patient's data is restricted (GDPR Art. 18): only someone allowed to open restricted records can change this appointment, after opening it and giving a reason.",
     reasonRequired: "Give a reason of at least 3 characters.",
     unknownOffice: "One of the offices no longer exists. Reload the page and try again.",
     waitlistClosed: "This waitlist entry was already booked or removed.",

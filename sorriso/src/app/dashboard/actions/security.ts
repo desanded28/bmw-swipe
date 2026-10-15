@@ -10,7 +10,8 @@ import { absoluteUrl } from "@/lib/config";
 import { checkPasswordPolicy, hashPassword, verifyPassword } from "@/lib/password";
 import { rateLimit } from "@/lib/rate-limit";
 import { emailWhen, sendAuthEmail, staffEmailLocale } from "@/lib/security/emails";
-import { beginMfaEnrolment, clearMfa, confirmMfaEnrolment, regenerateRecoveryCodes, verifyMfaCode } from "@/lib/security/mfa";
+import { checkStepUp } from "@/lib/security/login";
+import { beginMfaEnrolment, clearMfa, confirmMfaEnrolment, regenerateRecoveryCodes } from "@/lib/security/mfa";
 import { invalidateUserTokens, issueAuthToken } from "@/lib/security/tokens";
 import { formatSecret } from "@/lib/totp";
 import { securityTexts } from "@/lib/security/staff-locale";
@@ -178,7 +179,9 @@ export async function removeMfa(mode: "replace" | "disable"): Promise<ActionResu
 
 /**
  * Re-authenticate for sensitive actions: a TOTP or recovery code when MFA is on, the password
- * otherwise. 5 tries per 15 minutes per session.
+ * otherwise. 5 tries per 15 minutes per session, and the account-wide limits of signing in
+ * (checkStepUp: login_attempts for the password, the per-account code bucket for MFA), which
+ * a new session id (switching practice) doesn't reset.
  */
 export async function verifyStepUp(input: { code?: string; password?: string }): Promise<ActionResult> {
   return guard(async (s) => {
@@ -188,9 +191,12 @@ export async function verifyStepUp(input: { code?: string; password?: string }):
     const user = await loadUser(s.user.id);
     if (!user) return fail(t("errors.notFound"), "not_found");
     const h = await requestHeaders();
-    const passed = user.totpEnabledAt
-      ? (await verifyMfaCode(user.id, String(input.code ?? ""))).ok
-      : await verifyPassword(String(input.password ?? ""), user.passwordHash);
+    const check = await checkStepUp({ user, code: input.code, password: input.password, headers: h });
+    if (check === "throttled") {
+      await audit({ ...actor(s), action: user.totpEnabledAt ? "auth.mfa.fail" : "auth.login.fail", metadata: { step: "step_up", reason: "throttled" }, headers: h });
+      return fail(t("errors.rateLimited"), "rate_limited");
+    }
+    const passed = check === "ok";
     if (!passed) {
       await audit({ ...actor(s), action: user.totpEnabledAt ? "auth.mfa.fail" : "auth.login.fail", metadata: { step: "step_up" }, headers: h });
       return fail(t("stepUp.invalid"), "invalid_code");

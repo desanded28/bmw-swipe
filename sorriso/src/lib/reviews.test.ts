@@ -8,9 +8,12 @@ import { appointments, auditLog, consents, messages, patients, practitioners, re
 import { I18nProvider } from "@/i18n/provider";
 import { getMessages } from "@/i18n/t";
 import { createPractice, NOW } from "@/test/fixtures";
+import { getAppointmentDetails } from "./appointments";
 import { getPublicReviews } from "./directory";
 import { newId } from "./ids";
 import { issueManageToken } from "./links";
+import { createPatientSession } from "./privacy/patient-session";
+import { recordStepUpVerification, reviewActing } from "./privacy/privacy-center";
 import {
   appealAsAuthor,
   askAuthor,
@@ -24,6 +27,7 @@ import {
   reportAsPractice,
   reviewLinkToken,
   submitPublicNotice,
+  reviewLinkActing,
   submitReview,
   updateReview,
   verifyReviewLinkToken,
@@ -44,7 +48,7 @@ async function user(name: string) {
 }
 
 /** A completed visit two days ago, with its patient link. */
-async function visit(opts: { birthDate?: string; guardian?: boolean } = {}) {
+async function visit(opts: { birthDate?: string; guardian?: boolean; bookedFor?: "self" | "minor" | "other_adult" } = {}) {
   const patientId = newId();
   await db.insert(patients).values({
     id: patientId,
@@ -75,6 +79,8 @@ async function visit(opts: { birthDate?: string; guardian?: boolean } = {}) {
     manageToken: `h:${id}`,
     manageTokenHash: hash,
     manageTokenEnc: token,
+    ...(opts.bookedFor ? { bookedFor: opts.bookedFor } : {}),
+    ...(opts.bookedFor === "other_adult" ? { bookedByName: "Paolo Verdi", bookedByEmail: "paolo.booker@example.com" } : {}),
   });
   return { token, appointmentId: id, patientId };
 }
@@ -187,6 +193,58 @@ describe("submitting a review", () => {
     const alone = await visit({ birthDate: "2020-01-01" });
     expect(await submitReview(alone.token, { ...base, consent: true })).toEqual({ ok: false, code: "guardian_required" });
     expect(await db.select().from(reviews).where(eq(reviews.appointmentId, alone.appointmentId))).toEqual([]);
+  });
+});
+
+describe("a visit someone else booked: only the patient reviews it", () => {
+  const yearsAgo = (n: number) => `${new Date().getUTCFullYear() - n}-01-15`;
+
+  it("another adult's booking: the link alone can't write, edit or delete; the patient can after the code, as themselves", async () => {
+    const v = await visit({ bookedFor: "other_adult" });
+    expect(await submitReview(v.token, { ...base, consent: true })).toEqual({ ok: false, code: "not_patient" });
+    expect(await db.select().from(reviews).where(eq(reviews.appointmentId, v.appointmentId))).toEqual([]);
+    expect(await db.select().from(consents).where(eq(consents.patientId, v.patientId))).toEqual([]);
+
+    const d = (await getAppointmentDetails({ token: v.token }))!;
+    expect(reviewLinkActing(d)).toBeNull();
+    expect(await reviewActing(d, null)).toBeNull();
+    // The booker signed in to the privacy center with their own contact: not the patient's record.
+    const booker = (await createPatientSession({ kind: "email", value: "paolo.booker@example.com" })).session;
+    expect(await reviewActing(d, booker)).toBeNull();
+
+    // The patient, after the one-time code to their own contact (verifyCodeAction: the session,
+    // and the contact recorded as verified for them).
+    const contact = { kind: "email" as const, value: `${v.patientId}@example.com` };
+    const own = (await createPatientSession(contact)).session;
+    expect(await recordStepUpVerification(own, { patientId: v.patientId, contact })).toBe(true);
+    const acting = await reviewActing(d, own);
+    expect(acting).toEqual({ actor: { type: "patient_session", id: own.id }, actorRelation: "self" });
+    const res = await submitReview(v.token, { ...base, consent: true, acting });
+    expect(res).toMatchObject({ ok: true, status: "published" });
+    const [consent] = await db.select().from(consents).where(eq(consents.patientId, v.patientId));
+    expect(consent).toMatchObject({ purpose: "review_publication", granted: true, actorRelation: "self" });
+    const [log] = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.action, "consent.record"), eq(auditLog.entityId, v.patientId)));
+    expect(log).toMatchObject({ actorType: "patient_session", actorId: own.id });
+
+    // Editing needs the patient too.
+    expect(await updateReview(v.token, { ...base, rating: 2 })).toEqual({ ok: false, code: "not_patient" });
+    expect(await updateReview(v.token, { ...base, rating: 2, acting })).toMatchObject({ ok: true });
+  });
+
+  it("a minor now 14 or older reviews their own visit: the parent who booked can't through the link", async () => {
+    const teen = await visit({ bookedFor: "minor", birthDate: yearsAgo(15), guardian: true });
+    expect(await submitReview(teen.token, { ...base, consent: true })).toEqual({ ok: false, code: "not_patient" });
+    // The parent's own contact (the guardian's, on file) doesn't open the review for a patient of 14 or more.
+    const parent = (await createPatientSession({ kind: "email", value: "marta@example.com" })).session;
+    expect(await reviewActing((await getAppointmentDetails({ token: teen.token }))!, parent)).toBeNull();
+
+    // A child under 14: the parent's link acts, as the parent.
+    const child = await visit({ bookedFor: "minor", birthDate: yearsAgo(9), guardian: true });
+    expect(reviewLinkActing((await getAppointmentDetails({ token: child.token }))!)).toMatchObject({ actorRelation: "parent" });
+    expect(await submitReview(child.token, { ...base, consent: true })).toMatchObject({ ok: true });
   });
 });
 

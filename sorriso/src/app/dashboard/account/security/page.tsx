@@ -57,7 +57,7 @@ export default async function AccountSecurityPage({ searchParams }: { searchPara
       <Section icon={<KeyRound size={18} />} title={t("password.title")} description={t("password.description")}>
         <PasswordForm />
       </Section>
-      <Section icon={<LaptopMinimal size={18} />} title={t("sessions.title")} description={t("sessions.description", { hours })}>
+      <Section icon={<LaptopMinimal size={18} />} title={t("sessions.title")} description={t("sessions.description", { count: hours })}>
         <SessionsList sessions={sessions} />
       </Section>
     </div>

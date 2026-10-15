@@ -102,7 +102,44 @@ describe("register: startup checks", () => {
     vi.stubEnv("SMTP_PROVIDER_NAME", "Mailer");
     vi.stubEnv("SMTP_PROVIDER_ENTITY", "Mailer GmbH");
     vi.stubEnv("SMTP_PROVIDER_REGION", "EU — Germany");
+    // Sorriso's identity as controller, for its notices (Art. 13(1)(a)-(b)).
+    for (const k of ["PLATFORM_LEGAL_NAME", "PLATFORM_ADDRESS", "PLATFORM_PRIVACY_EMAIL"]) vi.stubEnv(k, "");
+    await expect(register()).rejects.toThrow("set PLATFORM_LEGAL_NAME, PLATFORM_ADDRESS, PLATFORM_PRIVACY_EMAIL");
+    vi.stubEnv("PLATFORM_LEGAL_NAME", "Sorriso S.r.l.");
+    vi.stubEnv("PLATFORM_ADDRESS", "Via Esempio 1, 20100 Milano");
+    await expect(register()).rejects.toThrow("set PLATFORM_PRIVACY_EMAIL");
+    vi.stubEnv("PLATFORM_PRIVACY_EMAIL", "privacy@sorriso.example");
     await expect(register()).resolves.toBeUndefined();
+  });
+
+  it("runs a production build on the development keys only as a local demo, never on the one flag alone", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("REMINDER_WORKER", "off");
+    vi.resetModules();
+    vi.stubEnv("DATA_ENCRYPTION_KEYS", "");
+    vi.stubEnv("HMAC_SECRET", "");
+    vi.stubEnv("SORRISO_ALLOW_DEV_KEY", "1");
+    vi.stubEnv("DEMO_MODE", "");
+    await expect(register()).rejects.toThrow("DATA_ENCRYPTION_KEYS is required in production");
+    vi.stubEnv("DEMO_MODE", "1");
+    vi.stubEnv("DATABASE_URL", "libsql://sorriso-prod.example.turso.io");
+    await expect(register()).rejects.toThrow("DATA_ENCRYPTION_KEYS is required in production");
+    vi.stubEnv("DATABASE_URL", "file:./data/sorriso.db");
+    vi.stubEnv("VERCEL", "1");
+    await expect(register()).rejects.toThrow("DATA_ENCRYPTION_KEYS is required in production");
+    // Real keys but no HMAC secret: the flag alone doesn't excuse it either.
+    vi.stubEnv("VERCEL", "");
+    vi.stubEnv("DEMO_MODE", "");
+    vi.stubEnv("DATA_ENCRYPTION_KEYS", `k1:${Buffer.alloc(32, 7).toString("base64")}`);
+    await expect(register()).rejects.toThrow("HMAC_SECRET is required in production");
+
+    // The local demo: allowed, and said loudly.
+    vi.stubEnv("DEMO_MODE", "1");
+    vi.stubEnv("DATA_ENCRYPTION_KEYS", "");
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    await expect(register()).resolves.toBeUndefined();
+    expect(stderr.mock.calls.map((c) => String(c[0])).join("")).toContain("INSECURE DEMO");
+    stderr.mockRestore();
   });
 
   it("rejects a malformed key list in any environment", async () => {

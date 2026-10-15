@@ -53,7 +53,20 @@ export async function limitByIp(req: Request, bucket: string, limit: number, win
 }
 
 /** Map thrown errors to consistent JSON responses. */
+/** A request body that isn't JSON (readJson): the client's mistake, never a server error. */
+class InvalidJsonError extends Error {}
+
+/** The request body parsed as JSON; a malformed body answers 422 validation_error through handleApiError. */
+export async function readJson(req: Request): Promise<unknown> {
+  try {
+    return await req.json();
+  } catch {
+    throw new InvalidJsonError("invalid JSON body");
+  }
+}
+
 export function handleApiError(err: unknown) {
+  if (err instanceof InvalidJsonError) return apiError(422, "validation_error", "The request body isn't valid JSON.");
   if (err instanceof ZodError) {
     return apiError(422, "validation_error", "Some fields are invalid.", {
       issues: err.issues.map((i) => ({ path: i.path.join("."), message: i.message })),

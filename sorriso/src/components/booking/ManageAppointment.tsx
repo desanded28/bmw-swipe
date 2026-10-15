@@ -298,6 +298,7 @@ export function ManageAppointment({ data, initialPanel }: { data: ManageData; in
             maxAdvanceDays={data.maxAdvanceDays}
             practitionerNames={{ [data.practitionerId]: data.practitionerName }}
             locationNames={data.locationNames}
+            availabilityPath={`/api/v1/appointments/${data.token}/availability`}
             selectedStart={slot?.start}
             onSelect={(s) => {
               setSlot(s);

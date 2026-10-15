@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useId, useState, useTransition } from "react";
 import { listPatientRows, type PatientPage } from "@/app/dashboard/actions/patients";
 import { useT } from "@/i18n/provider";
-import { Badge, Button, Card, EmptyState, Input } from "../ui";
+import { Badge, Button, Card, cx, EmptyState, Input, SCROLL_REGION_FOCUS, scrollRegionProps } from "../ui";
 
 /**
  * The patients list with its search. The search is a POST server action (never a ?q= in the URL):
@@ -124,7 +124,7 @@ export function PatientSearch({ initial }: { initial: PatientPage }) {
 function PatientTable({ page }: { page: PatientPage }) {
   const t = useT("privacyAdmin");
   return (
-    <Card className="relative overflow-x-auto">
+    <Card className={cx("relative overflow-x-auto", SCROLL_REGION_FOCUS)} {...scrollRegionProps(t("patients.title"))}>
       <table className="w-full min-w-[720px] text-sm">
         <thead className="border-b border-slate-100 bg-slate-50 text-left text-xs font-bold uppercase tracking-wide text-slate-500">
           <tr>
@@ -168,7 +168,7 @@ function PatientTable({ page }: { page: PatientPage }) {
               </td>
               <td className="px-4 py-2.5 text-slate-600">
                 {p.phone ?? "—"}
-                {p.email ? <span className="block text-xs text-slate-400">{p.email}</span> : null}
+                {p.email ? <span className="block text-xs text-slate-600">{p.email}</span> : null}
               </td>
               <td className="px-4 py-2.5">{p.next ?? "—"}</td>
               <td className="px-4 py-2.5 text-slate-600">{p.last ?? "—"}</td>

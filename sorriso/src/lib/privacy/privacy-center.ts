@@ -30,8 +30,10 @@ import { getT } from "@/i18n/t";
 import { audit, type AuditEvent } from "../audit";
 import { APP_NAME, DEFAULT_TIMEZONE } from "../config";
 import {
+  ageOn,
   contactHash,
   contactMatchDisclosure,
+  GUARDIAN_ROUTING_AGE,
   isContactVerified,
   isMinor,
   markContactVerified,

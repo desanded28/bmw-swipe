@@ -1,6 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
+import { fmtWhen } from "@/i18n/datefmt";
 import { appointments, auditLog, consents, messages, patients, reminders } from "@/db/schema";
 import { BookingError, createAppointment } from "@/lib/booking";
 import { isContactVerified } from "@/lib/contact";
@@ -243,6 +244,37 @@ describe("marketplace bookings for another adult", () => {
     expect(await auditOf(a.id, "appointment.cancel")).toEqual([]);
   });
 
+  it("pseudonymise the record a hold created once the adult declines or nobody confirms, unless the practice uses it otherwise", async () => {
+    const row = async (id: string) => (await db.select().from(patients).where(eq(patients.id, id)))[0];
+    const { token, patient } = await bookForAdult(true);
+    const { ticket, code } = await codeFor(token, patient.phone!);
+    expect(await declineAdultBooking({ token, ticket, code, now: NOW })).toEqual({ ok: true, status: "cancelled" });
+    expect(await row(patient.id)).toMatchObject({ phone: null, email: null, erasedAt: NOW });
+
+    const old = new Date(NOW.getTime() - (ADULT_CONFIRMATION_HOURS + 2) * HOUR);
+    const { patient: unanswered } = await bookForAdult(true, { createdAt: old, firstName: "Ottavia" });
+    // The same person also has a visit booked at the desk: the record is the practice's to keep.
+    const { patient: known } = await bookForAdult(true, { createdAt: old, firstName: "Gemma" });
+    await createAppointment({
+      orgId: p.orgId,
+      serviceId: p.visit,
+      practitionerId: p.drA,
+      locationId: p.milano,
+      startsAt: zonedToUtc(addDays(MONDAY, 70), 15 * 60, TZ),
+      patient: { id: known.id },
+      source: "staff",
+      online: false,
+      force: true,
+      now: NOW,
+    });
+    sent.length = 0;
+    await expireAdultConfirmations(NOW);
+    // The booker was told first, with the name they typed.
+    expect(sent.some((m) => m.to === BOOKER_PHONE && m.text.includes("Ottavia"))).toBe(true);
+    expect(await row(unanswered.id)).toMatchObject({ phone: null, erasedAt: NOW });
+    expect(await row(known.id)).toMatchObject({ firstName: "Gemma", erasedAt: null });
+  });
+
   it("cancel holds nobody confirmed in time as a system cancellation (not the practice's), and tell the booker", async () => {
     const old = new Date(NOW.getTime() - (ADULT_CONFIRMATION_HOURS + 2) * HOUR);
     const { a: stale } = await bookForAdult(true, { createdAt: old });
@@ -260,5 +292,17 @@ describe("marketplace bookings for another adult", () => {
     expect(log).toMatchObject({ actorType: "system" });
     expect(log.metadata).toMatchObject({ patientId: stale.patientId });
     expect(await auditOf(fresh.id, "adult_confirmation.expire")).toEqual([]);
+  });
+
+  it("tell the booker in the language of the page they booked on, not the one chosen for the patient", async () => {
+    const old = new Date(NOW.getTime() - (ADULT_CONFIRMATION_HOURS + 2) * HOUR);
+    const { a } = await bookForAdult(true, { createdAt: old });
+    // Booked on the English page; the patient's messages are in Italian.
+    await db.update(appointments).set({ noticeLocale: "en" }).where(eq(appointments.id, a.id));
+    sent.length = 0;
+    await expireAdultConfirmations(NOW);
+    const notice = sent.filter((m) => m.to === BOOKER_PHONE).at(-1);
+    expect(notice?.text).toContain(fmtWhen(a.startsAt, TZ, "en"));
+    expect(notice?.text).not.toContain(fmtWhen(a.startsAt, TZ, "it"));
   });
 });

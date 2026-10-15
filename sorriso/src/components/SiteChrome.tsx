@@ -46,9 +46,12 @@ export function SiteHeader({ search }: { search?: string } = {}) {
           <LinkButton href={href("/login")} variant="ghost" size="sm">
             {t("header.login")}
           </LinkButton>
-          <LinkButton href={href("/search")} size="sm" className="hidden sm:inline-flex">
-            {t("header.bookNow")}
-          </LinkButton>
+          {/* Hidden on phones through a wrapper: a "hidden" on the button itself loses to buttonClass's inline-flex. */}
+          <span className="hidden sm:contents">
+            <LinkButton href={href("/search")} size="sm">
+              {t("header.bookNow")}
+            </LinkButton>
+          </span>
         </div>
       </div>
     </header>

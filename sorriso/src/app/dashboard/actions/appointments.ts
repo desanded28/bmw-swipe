@@ -19,10 +19,11 @@ import {
   setOutcome,
 } from "@/lib/booking";
 import { isRestricted } from "@/lib/contact";
+import type { StaffSession } from "@/lib/auth";
 import { calendarTexts, dashboardAction, loadAppointmentDetail, loadAppointmentPhone, type CalendarT } from "@/lib/dashboard";
 import { logError } from "@/lib/log";
 import { can, PermissionError } from "@/lib/permissions";
-import { ErasureError, grantRestrictedAccess } from "@/lib/privacy/erasure";
+import { ErasureError, grantRestrictedAccess, restrictedAccessReason } from "@/lib/privacy/erasure";
 import { normalizePhone } from "@/lib/phone";
 import { hhmmToMinutes, zonedToUtc } from "@/lib/time";
 import type { Locale } from "@/i18n/config";
@@ -36,6 +37,23 @@ import { fail, ok, ownAppointment, staff, type ActionResult } from "./_shared";
  */
 
 const TIME = /^\d{1,2}:\d{2}$/;
+
+/**
+ * A restricted (Art. 18) or erased patient's visit is changed only by someone who may read
+ * restricted records and gave a reason for this patient within the access window (the drawer's
+ * openRestrictedAppointment), as for the patient record's own actions (patients.ts). Returns the
+ * failure, or the reason the change was made under (null for an unrestricted patient), which
+ * goes into the change's audit row.
+ */
+async function restrictedChange(
+  s: StaffSession,
+  patient: { id: string; restrictedAt: Date | null; erasedAt: Date | null },
+  t: CalendarT,
+): Promise<{ denied: ActionResult } | { reason: string | null }> {
+  if (!isRestricted(patient)) return { reason: null };
+  const reason = can(s.role, "patient.restricted.read") ? await restrictedAccessReason(s, patient.id) : null;
+  return reason ? { reason } : { denied: fail(t("errors.restrictedChange"), "restricted_reason_required") };
+}
 /** Free text kept with the appointment (staff note, cancellation reason): encrypted at rest. */
 const NOTE_MAX = 2000;
 
@@ -99,9 +117,10 @@ export async function createStaffAppointment(input: StaffBookingInput): Promise<
         internalNote: v.internalNote?.trim() || null,
         notifyPatient: v.notifyPatient,
         restrictedAccessReason: v.restrictedAccessReason || null,
+        // createAppointment audits patient.create and appointment.create in its transaction.
         actor: { type: "user", id: s.user.id },
+        headers: await headers(),
       });
-      await auditStaff(s, "appointment.create", { type: "appointment", id: d.appointment.id }, { metadata: { source: "staff" } });
       return ok(t("done.booked"), { id: d.appointment.id });
     },
     { permission: "appointment.write" },
@@ -126,6 +145,8 @@ export async function moveAppointment(input: z.input<typeof moveSchema>): Promis
     async (s, t, locale) => {
       const v = moveSchema.parse(input, { error: zodErrorMap(locale) });
       const d = await ownAppointment(s.org.id, v.id);
+      const gate = await restrictedChange(s, d.patient, t);
+      if ("denied" in gate) return gate.denied;
       const locationId = v.locationId || d.location.id;
       const [loc] = await db
         .select()
@@ -151,7 +172,7 @@ export async function moveAppointment(input: z.input<typeof moveSchema>): Promis
         force: v.force,
         notifyPatient: v.notifyPatient,
       });
-      await auditStaff(s, "appointment.update", { type: "appointment", id: v.id }, { metadata: { change: "move", notified: v.notifyPatient } });
+      await auditStaff(s, "appointment.update", { type: "appointment", id: v.id }, { reason: gate.reason, metadata: { change: "move", notified: v.notifyPatient } });
       return ok(v.notifyPatient ? t("done.movedNotified") : t("done.moved"));
     },
     { permission: "appointment.write" },
@@ -166,10 +187,12 @@ export async function cancelByStaff(id: string, reason: string, notifyPatient: b
     async (s, t, locale) => {
       const text = reasonSchema.parse(reason ?? "", { error: zodErrorMap(locale) }).trim();
       const d = await ownAppointment(s.org.id, id);
+      const gate = await restrictedChange(s, d.patient, t);
+      if ("denied" in gate) return gate.denied;
       const wasRequest = d.appointment.status === "requested";
       const res = await cancelAppointment(id, { by: "staff", reason: text || null, notifyPatient: Boolean(notifyPatient) });
       if (!res) return fail(t("errors.alreadyCancelled"), "not_allowed");
-      await auditStaff(s, "appointment.cancel", { type: "appointment", id }, { metadata: { notified: Boolean(notifyPatient), request: wasRequest } });
+      await auditStaff(s, "appointment.cancel", { type: "appointment", id }, { reason: gate.reason, metadata: { notified: Boolean(notifyPatient), request: wasRequest } });
       return ok(wasRequest ? t("done.declined") : t("done.cancelled"));
     },
     { permission: "appointment.write" },
@@ -183,9 +206,10 @@ export async function recordOutcome(id: string, outcome: "completed" | "no_show"
   return dashboardAction(
     async (s, t, locale) => {
       const v = outcomeSchema.parse(outcome, { error: zodErrorMap(locale) });
-      await ownAppointment(s.org.id, id);
+      const gate = await restrictedChange(s, (await ownAppointment(s.org.id, id)).patient, t);
+      if ("denied" in gate) return gate.denied;
       await setOutcome(id, v);
-      await auditStaff(s, "appointment.update", { type: "appointment", id }, { metadata: { change: "outcome", outcome: v } });
+      await auditStaff(s, "appointment.update", { type: "appointment", id }, { reason: gate.reason, metadata: { change: "outcome", outcome: v } });
       return ok(v === "completed" ? t("done.completed") : v === "no_show" ? t("done.noShow") : t("done.reset"));
     },
     { permission: "appointment.write" },
@@ -196,10 +220,11 @@ export async function recordOutcome(id: string, outcome: "completed" | "no_show"
 export async function confirmByPhone(id: string): Promise<ActionResult> {
   return dashboardAction(
     async (s, t) => {
-      await ownAppointment(s.org.id, id);
+      const gate = await restrictedChange(s, (await ownAppointment(s.org.id, id)).patient, t);
+      if ("denied" in gate) return gate.denied;
       const res = await confirmAttendance(id, "staff");
       if (!res) return fail(t("errors.notConfirmable"), "not_allowed");
-      await auditStaff(s, "appointment.update", { type: "appointment", id }, { metadata: { change: "confirm" } });
+      await auditStaff(s, "appointment.update", { type: "appointment", id }, { reason: gate.reason, metadata: { change: "confirm" } });
       return ok(t("done.confirmed"));
     },
     { permission: "appointment.write" },
@@ -210,9 +235,10 @@ export async function confirmByPhone(id: string): Promise<ActionResult> {
 export async function approve(id: string): Promise<ActionResult> {
   return dashboardAction(
     async (s, t) => {
-      await ownAppointment(s.org.id, id);
+      const gate = await restrictedChange(s, (await ownAppointment(s.org.id, id)).patient, t);
+      if ("denied" in gate) return gate.denied;
       if (!(await approveRequest(id))) return fail(t("errors.notRequest"), "not_allowed");
-      await auditStaff(s, "appointment.update", { type: "appointment", id }, { metadata: { change: "approve" } });
+      await auditStaff(s, "appointment.update", { type: "appointment", id }, { reason: gate.reason, metadata: { change: "approve" } });
       return ok(t("done.approved"));
     },
     { permission: "appointment.write" },
@@ -242,12 +268,13 @@ export async function saveInternalNote(id: string, note: string): Promise<Action
   return dashboardAction(
     async (s, t, locale) => {
       const text = z.string().max(NOTE_MAX).parse(note ?? "", { error: zodErrorMap(locale) }).trim();
-      await ownAppointment(s.org.id, id);
+      const gate = await restrictedChange(s, (await ownAppointment(s.org.id, id)).patient, t);
+      if ("denied" in gate) return gate.denied;
       await db
         .update(appointments)
         .set({ internalNote: text || null, updatedAt: new Date() })
         .where(and(eq(appointments.id, id), eq(appointments.orgId, s.org.id)));
-      await auditStaff(s, "appointment.note.update", { type: "appointment", id }, { metadata: { cleared: !text } });
+      await auditStaff(s, "appointment.note.update", { type: "appointment", id }, { reason: gate.reason, metadata: { cleared: !text } });
       return ok(t("done.noteSaved"));
     },
     { permission: "appointment.notes.write" },

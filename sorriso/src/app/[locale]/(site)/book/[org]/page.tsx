@@ -35,7 +35,8 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
     robots: { index: false, follow: true },
     alternates: {
       canonical: lhref(locale, `/c/${clinic.org.slug}`),
-      languages: alternatesFor(`/book/${clinic.org.slug}`, locale).languages,
+      // hreflang lists canonical URLs only: the practice's page in each language.
+      languages: alternatesFor(`/c/${clinic.org.slug}`, locale).languages,
     },
   };
 }
