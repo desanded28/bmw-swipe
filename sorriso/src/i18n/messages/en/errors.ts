@@ -47,6 +47,7 @@ export default {
     /** Confirming a visit the practice has to move (it closed and offered new times). */
     rebook_needed: "The practice can't see you at this time, so it can't be confirmed. Please choose a new time instead.",
     not_accepting: "This practice isn't taking online bookings right now. Please contact them directly.",
+    not_accepting_new_patients: "This practitioner isn't taking new patients. Please choose another practitioner or contact the practice.",
     privacy_required: "Please read the privacy information and make your choices to continue.",
     validation_error: "Some details aren't valid. Please check the highlighted fields.",
     rate_limited: "Too many attempts. Please wait a few minutes and try again.",

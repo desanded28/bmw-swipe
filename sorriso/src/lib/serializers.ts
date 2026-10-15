@@ -36,10 +36,44 @@ export function publicAppointment(d: AppointmentDetails) {
  * minimisation): appointment notes, free text that may hold health data, only with notes:read;
  * birth date and no-show count only with patients:read. The patient's restricted/erased flags are
  * always there, so integrations can honour Art. 18 and 17 (Art. 19).
+ *
+ * A restricted or erased patient's visit carries only ids, times, status and those flags: no name,
+ * contacts, birth date, no-show count, service name or notes. Restricted data may only be stored
+ * (Art. 18(2)); sending it to a recipient is processing, and the dashboard itself shows it only to
+ * staff who give a reason each time. The fields stay in the shape, as null.
  */
 export function partnerAppointment(d: AppointmentDetails, scopes: readonly ApiScope[]) {
+  const withheld = Boolean(d.patient.restrictedAt || d.patient.erasedAt);
   const notes = scopes.includes("notes:read");
   const patientDetails = scopes.includes("patients:read");
+  if (withheld) {
+    return {
+      id: d.appointment.id,
+      status: d.appointment.status,
+      confirmation: d.appointment.confirmation,
+      confirmedVia: d.appointment.confirmedVia,
+      start: d.appointment.startsAt.toISOString(),
+      end: d.appointment.endsAt.toISOString(),
+      source: d.appointment.source,
+      serviceId: d.service.id,
+      serviceName: null,
+      practitionerId: d.practitioner.id,
+      locationId: d.location.id,
+      roomId: d.room?.id ?? null,
+      patient: {
+        id: d.patient.id,
+        name: null,
+        email: null,
+        phone: null,
+        ...(patientDetails ? { birthDate: null, noShowCount: null } : {}),
+        restricted: Boolean(d.patient.restrictedAt),
+        erased: Boolean(d.patient.erasedAt),
+      },
+      ...(notes ? { patientNote: null, internalNote: null } : {}),
+      createdAt: d.appointment.createdAt.toISOString(),
+      updatedAt: d.appointment.updatedAt.toISOString(),
+    };
+  }
   return {
     id: d.appointment.id,
     status: d.appointment.status,

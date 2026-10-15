@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
 import type { ApiScope } from "@/db/enums";
-import { apiKeys, auditLog, practitioners } from "@/db/schema";
+import { apiKeys, auditLog, patients, practitioners } from "@/db/schema";
 import { createApiKey } from "@/lib/api";
 import { createAppointment } from "@/lib/booking";
 import { zonedToUtc } from "@/lib/time";
@@ -187,6 +187,41 @@ describe("partner API responses", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ orgId: p.orgId, actorType: "api_key", metadata: { method: "GET", route: "appointments.list", status: 200 } });
     expect(rows[0].ipHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("a restricted patient's visit carries only ids and the flags, and every read lands in the patient's access log", async () => {
+    const d = await createAppointment({
+      orgId: p.orgId,
+      serviceId: p.visit,
+      practitionerId: p.drA,
+      locationId: p.milano,
+      startsAt: zonedToUtc(MONDAY, 11 * 60, TZ),
+      patient: { firstName: "Valeria", lastName: "Russi", phone: "+393489990177", email: "valeria.r@example.org", birthDate: "2001-07-18" },
+      patientNote: "dolore forte",
+      source: "staff",
+      online: false,
+      now: NOW,
+    });
+    await db.update(patients).set({ restrictedAt: NOW }).where(eq(patients.id, d.patient.id));
+    const secret = await key(["appointments:read", "notes:read", "patients:read"]);
+    const { appointment } = await (await getOne(call(`/api/v1/partner/appointments/${d.appointment.id}`, secret), params(d.appointment.id))).json();
+    expect(appointment).toMatchObject({ id: d.appointment.id, serviceId: p.visit, serviceName: null, patientNote: null, internalNote: null });
+    expect(appointment.patient).toEqual({ id: d.patient.id, name: null, email: null, phone: null, birthDate: null, noShowCount: null, restricted: true, erased: false });
+    const listed = await (await list(call("/api/v1/partner/appointments", secret))).json();
+    const text = JSON.stringify(listed);
+    for (const leak of ["Valeria", "Russi", "valeria.r@example.org", "+393489990177", "2001-07-18", "dolore forte"]) expect(text).not.toContain(leak);
+    // Unrestricted patients are still served in full.
+    expect(text).toContain("Gino Sala");
+
+    const [k] = await db.select().from(apiKeys).where(eq(apiKeys.keyHash, (await import("@/lib/ids")).sha256(secret)));
+    const reads = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.action, "patient.view"), eq(auditLog.actorId, k.id), eq(auditLog.entityId, d.patient.id)));
+    expect(reads.map((r) => r.metadata)).toEqual([
+      { via: "partner_api", route: "appointments.get" },
+      { via: "partner_api", route: "appointments.list" },
+    ]);
   });
 
   it("resources never expose the calendar-feed secret's hash", async () => {

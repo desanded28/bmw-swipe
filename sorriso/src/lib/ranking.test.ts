@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { appointments, locations, organizations, patients, practitioners, reviews, type StoredOrgSettings } from "@/db/schema";
 import EN from "@/i18n/messages/en/marketplace";
 import { createPractice, NOW } from "@/test/fixtures";
+import { cancelAppointment, REQUEST_DECLINED } from "./booking";
 import { searchPractitioners } from "./directory";
 import { newId } from "./ids";
 import {
@@ -234,6 +235,23 @@ describe("buildRankInputs", () => {
     const empty = await createPractice();
     expect((await reliabilitySignals([empty.drA])).get(empty.drA)).toEqual({ rate: 0, sample: 0 });
     expect(await reliabilitySignals([])).toEqual(new Map());
+  });
+
+  it("doesn't count requests the practice declined as appointments it cancelled", async () => {
+    const q = await createPractice();
+    for (let i = 0; i < 10; i++) await visit(q.drA, "completed", null, 10, q);
+    // A request (practice reviews online bookings), declined by the front desk.
+    const request = await visit(q.drA, "completed", null, 5, q);
+    await db.update(appointments).set({ status: "requested" }).where(eq(appointments.id, request));
+    expect(await cancelAppointment(request, { by: "staff", notifyPatient: false })).not.toBeNull();
+    const [declined] = await db.select().from(appointments).where(eq(appointments.id, request));
+    expect(declined).toMatchObject({ status: "cancelled", cancelledBy: "staff", confirmedVia: REQUEST_DECLINED });
+    expect((await reliabilitySignals([q.drA])).get(q.drA)).toEqual({ rate: 0, sample: 10 });
+    // A visit the practice had accepted and then cancelled still counts.
+    const accepted = await visit(q.drA, "completed", null, 4, q);
+    await db.update(appointments).set({ status: "scheduled" }).where(eq(appointments.id, accepted));
+    await cancelAppointment(accepted, { by: "staff", notifyPatient: false });
+    expect((await reliabilitySignals([q.drA])).get(q.drA)).toEqual({ rate: 1 / 11, sample: 11 });
   });
 
   it("gives the same inputs and search order when non-ranking practice columns change", async () => {

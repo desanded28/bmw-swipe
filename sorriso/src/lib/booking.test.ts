@@ -199,9 +199,10 @@ describe("cancel, reschedule and waitlist", () => {
 
   it("counts no-shows on the patient", async () => {
     const d = await createAppointment({ orgId: p.orgId, serviceId: p.visit, practitionerId: p.drB, locationId: p.milano, startsAt: at(10), patient: patient(), source: "staff", online: false, now: NOW });
-    const after = await setOutcome(d.appointment.id, "no_show", NOW);
+    const started = new Date(at(10).getTime() + 15 * 60_000);
+    const after = await setOutcome(d.appointment.id, "no_show", started);
     expect(after.patient.noShowCount).toBe(1);
-    const undone = await setOutcome(d.appointment.id, "completed", NOW);
+    const undone = await setOutcome(d.appointment.id, "completed", started);
     expect(undone.patient.noShowCount).toBe(0);
   });
 });
@@ -409,5 +410,164 @@ describe("same-name protection and duplicates (WP8)", () => {
     await rescheduleAppointment(d.appointment.id, { startsAt: at(10), by: "staff", now: NOW });
     const sent = await db.select().from(messages).where(eq(messages.appointmentId, d.appointment.id));
     expect(sent.map((m) => [m.channel, m.to])).toEqual([["sms", "+393471234505"]]);
+  });
+});
+
+describe("booking rules found in review", () => {
+  type Practice = Awaited<ReturnType<typeof createPractice>>;
+  const online = (q: Practice, startsAt: Date, who: Record<string, unknown> = patient(), extra: Record<string, unknown> = {}) =>
+    createAppointment({
+      orgId: q.orgId,
+      serviceId: q.visit,
+      practitionerId: q.drA,
+      locationId: q.milano,
+      startsAt,
+      patient: who as ReturnType<typeof patient>,
+      source: "online",
+      online: true,
+      now: NOW,
+      ...extra,
+    });
+
+  it("closes the waiting-list entry when the booking's details differ from the entry's, and any entry the booking fulfils", async () => {
+    const q = await createPractice();
+    const phone = `+39${phoneSeq++}`;
+    const { joinWaitlist } = await import("./waitlist");
+    const entry = await joinWaitlist({
+      orgId: q.orgId,
+      serviceId: q.visit,
+      earliestDate: MONDAY,
+      latestDate: MONDAY,
+      partOfDay: "any",
+      patient: { firstName: "Wanda", lastName: "Lista", phone, locale: "it" },
+      now: NOW,
+    });
+    // Through the offer's link, with the same phone plus an email: a record of its own (public mode).
+    const d = await online(q, at(9), { firstName: "Wanda", lastName: "Lista", phone, email: `wanda${phoneSeq}@example.com`, locale: "it" }, { waitlistEntryId: entry.id });
+    expect(d.patient.id).not.toBe(entry.patientId);
+    const [closed] = await db.select().from(waitlist).where(eq(waitlist.id, entry.id));
+    expect(closed.status).toBe("booked");
+
+    // Booked the same treatment without the link, on a day the entry covers: closed too.
+    const phone2 = `+39${phoneSeq++}`;
+    const other = await joinWaitlist({
+      orgId: q.orgId,
+      serviceId: q.visit,
+      earliestDate: MONDAY,
+      latestDate: MONDAY,
+      partOfDay: "any",
+      patient: { firstName: "Olga", lastName: "Lista", phone: phone2, locale: "it" },
+      now: NOW,
+    });
+    await online(q, at(10), { firstName: "Olga", lastName: "Lista", phone: phone2, locale: "it" });
+    expect((await db.select().from(waitlist).where(eq(waitlist.id, other.id)))[0].status).toBe("booked");
+
+    // Someone else holding the link closes nothing.
+    const third = await joinWaitlist({
+      orgId: q.orgId,
+      serviceId: q.visit,
+      earliestDate: MONDAY,
+      latestDate: MONDAY,
+      partOfDay: "any",
+      patient: { firstName: "Tina", lastName: "Lista", phone: `+39${phoneSeq++}`, locale: "it" },
+      now: NOW,
+    });
+    await online(q, at(11), patient(), { waitlistEntryId: third.id });
+    expect((await db.select().from(waitlist).where(eq(waitlist.id, third.id)))[0].status).toBe("active");
+  });
+
+  it("a same-day online booking, confirmed by booking it, carries no 'unconfirmed' risk", async () => {
+    const q = await createPractice();
+    await db
+      .update(organizations)
+      .set({ settings: { ...q.settings, privacy: { ...q.settings.privacy, riskBasedReminders: true } } })
+      .where(eq(organizations.id, q.orgId));
+    // NOW is Friday 10:00 in Rome: a visit at 12:00 the same day.
+    const d = await online(q, zonedToUtc("2030-03-01", 12 * 60, TZ));
+    const [row] = await db.select().from(appointments).where(eq(appointments.id, d.appointment.id));
+    expect(row.confirmation).toBe("confirmed");
+    expect(row.confirmedVia).toBe("booking");
+    expect(row.riskReasons).not.toContain("unconfirmed");
+  });
+
+  it("moving a visit to another chair at the same time keeps the confirmation and sends no notice", async () => {
+    const q = await createPractice();
+    const d = await createAppointment({
+      orgId: q.orgId,
+      serviceId: q.visit,
+      practitionerId: q.drA,
+      locationId: q.milano,
+      roomId: q.chair1,
+      startsAt: at(9),
+      patient: patient(),
+      source: "staff",
+      online: false,
+      now: NOW,
+    });
+    await db.update(appointments).set({ confirmation: "confirmed", confirmedVia: "sms", confirmedAt: NOW }).where(eq(appointments.id, d.appointment.id));
+    const before = await db.select().from(messages).where(eq(messages.appointmentId, d.appointment.id));
+    const after = await rescheduleAppointment(d.appointment.id, { startsAt: at(9), roomId: q.chair2, by: "staff", notifyPatient: true, now: NOW });
+    expect(after.appointment.roomId).toBe(q.chair2);
+    expect(after.appointment.confirmation).toBe("confirmed");
+    expect(await db.select().from(messages).where(eq(messages.appointmentId, d.appointment.id))).toHaveLength(before.length);
+    // A real move still asks again.
+    const moved = await rescheduleAppointment(d.appointment.id, { startsAt: at(10), by: "staff", notifyPatient: false, now: NOW });
+    expect(moved.appointment.confirmation).toBe("pending");
+  });
+
+  it("refuses a no-show or completed outcome before the visit has started", async () => {
+    const q = await createPractice();
+    const d = await online(q, at(9));
+    for (const outcome of ["no_show", "completed"] as const) {
+      await expect(setOutcome(d.appointment.id, outcome, NOW)).rejects.toMatchObject({ code: "not_allowed" });
+    }
+    const [row] = await db.select().from(appointments).where(eq(appointments.id, d.appointment.id));
+    expect(row.status).toBe("scheduled");
+    expect((await db.select().from(patients).where(eq(patients.id, d.patient.id)))[0].noShowCount).toBe(0);
+    // Once it has started, it can be recorded.
+    expect((await setOutcome(d.appointment.id, "no_show", new Date(at(9).getTime() + 20 * 60_000))).appointment.status).toBe("no_show");
+  });
+
+  it("a practitioner who doesn't take new patients can't be booked online for a first visit", async () => {
+    const q = await createPractice();
+    const { practitioners } = await import("@/db/schema");
+    await db.update(practitioners).set({ acceptsNewPatients: false }).where(eq(practitioners.id, q.drA));
+    await expect(online(q, at(9))).rejects.toMatchObject({ code: "invalid", reason: "not_accepting_new_patients" });
+    await expect(online(q, at(9), patient(), { isNewPatient: true })).rejects.toMatchObject({ reason: "not_accepting_new_patients" });
+    // A returning patient (they say so) still can; staff always can.
+    expect((await online(q, at(9), patient(), { isNewPatient: false })).appointment.status).toBe("scheduled");
+    const staff = await createAppointment({
+      orgId: q.orgId,
+      serviceId: q.visit,
+      practitionerId: q.drA,
+      locationId: q.milano,
+      startsAt: at(10),
+      patient: patient(),
+      source: "staff",
+      online: false,
+      now: NOW,
+    });
+    expect(staff.appointment.isNewPatient).toBe(true);
+  });
+
+  it("online bookings start only on the practice's slot step, on the minute", async () => {
+    const q = await createPractice();
+    for (const odd of [at(10, 7), new Date(at(10).getTime() + 30_000), new Date(at(10).getTime() + 1)]) {
+      await expect(online(q, odd)).rejects.toMatchObject({ code: "outside_hours" });
+    }
+    expect((await online(q, at(10, 15))).appointment.status).toBe("scheduled");
+    // Staff place visits where they like.
+    const staff = await createAppointment({
+      orgId: q.orgId,
+      serviceId: q.visit,
+      practitionerId: q.drA,
+      locationId: q.milano,
+      startsAt: at(11, 7),
+      patient: patient(),
+      source: "staff",
+      online: false,
+      now: NOW,
+    });
+    expect(staff.appointment.startsAt).toEqual(at(11, 7));
   });
 });

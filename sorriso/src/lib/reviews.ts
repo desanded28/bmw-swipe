@@ -207,7 +207,8 @@ export type ReviewError =
   | "rating_invalid"
   | "too_long"
   | "guardian_required"
-  | "closed";
+  | "closed"
+  | "not_patient";
 
 export type ReviewResult = { ok: true; reviewId: string; status: ReviewStatus } | { ok: false; code: ReviewError };
 
@@ -235,28 +236,55 @@ function validate(input: ReviewInput): ReviewError | { comment: string | null } 
   return { comment };
 }
 
+/** Who writes, edits or deletes a review, for the consent ledger and the audit log. */
+export type ReviewActing = { actor: AuditEvent["actor"]; actorRelation: "self" | "parent" | "legal_guardian" };
+
+/**
+ * Who holds the visit link when the link alone is enough to act on the visit's review: the
+ * patient's own booking (or, for a child under 14, their parent or guardian, to whom the link and
+ * messages go). Null when someone else booked: for another adult, or for a minor who is now 14 or
+ * older (who consents to publication themselves, Art. 2-quinquies Codice privacy). That person
+ * holds the link too (the confirmation page shows it), so the review, its text and the
+ * publication consent then need the step-up: a one-time code to the patient's own contact
+ * (privacy-center.ts reviewActing), the same rule as linkRecord() for the privacy page.
+ */
+export function reviewLinkActing(d: Pick<AppointmentDetails, "appointment" | "patient">, now: Date = new Date()): ReviewActing | null {
+  const age = ageOn(d.patient.birthDate, now);
+  const child = age !== null && age < GUARDIAN_ROUTING_AGE;
+  const bookedFor = d.appointment.bookedFor;
+  if (bookedFor === "other_adult" || (bookedFor === "minor" && !child)) return null;
+  return {
+    actor: { type: "patient_link", id: d.appointment.id },
+    actorRelation: child && d.patient.guardianRelation ? d.patient.guardianRelation : "self",
+  };
+}
+
 /**
  * Publish a review of a completed visit through the patient's link. Requires the explicit,
  * unticked consent (consents.review_publication), recorded in the ledger. A comment with health
  * or contact details is held for moderation (under_review), otherwise published at once.
  *
  * For a child under 14 the link went to the parent or guardian (recipientFor), so they are the
- * ones consenting; without a guardian on file the review is refused (guardian_required).
+ * ones consenting; without a guardian on file the review is refused (guardian_required). When
+ * someone else booked (reviewLinkActing is null) only the patient may write it, after the step-up:
+ * the caller passes `acting` (privacy-center.ts reviewActing); without it the review is refused
+ * (not_patient), so the ledger never records the booker's consent as the patient's own.
  */
 export async function submitReview(
   token: string,
-  input: ReviewInput & { consent: boolean; headers?: Headers; now?: Date },
+  input: ReviewInput & { consent: boolean; acting?: ReviewActing | null; headers?: Headers; now?: Date },
 ): Promise<ReviewResult> {
   const now = input.now ?? new Date();
   const d = await getAppointmentDetails({ token });
   if (!d || !isManageLinkValid(d.appointment, now)) return { ok: false, code: "link_invalid" };
+  const acting = input.acting ?? reviewLinkActing(d, now);
+  if (!acting) return { ok: false, code: "not_patient" };
   if (d.appointment.status !== "completed") return { ok: false, code: "not_completed" };
   if (!input.consent) return { ok: false, code: "consent_required" };
   const checked = validate(input);
   if (typeof checked === "string") return { ok: false, code: checked };
 
-  const age = ageOn(d.patient.birthDate, now);
-  const actorRelation = age !== null && age < GUARDIAN_ROUTING_AGE && d.patient.guardianRelation ? d.patient.guardianRelation : "self";
+  const actorRelation = acting.actorRelation;
   const flags = reviewFlags(checked.comment);
   const status: ReviewStatus = flags.length ? "under_review" : "published";
   const display = displayFor(d, input.display, now);
@@ -290,6 +318,7 @@ export async function submitReview(
         method: "web_checkbox",
         source: "review",
         actorRelation,
+        actor: acting.actor,
         appointmentId: d.appointment.id,
         headers: input.headers,
         now,
@@ -339,10 +368,12 @@ async function hidingReport(tx: Tx, reviewId: string): Promise<ReviewReport | nu
  * check; a review under the practice's report stays hidden until the moderators decide. A text
  * that isn't published at once is stored encrypted, like any held text.
  */
-export async function updateReview(token: string, input: ReviewInput & { now?: Date }): Promise<ReviewResult> {
+export async function updateReview(token: string, input: ReviewInput & { acting?: ReviewActing | null; now?: Date }): Promise<ReviewResult> {
   const now = input.now ?? new Date();
   const d = await getAppointmentDetails({ token });
   if (!d || !isManageLinkValid(d.appointment, now)) return { ok: false, code: "link_invalid" };
+  // Only the author: the patient (step-up when someone else booked; see reviewLinkActing).
+  if (!(input.acting ?? reviewLinkActing(d, now))) return { ok: false, code: "not_patient" };
   const checked = validate(input);
   if (typeof checked === "string") return { ok: false, code: checked };
   const [r] = await db.select().from(reviews).where(eq(reviews.appointmentId, d.appointment.id));

@@ -13,6 +13,7 @@ import {
   type PriceType,
 } from "@/db/schema";
 import { getAvailability } from "./availability";
+import { REQUEST_DECLINED } from "./booking";
 import { todayIn } from "./time";
 
 /**
@@ -247,7 +248,14 @@ export async function reliabilitySignals(practitionerIds: readonly string[], now
   }
   const from = new Date(now.getTime() - RELIABILITY_DAYS * DAY_MS);
   const staffCancelled = sql<number>`sum(case when ${appointments.status} = 'cancelled' and ${appointments.cancelledBy} = 'staff' then 1 else 0 end)`;
-  const inWindow = and(inArray(appointments.orgId, orgIds), gte(appointments.startsAt, from), lte(appointments.startsAt, now), sql`${appointments.status} <> 'requested'`);
+  // Requests still waiting, or declined (REQUEST_DECLINED), were never appointments the practice took on.
+  const inWindow = and(
+    inArray(appointments.orgId, orgIds),
+    gte(appointments.startsAt, from),
+    lte(appointments.startsAt, now),
+    sql`${appointments.status} <> 'requested'`,
+    sql`coalesce(${appointments.confirmedVia}, '') <> ${REQUEST_DECLINED}`,
+  );
   const [own, byOrg] = await Promise.all([
     db
       .select({ practitionerId: appointments.practitionerId, total: count(), cancelled: staffCancelled })

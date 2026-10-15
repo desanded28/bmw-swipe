@@ -196,11 +196,11 @@ export default {
       languages: "Language values (<code>data-lang</code>, <code>patient.locale</code>):",
       eventsTitle: "Booking events",
       events:
-        "With <code>data-events</code>, your page receives a <code>sorriso:booked</code> event when a booking is completed. It carries no personal data, and the appointment id only with <code>data-include-id</code>. Messages are posted only to your page's own origin.",
+        "With <code>data-events</code>, your page receives a <code>sorriso:booked</code> event when a booking is completed. It carries no personal data, and the appointment id only with <code>data-include-id</code>. Messages are posted only to your page's own origin, and only once that origin is listed under Allowed websites (below).",
       eventsWarning:
         "Don't forward this event to advertising or analytics tools (such as Meta or Google tags): it reveals that a visitor booked a dental appointment, which is health data. Under the data processing agreement you may use it only to show your own confirmation.",
       origins:
-        "To stop other websites from embedding your booking form, list your website's addresses under Dashboard, Privacy settings, Allowed websites. Elsewhere the widget then shows only a link that opens the booking page in a new tab. The check relies on the address your visitors' browsers send with the frame: the widget asks for it, and if you write your own iframe, don't give it <code>referrerpolicy=\"no-referrer\"</code>.",
+        "List your website's addresses under Dashboard, Privacy settings, Allowed websites. Only bookings made in the widget on those websites come to you through your own channel; until you list them, bookings in the widget count as Sorriso marketplace bookings and no events are sent. Once the list is set, the widget on any other website shows only a link that opens the booking page in a new tab. The check relies on the address your visitors' browsers send with the frame: the widget asks for it, and if you write your own iframe, don't give it <code>referrerpolicy=\"no-referrer\"</code>.",
     },
     booking: {
       title: "2. Book through the API",

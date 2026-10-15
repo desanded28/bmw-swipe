@@ -606,7 +606,7 @@ export default {
     },
     embed: {
       label: "Allowed websites",
-      hint: "The websites that may show your booking widget: one https address per line (at most 10). Leave empty to allow any website.",
+      hint: "The websites that may show your booking widget: one https address per line (at most 10). Only bookings made in the widget on these websites come to you through your own channel. Left empty, any website may show it, and bookings made there count as Sorriso marketplace bookings (Sorriso asks the patient's consent and is their controller).",
       placeholder: "https://www.example.it",
       invalid: "Ignored (not an https address): {origins}",
     },
@@ -826,6 +826,9 @@ export default {
       directLink: "Direct booking link",
       apiDocs: "API docs",
       apiKeys: "API keys",
+      originsMissing:
+        "Add your website to the allowed websites in the privacy settings. Until then, bookings made in the widget count as Sorriso marketplace bookings, and the widget sends no events to your page.",
+      originsLink: "Allowed websites",
     },
     compliance: {
       title: "Privacy & compliance",

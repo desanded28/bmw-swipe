@@ -4,6 +4,7 @@ import { db } from "@/db";
 import {
   appointments,
   CHANNELS,
+  messages,
   practitioners,
   profileStats,
   recalls,
@@ -280,10 +281,14 @@ export async function loadAnalytics(
       when ${offsetMs} <= ${36 * HOUR} then 'd1'
       when ${offsetMs} <= ${60 * HOUR} then 'd2'
       else 'd3' end`;
+  // The channel the reminder actually went out on (its message: a rule's text may go by WhatsApp,
+  // or by email when the patient has no phone), not the rule's "email" or "sms".
+  const sentChannel = sql<Channel>`coalesce(${messages.channel}, ${reminders.channel})`;
   const confRows = await db
-    .select({ channel: reminders.channel, bucket: bucketSql, sent: count(), confirmed: credited })
+    .select({ channel: sentChannel, bucket: bucketSql, sent: count(), confirmed: credited })
     .from(reminders)
     .innerJoin(appointments, eq(appointments.id, reminders.appointmentId))
+    .leftJoin(messages, eq(messages.id, reminders.messageId))
     .where(
       and(
         eq(appointments.orgId, orgId),
@@ -295,7 +300,7 @@ export async function loadAnalytics(
         lt(reminders.sentAt, to),
       ),
     )
-    .groupBy(reminders.channel, bucketSql);
+    .groupBy(sentChannel, bucketSql);
   const confRow = <K extends string>(key: K, rows: typeof confRows): ConfirmationRow<K> => {
     const sent = rows.reduce((n, r) => n + num(r.sent), 0);
     const confirmed = rows.reduce((n, r) => n + num(r.confirmed), 0);

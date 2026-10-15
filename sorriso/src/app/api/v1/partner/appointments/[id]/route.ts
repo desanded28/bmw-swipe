@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { apiError, json, partnerRoute } from "@/lib/api";
+import { apiError, auditPartnerRead, json, partnerRoute } from "@/lib/api";
 import { getOrgAppointmentDetails } from "@/lib/appointments";
 import { cancelAppointment, confirmAttendance, rescheduleAppointment, setOutcome } from "@/lib/booking";
 import { partnerAppointment } from "@/lib/serializers";
@@ -12,6 +12,7 @@ export function GET(req: Request, { params }: Ctx) {
     const { id } = await params;
     const d = await getOrgAppointmentDetails(org.id, id);
     if (!d) return apiError(404, "not_found", "Appointment not found.");
+    await auditPartnerRead(req, { org, key }, "appointments.get", [d.patient.id]);
     return json({ appointment: partnerAppointment(d, key.scopes) });
   });
 }
@@ -58,6 +59,7 @@ export function PATCH(req: Request, { params }: Ctx) {
     }
     if (input.confirmation === "confirmed") await confirmAttendance(id, "staff");
 
+    await auditPartnerRead(req, { org, key }, "appointments.update", [d.patient.id]);
     return json({ appointment: partnerAppointment((await getOrgAppointmentDetails(org.id, id))!, key.scopes) });
   });
 }

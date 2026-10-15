@@ -99,7 +99,8 @@ describe("tenant isolation and tampering", () => {
 describe("status races", () => {
   it("counts a double-clicked no-show once", async () => {
     const d = await createAppointment({ orgId: a.orgId, serviceId: a.visit, practitionerId: a.drB, locationId: a.milano, startsAt: at(9), patient: person({ firstName: "Lia" }), source: "staff", online: false, now: NOW });
-    await Promise.all([setOutcome(d.appointment.id, "no_show", NOW), setOutcome(d.appointment.id, "no_show", NOW)]);
+    const late = new Date(at(9).getTime() + 30 * 60_000);
+    await Promise.all([setOutcome(d.appointment.id, "no_show", late), setOutcome(d.appointment.id, "no_show", late)]);
     const [p] = await db.select().from(patients).where(eq(patients.id, d.patient.id));
     expect(p.noShowCount).toBe(1);
   });
@@ -112,15 +113,18 @@ describe("status races", () => {
     expect(row.startsAt.toISOString()).toBe(at(10).toISOString());
   });
 
-  it("undoing a mistaken outcome brings the reminders back", async () => {
+  it("undoing a mistaken outcome takes back the review request it queued", async () => {
     const d = await createAppointment({ orgId: a.orgId, serviceId: a.visit, practitionerId: a.drC, locationId: a.milano, startsAt: at(12), patient: person({ firstName: "Elio" }), source: "staff", online: false, now: NOW });
-    const pending = () =>
-      db.select().from(reminders).where(and(eq(reminders.appointmentId, d.appointment.id), eq(reminders.status, "pending"), eq(reminders.kind, "reminder")));
-    expect(await pending()).toHaveLength(3);
-    await setOutcome(d.appointment.id, "completed", NOW);
-    expect(await pending()).toHaveLength(0);
-    await setOutcome(d.appointment.id, "scheduled", NOW);
-    expect(await pending()).toHaveLength(3);
+    const pending = (kind: "reminder" | "review_request") =>
+      db.select().from(reminders).where(and(eq(reminders.appointmentId, d.appointment.id), eq(reminders.status, "pending"), eq(reminders.kind, kind)));
+    expect(await pending("reminder")).toHaveLength(3);
+    // An outcome is recorded once the visit has started (setOutcome refuses one ahead of it).
+    const started = new Date(at(12).getTime() + 10 * 60_000);
+    await setOutcome(d.appointment.id, "completed", started);
+    expect(await pending("reminder")).toHaveLength(0);
+    expect(await pending("review_request")).toHaveLength(1);
+    expect((await setOutcome(d.appointment.id, "scheduled", started)).appointment.status).toBe("scheduled");
+    expect(await pending("review_request")).toHaveLength(0);
   });
 });
 

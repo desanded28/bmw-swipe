@@ -171,6 +171,17 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <h2 className="mb-1 text-lg font-bold">{t("settings.widget.title")}</h2>
         <p className="mb-3 text-sm text-slate-500">{t("settings.widget.intro")}</p>
         <code className="block break-all rounded-xl bg-ink p-4 text-xs text-slate-100">{snippet}</code>
+        {/* Only a frame on a listed website is the practice's own channel (embed page, allowedParent). */}
+        {settings.privacy.embedOrigins.length === 0 ? (
+          <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900 ring-1 ring-amber-200">
+            {t("settings.widget.originsMissing")}{" "}
+            {can(s.role, "privacy.settings") ? (
+              <Link href="/dashboard/settings/privacy" className="font-semibold underline underline-offset-2">
+                {t("settings.widget.originsLink")}
+              </Link>
+            ) : null}
+          </p>
+        ) : null}
         <div className="mt-3 flex flex-wrap gap-4 text-sm font-semibold">
           <Link href={lhref(locale, `/embed/${org.slug}`)} target="_blank" className="inline-flex items-center gap-1 text-brand-700 hover:underline">
             {t("settings.widget.preview")} <ExternalLink size={13} aria-hidden />

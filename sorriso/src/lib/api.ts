@@ -216,6 +216,31 @@ export async function auditApiRequest(req: Request, auth: ApiAuth, route: string
   });
 }
 
+/**
+ * A partner call that returned patient data: one patient.view row per patient in the practice's
+ * chain (actor the key, metadata { via, route }), so the read shows in each patient's access log
+ * (privacy center, Art. 15 export) and not only as an api.request row.
+ */
+export async function auditPartnerRead(req: Request, auth: ApiAuth, route: string, patientIds: readonly string[]): Promise<void> {
+  const ids = [...new Set(patientIds)];
+  if (!ids.length) return;
+  await db.transaction(async (tx) => {
+    for (const id of ids) {
+      await audit(
+        {
+          orgId: auth.org.id,
+          actor: { type: "api_key", id: auth.key.id },
+          action: "patient.view",
+          entity: { type: "patient", id },
+          metadata: { via: "partner_api", route },
+          headers: req.headers,
+        },
+        tx,
+      );
+    }
+  });
+}
+
 function withoutCors(res: Response): Response {
   for (const name of [...res.headers.keys()]) if (name.toLowerCase().startsWith("access-control-")) res.headers.delete(name);
   res.headers.set("Cache-Control", "no-store");

@@ -49,7 +49,7 @@ import { renderEmailLayout } from "../messaging/layout";
 import { OTP_MAX_FAILURES, OTP_TTL_MS, sendOtp, verifyOtp } from "../otp";
 import { normalizePhone } from "../phone";
 import { clientNetworkHash, rateLimit } from "../rate-limit";
-import { listPatientReviews, withdrawReview, type PatientReview } from "../reviews";
+import { listPatientReviews, reviewLinkActing, withdrawReview, type PatientReview, type ReviewActing } from "../reviews";
 import { clearRiskFor } from "../risk";
 import { resolveSettings } from "../settings";
 import { ConsentError, currentConsents, PURPOSE_BASIS, recordConsent, type ConsentState } from "./consent";
@@ -116,6 +116,8 @@ export type Ticket = {
   pid?: string;
   /** Adult confirmation: the appointment the code confirms or declines. */
   a?: string;
+  /** Manage-link step-up: where to go once verified (a path of reviewReturnPath's shape), else the privacy center. */
+  r?: string;
   /** Contact change: the records to update, and the session that asked. */
   ids?: string[];
   s?: string;
@@ -835,6 +837,8 @@ export async function requestLinkStepUp(i: {
   kind: ContactKind;
   locale: Locale;
   headers: Headers;
+  /** Where the verified patient goes next (reviewReturnPath), sealed in the ticket. */
+  returnTo?: string | null;
   now?: Date;
 }): Promise<{ ok: true; ticket: string } | { ok: false; reason: "no_contact" | "rate_limited" }> {
   const now = i.now ?? new Date();
@@ -851,7 +855,44 @@ export async function requestLinkStepUp(i: {
     now,
   });
   if (!sent.ok) return sent;
-  return { ok: true, ticket: sealTicket({ c: sent.challengeId, k: i.kind, v: contact, p: "privacy_center", pid: i.d.patient.id }, now) };
+  const r = i.returnTo && isReviewReturnPath(i.returnTo) ? i.returnTo : undefined;
+  return { ok: true, ticket: sealTicket({ c: sent.challengeId, k: i.kind, v: contact, p: "privacy_center", pid: i.d.patient.id, r }, now) };
+}
+
+const REVIEW_RETURN = /^\/a\/[A-Za-z0-9_-]{8,128}\/review$/;
+
+/** The review page of an appointment link: where the step-up may send the verified patient back to. */
+export function reviewReturnPath(token: string): string {
+  return `/a/${token}/review`;
+}
+
+export function isReviewReturnPath(path: string): boolean {
+  return REVIEW_RETURN.test(path);
+}
+
+/**
+ * Who may act on the review of a visit (WP7's /a/<token>/review), and in what relation. The link
+ * alone is enough for the patient's own booking, or a guardian's booking of a child under 14
+ * (reviewLinkActing). When someone else booked (another adult, or a minor now 14 or older), the
+ * link may be in the booker's hands: only a privacy-center session opened with a one-time code to
+ * the patient's own contact (the step-up, requestLinkStepUp) acts, and for a patient of 14 or
+ * more only as the patient themselves, never through a guardian's contact. Null: show nothing of
+ * the review and offer the step-up.
+ */
+export async function reviewActing(
+  d: { patient: Patient; appointment: Pick<Appointment, "id" | "bookedFor"> },
+  session: PatientSession | null,
+  now: Date = new Date(),
+): Promise<ReviewActing | null> {
+  const viaLink = reviewLinkActing(d, now);
+  if (viaLink) return viaLink;
+  if (!session) return null;
+  const rec = await recordFor(session, d.patient.id, now);
+  if (!rec) return null;
+  const age = ageOn(d.patient.birthDate, now);
+  const child = age !== null && age < GUARDIAN_ROUTING_AGE;
+  if (!child && rec.via !== "self") return null;
+  return { actor: actorOf(session), actorRelation: actingAs(rec) };
 }
 
 /**

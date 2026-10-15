@@ -106,6 +106,7 @@ const RULE_MESSAGES: Partial<Record<string, string>> = {
   guardian_relation_required: "Please say whether you are a parent or a legal guardian.",
   guardian_contact_required: "Please enter a phone number or an email for the parent or guardian.",
   other_adult_must_book_themselves: "An adult has to book their own appointment here, or book directly with the practice.",
+  not_accepting_new_patients: "This practitioner isn't taking new patients. Please choose another practitioner or contact the practice.",
   other_adult_contact_required:
     "Please enter the patient's own phone number or email (not yours): they confirm the booking through it.",
 };
@@ -678,6 +679,13 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
       createdPatient = res.created;
     }
     await assertMayBook(tx, patient, input, now);
+    // A practitioner who doesn't take new patients can't be booked online for a first visit: the
+    // patient said it is their first, or (not said) this booking created their record and it is no
+    // likely duplicate of an existing one. Staff decide for themselves.
+    const firstVisit = input.isNewPatient ?? (createdPatient && !patient.possibleDuplicateOfId);
+    if (input.online && firstVisit && ctx.practitioners.find((pr) => pr.id === input.practitionerId)?.acceptsNewPatients === false) {
+      throw ruleError("not_accepting_new_patients");
+    }
     // The stored birth date when there is one: recordConsent reads that one too.
     const birthDate = patient.birthDate || ("id" in input.patient ? null : input.patient.birthDate) || null;
     checkBookingRelation(relation, birthDate, start, context, now);
@@ -814,6 +822,9 @@ export async function confirmAttendance(appointmentId: string, via: string, now 
   return updated ?? null;
 }
 
+/** confirmedVia of a request the practice declined (staff cancelled it while it was 'requested'). */
+export const REQUEST_DECLINED = "request_declined";
+
 export async function cancelAppointment(
   appointmentId: string,
   opts: { by: "patient" | "staff"; reason?: string | null; notifyPatient?: boolean; via?: string; now?: Date },
@@ -825,7 +836,13 @@ export async function cancelAppointment(
       .set({
         status: "cancelled",
         confirmation: opts.by === "patient" ? "declined" : undefined,
-        confirmedVia: opts.by === "patient" ? (opts.via ?? "web") : undefined,
+        // Staff cancelling a request they never accepted declined it (REQUEST_DECLINED): not a visit
+        // the practice cancelled (the marketplace reliability metric, src/lib/ranking.ts). The CASE
+        // reads the status before this update.
+        confirmedVia:
+          opts.by === "patient"
+            ? (opts.via ?? "web")
+            : sql`case when ${appointments.status} = 'requested' then ${REQUEST_DECLINED} else ${appointments.confirmedVia} end`,
         cancelledAt: now,
         cancelledBy: opts.by,
         cancelReason: opts.reason?.trim() || null,
@@ -921,6 +938,13 @@ export async function rescheduleAppointment(
   const duration =
     opts.durationMinutes ??
     Math.round((before.appointment.endsAt.getTime() - before.appointment.startsAt.getTime()) / 60_000);
+  // Only the chair or the length changes (e.g. dragged to another chair in the by-room calendar):
+  // for the patient nothing moved, so their confirmation, the reminders and any rebooking offer
+  // stay, and no "your appointment was moved" message goes out.
+  const sameVisit =
+    opts.startsAt.getTime() === before.appointment.startsAt.getTime() &&
+    practitionerId === before.appointment.practitionerId &&
+    locationId === before.appointment.locationId;
 
   await db.transaction(async (tx) => {
     const ctx = await loadAvailabilityContext(
@@ -976,26 +1000,31 @@ export async function rescheduleAppointment(
         practitionerId,
         locationId,
         roomId: evaluation.ok ? evaluation.roomId : (opts.roomId ?? null),
-        // A patient picking the new time themselves has confirmed it; a move by the practice needs re-confirmation.
-        confirmation: online ? "confirmed" : "pending",
-        confirmedAt: online ? now : null,
-        confirmedVia: online ? "web" : null,
-        needsAttention: false,
-        // A rebooking offer or call request was about the old time (src/lib/rebooking.ts).
-        rebookOfferStartsAt: null,
-        rebookCallStartsAt: null,
+        ...(sameVisit
+          ? {}
+          : {
+              // A patient picking the new time themselves has confirmed it; a move by the practice needs re-confirmation.
+              confirmation: online ? "confirmed" : "pending",
+              confirmedAt: online ? now : null,
+              confirmedVia: online ? "web" : null,
+              needsAttention: false,
+              // A rebooking offer or call request was about the old time (src/lib/rebooking.ts).
+              rebookOfferStartsAt: null,
+              rebookCallStartsAt: null,
+            }),
         updatedAt: now,
       })
       .where(and(eq(appointments.id, appointmentId), inArray(appointments.status, ["scheduled", "requested"])))
       .returning();
     if (!updated) throw new BookingError("not_allowed", "This appointment was cancelled or completed in the meantime.");
-    await scheduleReminders(tx, updated, ctx.settings, now);
+    // Reminders follow the start: unchanged for a chair or length change.
+    if (!sameVisit) await scheduleReminders(tx, updated, ctx.settings, now);
     await refreshAppointmentRisk(tx, appointmentId, now);
   });
 
   const after = (await getAppointmentDetails({ id: appointmentId }))!;
 
-  if (opts.notifyPatient ?? true) {
+  if ((opts.notifyPatient ?? true) && !sameVisit) {
     const data = templateData(after);
     const channel = online ? (canReachByEmail(after.patient) ? "email" : null) : await textOrEmail(after, "rescheduled", now);
     if (channel) {
@@ -1017,16 +1046,18 @@ export async function rescheduleAppointment(
     }
   }
 
-  await offerFreedSlot(
-    {
-      orgId: before.org.id,
-      serviceId: before.service.id,
-      practitionerId: before.appointment.practitionerId,
-      locationId: before.appointment.locationId,
-      startsAt: before.appointment.startsAt,
-    },
-    now,
-  ).catch((err) => logError("waitlist", err, { step: "offer" }));
+  if (!sameVisit) {
+    await offerFreedSlot(
+      {
+        orgId: before.org.id,
+        serviceId: before.service.id,
+        practitionerId: before.appointment.practitionerId,
+        locationId: before.appointment.locationId,
+        startsAt: before.appointment.startsAt,
+      },
+      now,
+    ).catch((err) => logError("waitlist", err, { step: "offer" }));
+  }
 
   return after;
 }
@@ -1089,6 +1120,10 @@ export async function setOutcome(appointmentId: string, outcome: "completed" | "
   if (!["scheduled", "completed", "no_show"].includes(before.appointment.status))
     throw new BookingError("not_allowed", "This appointment can't be updated.");
   if (before.appointment.status === outcome) return before;
+  // How a visit went is known once it has started: a no-show recorded ahead would count against the
+  // patient, stop the reminders and free nobody's time (a no-show still blocks the slot).
+  if (outcome !== "scheduled" && before.appointment.startsAt.getTime() > now.getTime())
+    throw new BookingError("not_allowed", "The visit hasn't started yet.", { reason: "not_started" });
 
   await db.transaction(async (tx) => {
     // Guard on the status we read: a double-click can't count a no-show twice.

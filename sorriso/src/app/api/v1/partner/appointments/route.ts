@@ -2,7 +2,7 @@ import { and, asc, eq, gte, lt, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { APPOINTMENT_STATUSES, appointments } from "@/db/schema";
-import { json, partnerRoute } from "@/lib/api";
+import { auditPartnerRead, json, partnerRoute } from "@/lib/api";
 import { getAppointmentDetails } from "@/lib/appointments";
 import { createAppointment } from "@/lib/booking";
 import { partnerAppointment } from "@/lib/serializers";
@@ -44,8 +44,9 @@ export function GET(req: Request) {
       .where(and(...conditions))
       .orderBy(asc(appointments.startsAt))
       .limit(500);
-    const details = await Promise.all(rows.map((r) => getAppointmentDetails({ id: r.id })));
-    return json({ appointments: details.filter((d) => d && d.org.id === org.id).map((d) => partnerAppointment(d!, key.scopes)) });
+    const details = (await Promise.all(rows.map((r) => getAppointmentDetails({ id: r.id })))).filter((d): d is NonNullable<typeof d> => d !== null && d.org.id === org.id);
+    await auditPartnerRead(req, { org, key }, "appointments.list", details.map((d) => d.patient.id));
+    return json({ appointments: details.map((d) => partnerAppointment(d, key.scopes)) });
   });
 }
 
@@ -85,6 +86,7 @@ export function POST(req: Request) {
       force: input.force,
       notifyPatient: input.notifyPatient ?? true,
     });
+    await auditPartnerRead(req, { org, key }, "appointments.create", [details.patient.id]);
     return json({ appointment: partnerAppointment(details, key.scopes) }, { status: 201 });
   });
 }

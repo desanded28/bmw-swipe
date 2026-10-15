@@ -231,6 +231,11 @@ export type EvaluateInput = {
 
 export type Evaluation = { ok: true; roomId: string | null } | { ok: false; reason: SlotRejection };
 
+/** The minutes between two offered starts (settings.booking.slotStepMinutes, at least 5). */
+function slotStep(ctx: AvailabilityContext, stepMinutes?: number): number {
+  return Math.max(5, stepMinutes ?? ctx.settings.booking.slotStepMinutes);
+}
+
 /** Check a single candidate slot against everything we know. */
 export function evaluateSlot(ctx: AvailabilityContext, input: EvaluateInput): Evaluation {
   const now = input.now ?? new Date();
@@ -253,6 +258,12 @@ export function evaluateSlot(ctx: AvailabilityContext, input: EvaluateInput): Ev
     const s = zonedParts(input.start, location.timezone);
     const e = zonedParts(new Date(end), location.timezone);
     const endMinutes = e.date === s.date ? e.minutes : e.minutes + 24 * 60;
+    // Booked by the patient (policy enforced): only the starts findSlots offers, on the practice's
+    // slot step from the start of the working hours, on the minute. An odd start (10:07:30) would
+    // break up the calendar so that the neighbouring slots disappear for everyone else.
+    const step = slotStep(ctx);
+    const onStep = (sch: Schedule) =>
+      !input.enforcePolicy || (s.second === 0 && start % 1000 === 0 && (s.minutes - sch.startMinute) % step === 0);
     const covered = ctx.schedules.some(
       (sch) =>
         sch.practitionerId === input.practitionerId &&
@@ -260,7 +271,8 @@ export function evaluateSlot(ctx: AvailabilityContext, input: EvaluateInput): Ev
         sch.weekday === s.weekday &&
         scheduleValidOn(sch, s.date) &&
         sch.startMinute <= s.minutes &&
-        endMinutes <= sch.endMinute,
+        endMinutes <= sch.endMinute &&
+        onStep(sch),
     );
     if (!covered) return { ok: false, reason: "outside_hours" };
   }
@@ -323,7 +335,7 @@ export function findSlots(
   },
 ): Slot[] {
   const now = opts.now ?? new Date();
-  const step = Math.max(5, opts.stepMinutes ?? ctx.settings.booking.slotStepMinutes);
+  const step = slotStep(ctx, opts.stepMinutes);
   const duration = opts.durationMinutes ?? ctx.service.durationMinutes;
   const out: Slot[] = [];
 
