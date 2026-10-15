@@ -63,14 +63,18 @@ function refererSays(referer: string | null, origin: string, ownHost: string | n
 }
 
 /**
- * The host page's origin as the widget reported it (?parent=), if it may receive messages: an
- * exact origin, https (http only for localhost outside production).
- * - No allowed websites set (any https host may embed): a Referer from a different site contradicts
- *   ?parent and no messages are posted; a missing Referer or one of our own pages proves nothing.
- * - Allowed websites set: fail closed. The parent must be listed AND the Referer must vouch for it
- *   ("parent" or "ownEmbed"); without one (no-referrer framing with a spoofed ?parent) the frame is
- *   blocked, so an unlisted site can't show the practice's flow by hiding who it is.
- * null origin: no messages are posted at all.
+ * The host page's origin as the widget reported it (?parent=), when it is the practice's own
+ * website: an exact origin, https (http only for localhost outside production), listed in the
+ * practice's allowed websites (embedOrigins), with the Referer vouching for it ("parent" or
+ * "ownEmbed"). Only such a frame is the practice's channel: it gets the practice ref (practice
+ * context) and the messages to the host page.
+ * - No allowed websites set: any https site may frame the widget, and none of them is known to be
+ *   the practice's, so no origin is returned. The flow works as a Sorriso page (marketplace
+ *   context, Sorriso's Art. 9(2)(a) consent, no practice ref) and posts nothing to the host page,
+ *   so a directory or lead-generation site (or its ad pixels) can't receive "booked" events.
+ * - Allowed websites set: fail closed. An unlisted parent, or one no Referer vouches for (no-referrer
+ *   framing with a spoofed ?parent), is blocked, so an unlisted site can't show the practice's flow
+ *   by hiding who it is.
  */
 function allowedParent(
   parent: string | undefined,
@@ -87,8 +91,8 @@ function allowedParent(
   } catch {
     origin = null;
   }
+  if (!allowed.length) return { origin: null, blocked: false };
   const says = origin ? refererSays(referer, origin, ownHost, slug) : "none";
-  if (!allowed.length) return { origin: says === "other" ? null : origin, blocked: false };
   const ok = Boolean(origin && allowed.includes(origin) && (says === "parent" || says === "ownEmbed"));
   return { origin: ok ? origin : null, blocked: !ok };
 }
@@ -104,12 +108,12 @@ function flowLabels(clinic: PublicClinic, locale: Locale): BookingLabels {
 /**
  * Chrome-less booking flow loaded by /widget.js inside an iframe on the practice's own website.
  *
- * Framed, it is the practice's own channel, so the practice is controller: the flow posts the
- * practice ref. Opened top-level (a search result, a shared link) it is a Sorriso-hosted page like
- * any other: marketplace, and the page hands out no practice ref (isFramedRequest).
- *
- * If the practice listed the websites allowed to embed it (privacy settings, embedOrigins), a frame
- * on any other site shows only a link that opens the booking page in a new tab.
+ * Framed by a website the practice listed (privacy settings, embedOrigins), it is the practice's
+ * own channel, so the practice is controller: the flow posts the practice ref. Framed anywhere
+ * else while the list is empty, or opened top-level (a search result, a shared link), it is a
+ * Sorriso-hosted page like any other: marketplace, no practice ref, no messages to the host page
+ * (isFramedRequest, allowedParent). Once the list is set, a frame on any other site shows only a
+ * link that opens the booking page in a new tab.
  *
  * The language comes from the URL only (/{locale}/embed/...): a cross-site iframe can't set cookies,
  * so the language switcher links to the same URL in another language.
@@ -157,8 +161,10 @@ export default async function EmbedPage({ params, searchParams }: { params: Para
     );
   }
 
-  const practiceRef = framed ? signPracticeRef(clinic.org.id) : null;
-  const context = processingContextFor({ source: "widget", viaApiKey: false, embedded: framed, practiceRef, orgId: clinic.org.id });
+  // The practice's channel only inside a frame on one of its own listed websites.
+  const practiceChannel = framed && parent.origin !== null;
+  const practiceRef = practiceChannel ? signPracticeRef(clinic.org.id) : null;
+  const context = processingContextFor({ source: "widget", viaApiKey: false, embedded: practiceChannel, practiceRef, orgId: clinic.org.id });
   const ta = getT(locale, "a11y");
   const link = "font-semibold text-slate-700 underline underline-offset-2 hover:text-ink";
   return (
@@ -173,7 +179,7 @@ export default async function EmbedPage({ params, searchParams }: { params: Para
           practiceRef={practiceRef}
           labels={flowLabels(clinic, locale)}
           search={h.get("x-search") ?? ""}
-          embed={{ parentOrigin: framed ? parent.origin : null, events: sp.events === "1", includeId: sp.id === "1" }}
+          embed={{ parentOrigin: practiceChannel ? parent.origin : null, events: sp.events === "1", includeId: sp.id === "1" }}
           initial={{ serviceId: sp.service, practitionerId: sp.practitioner, locationId: sp.location }}
         />
       </ClientMessages>
